@@ -35,24 +35,30 @@ The bridge selects the latest eligible existing human conversation at startup.
 Each configured destination has an isolated bounded context buffer. Group
 messages retain mention, current-label, and verified-reply triggers. Every new
 ordinary external DM text opens one serialized Agent turn. Group prompts retain
-canonical message IDs and reply provenance; DM prompts identify the sender but
-omit message IDs and reply relations. Integration-authored messages and
-snapshot/history records never trigger. The Agent's final text is not sent
-automatically.
+canonical message IDs and reply provenance while identifying the source with its
+startup `groupName`; DM prompts identify the source and sender label but omit
+message IDs and reply relations. Sender IDs never enter Agent prompts.
+Integration-authored messages and snapshot/history records never trigger. The
+Agent's final text is not sent automatically.
 
 Call `keet_list_groups` first. The other three tools require an exact returned
-`groupId`:
+`groupName` (caller whitespace is trimmed, matching remains case-sensitive):
 
-- `keet_list_groups` — configured Managed Group and optional Managed DM;
-- `keet_list_members` — current bounded roster;
+- `keet_list_groups` — configured Managed Group and optional Managed DM, each
+  returned only as `{ groupName, kind }`;
+- `keet_list_members` — current bounded roster of display names only;
 - `keet_read_recent_messages` — 1–50 chronological ordinary text records;
-  DM records omit message IDs and reply targets;
-- `keet_send_message` — explicit bounded text delivery. Regular groups accept
-  an exact `{ deviceId, seq }` reply target; DM sends are ordinary text and
-  reject `replyTo`.
+  regular-group records retain canonical message IDs and optional reply targets,
+  while DM records omit all message/reply IDs;
+- `keet_send_message` — explicit bounded text delivery returning only
+  `{ sent: true }`. Regular groups accept an exact `{ deviceId, seq }` reply
+  target; DM sends are ordinary text and reject `replyTo`.
 
-Unconfigured group IDs are rejected before Core access. Human-only onboarding
-supports the following operations:
+Names are captured when DSH starts after trimming bounded titles and replacing
+line separators with spaces. A missing title uses the bounded fallback name.
+No match is rejected before Core access; normalized duplicate names fail closed,
+and an ambiguous send explicitly reports that no message was sent. Human-only
+onboarding supports the following operations:
 
 ```sh
 dsh-keet-setup dm-requests --workspace /path/to/workspace

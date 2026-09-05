@@ -46,14 +46,14 @@ export function apply(ctx: HostContext): void {
 
 export { KeetBridge, bridgeRpcHandler }
 export type { KeetBridgeAgent, KeetBridgeDependencies, KeetBridgeReadiness, KeetBridgeReadinessState } from "./bridge.js"
-export { createKeetToolDefinitions, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE } from "./keet-tools.js"
-export type { KeetToolDependencies, KeetListGroupsResult, KeetListMembersResult, KeetReadRecentMessagesResult, KeetSendMessageResult, ManagedDestination, ManagedDestinationKind } from "./keet-tools.js"
+export { createKeetToolDefinitions, normalizeManagedDestinationName, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE } from "./keet-tools.js"
+export type { KeetToolDependencies, KeetListGroupsResult, KeetListMembersResult, KeetReadRecentMessagesResult, KeetSendMessageResult, KeetMemberResult, KeetGroupMessageResult, KeetDmMessageResult, ManagedDestination, ManagedDestinationSummary, ManagedDestinationKind } from "./keet-tools.js"
 export { KeetSettingsSchema } from "./settings.js"
 export { ensureKeetIdentityDataDir, resolveKeetRuntimeDir, resolveKeetRuntimePaths } from "./local-paths.js"
 export { decodeSettings, normalizeSettings, validateSettings } from "./settings-client.js"
 export type { KeetSettings } from "./constants.js"
 export { renderKeetContextPrompt, classifyTrigger, normalizeKeetRecord, messageIdKey } from "./keet-protocol.js"
-export type { KeetContextRecord, AdmittedKeetMessage, KeetIdentity } from "./keet-protocol.js"
+export type { KeetContextRecord, AdmittedKeetMessage, KeetIdentity, KeetRenderedMessageRecord, KeetDisplayMember } from "./keet-protocol.js"
 export { selectMostRecentEligibleSession, lastHumanPromptAt } from "./session-selection.js"
 export type { SessionInspectionLike, SessionEventLike, SessionHeaderLike, WorkspaceLike, ActiveSessionCandidate } from "./session-selection.js"
 export { prepareAvatar, validatePreparedAvatar, AVATAR_VARIANT_SIZES, AVATAR_MAX_SOURCE_BYTES, AVATAR_MAX_VARIANT_BYTES, AVATAR_MAX_PIXELS } from "./avatar.js"

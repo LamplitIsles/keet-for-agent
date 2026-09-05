@@ -26,8 +26,9 @@ Managed DM to one existing DSH conversation selected from the configured
 workspace. It never creates or switches conversations or groups. The regular
 group keeps mention, current-label, and verified-reply triggers; every new
 ordinary external DM text triggers one serialized Agent turn. Destination
-buffers and subscriptions are isolated, and the Agent's final text remains in
-DSH unless `keet_send_message` is explicitly called.
+buffers and subscriptions are isolated, each injected context names its
+restart-scoped source `groupName`, and the Agent's final text remains in DSH
+unless `keet_send_message` is explicitly called.
 
 The optional DM is admitted only from the canonical joined-room list: exactly
 one normalized `DirectMessage` room must name the configured peer Member ID.
@@ -36,9 +37,14 @@ pending, missing, duplicate, and non-DM matches fail closed.
 
 The tools are `keet_list_groups`, `keet_list_members`,
 `keet_read_recent_messages`, and `keet_send_message`. The first lists only the
-configured destinations; the other three require an exact returned `groupId`.
-Regular history and sends preserve canonical reply provenance. DM history and
-prompts omit message IDs/reply relations, and DM sends are ordinary text.
+configured destinations as `{ groupName, kind }`; the other three require an
+exact returned `groupName` (trimmed, case-sensitive, and restart-scoped).
+Regular history preserves canonical message IDs and optional reply provenance,
+while roster results contain only display names and send results contain only
+delivery success. DM history and prompts omit sender/message/reply IDs, and DM
+sends are ordinary text. Normalized duplicate names fail selected operations
+closed before Core access, with ambiguous sends confirming that no message was
+sent.
 Setup is human-only: `join` reads exactly one invitation URL from stdin,
 `dm-requests` lists bounded sender identities, `dm-accept` accepts one exact
 pending sender, and `profile` can independently update display name and a

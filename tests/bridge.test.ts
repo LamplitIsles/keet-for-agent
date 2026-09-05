@@ -18,12 +18,12 @@ function message(seq: number, text: string, extra: Partial<KeetMessage> = {}): K
   return { messageId: { deviceId: "device-human", seq }, groupId: settings.groupId, senderId: "human", senderLabel: "Alice", timestamp: seq, text, ...extra }
 }
 
-function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failGroup?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembership?: boolean; dm?: boolean; wrongDmPeer?: boolean } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
+function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failGroup?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembership?: boolean; dm?: boolean; wrongDmPeer?: boolean; duplicateNames?: boolean } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
   const sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }> = []
   let closed = false
   const dmMethods: Pick<KeetCore, "resolveDm"> = { resolveDm: async () => {
     if (!options.dm) throw new Error("Managed DM is not configured")
-    return { groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: options.wrongDmPeer ? "other" : "peer", title: "Managed DM" }
+    return { groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: options.wrongDmPeer ? "other" : "peer", title: options.duplicateNames ? "Shared\nName" : "Managed DM" }
   } }
   const core: KeetCore & { sent: typeof sent; closed: boolean } = {
     sent,
@@ -33,7 +33,7 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
       return { state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: options.missingIdentity ? "" : "bot", displayName: "Keet Bot" }
     },
     listGroups: async () => [{ groupId: settings.groupId, roomType: "Default", title: "Test group" }, ...(options.dm ? [{ groupId: dmGroupId, roomType: "DirectMessage" as const, title: "Managed DM", dmMemberId: "peer" }] : [])],
-    validateGroup: async (groupId) => { if (options.failGroup) throw new Error("group unavailable"); return { groupId, roomType: "Default", title: "Test group" } },
+    validateGroup: async (groupId) => { if (options.failGroup) throw new Error("group unavailable"); return { groupId, roomType: "Default", title: options.duplicateNames ? " Shared\nName " : "Test group" } },
     ...dmMethods,
     listMembers: async (groupId) => [...(options.missingMembership ? [] : [{ memberId: "bot", displayName: "Keet Bot" }]), ...(groupId === dmGroupId ? [{ memberId: "peer", displayName: "Peer" }] : [{ memberId: "human", displayName: "Alice" }])],
     readRecentMessages: async (groupId) => [{ ...message(1, "old self reply", { groupId }), senderId: "bot", senderLabel: "Keet Bot", messageId: { deviceId: "device-bot", seq: 1 } }],
@@ -154,6 +154,42 @@ describe("Keet bridge", () => {
     expect(promptText).toContain("background context")
     expect(promptText).toContain("untrusted quoted data")
     expect(promptText).toContain("device-human")
+    expect(core.sent).toHaveLength(0)
+    await bridge.stop()
+  })
+
+  it("snapshots a named destination, routes sends through its internal group ID, and keeps native reply ownership", async () => {
+    let deliver!: (message: KeetMessage) => void
+    const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+
+    const list = fixture.tools.find((tool) => tool.name === "keet_list_groups")!
+    const groups = await list.execute({}, undefined as never) as { groups: Array<{ groupName: string; kind: string }> }
+    expect(groups.groups).toEqual([{ groupName: "Test group", kind: "group" }])
+    const send = fixture.tools.find((tool) => tool.name === "keet_send_message")!
+    await expect(send.execute({ groupName: " Test group ", text: "agent-authored" }, undefined as never)).resolves.toEqual({ sent: true })
+    expect(core.sent).toEqual([{ groupId: settings.groupId, text: "agent-authored" }])
+
+    deliver(message(70, "native follow-up", { replyTo: { deviceId: "device-bot", seq: 11 } }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fixture.prompts).toHaveLength(1)
+    const prompt = JSON.stringify(fixture.prompts[0])
+    expect(prompt).toContain("native follow-up")
+    expect(prompt).toContain("source group name")
+    expect(prompt).not.toContain("sender_id")
+    await bridge.stop()
+  })
+
+  it("fails a duplicate normalized destination name closed before a send reaches Core", async () => {
+    const core = fakeCore({ dm: true, duplicateNames: true })
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent, {}, { ...settings, dmMemberId: "peer" }))
+    await bridge.start()
+    expect(bridge.readiness.state).toBe("ready")
+    const send = fixture.tools.find((tool) => tool.name === "keet_send_message")!
+    await expect(send.execute({ groupName: " Shared Name ", text: "must not send" }, undefined as never)).rejects.toThrow("no message was sent")
     expect(core.sent).toHaveLength(0)
     await bridge.stop()
   })
@@ -290,15 +326,18 @@ describe("Keet bridge", () => {
     expect(fixture.prompts).toHaveLength(1)
     const dmPrompt = JSON.stringify(fixture.prompts[0])
     expect(dmPrompt).toContain("private one")
-    expect(dmPrompt).toContain("Keet Managed DM")
+    expect(dmPrompt).toContain("Keet Managed DM messages — source group name=\\\"Managed DM\\\"")
     expect(dmPrompt).not.toContain("device-human")
     expect(dmPrompt).not.toContain("seq=3")
+    expect(dmPrompt).not.toContain("sender_id")
     expect(dmPrompt).not.toContain("group context")
 
     groupDeliver(message(5, "group mention", { mentions: ["bot"] }))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(fixture.prompts).toHaveLength(2)
     expect(JSON.stringify(fixture.prompts[1])).toContain("group context")
+    expect(JSON.stringify(fixture.prompts[1])).toContain("source group name=\\\"Test group\\\"")
+    expect(JSON.stringify(fixture.prompts[1])).not.toContain("sender_id")
     await bridge.stop()
     expect(core.closed).toBe(true)
   })
@@ -434,7 +473,7 @@ describe("Keet bridge", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(bridge.readiness).toMatchObject({ state: "failed", detail: "connection-failed" })
     expect(bridge.agent).toBeUndefined()
-    await expect(send.execute({ groupId: settings.groupId, text: "must not send" }, undefined as never)).rejects.toThrow("bridge is not ready")
+    await expect(send.execute({ groupName: "Test group", text: "must not send" }, undefined as never)).rejects.toThrow("bridge is not ready")
     expect(core.sent).toHaveLength(0)
   })
 
