@@ -1,0 +1,53 @@
+{
+  "name": "keet-for-agent-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.13",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests",
+    "build": "bun run --cwd packages/dsh-keet build",
+    "pack-smoke": "bun run scripts/pack-smoke.ts",
+    "real-worker-smoke": "bun run --cwd packages/keet-core build:smoke && bun packages/keet-core/dist/real-worker-smoke.mjs",
+    "official-onboarding-smoke": "bun run build && bun scripts/official-onboarding-smoke.ts"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-api-remotes": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-api-session-controller": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-api-workspace-controller": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-connection": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-locale": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-workspace": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-credentials": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-settings": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-workspace": "0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "@types/bun": "^1.4.0",
+    "@types/node": "^22.15.0",
+    "@types/react": "18.3.18",
+    "@types/react-test-renderer": "18.0.7",
+    "lightningcss": "^1.33.0",
+    "react": "18.3.1",
+    "react-test-renderer": "18.3.1",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.12",
+    "typescript": "5.7.3",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "tiny-buffer-rpc": "2.4.0"
+  }
+}

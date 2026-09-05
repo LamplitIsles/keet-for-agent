@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "@lamplitisles/keet-integration-core": ["packages/keet-core/src/index.ts"]
+    },
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "verbatimModuleSyntax": true,
+    "exactOptionalPropertyTypes": true,
+    "jsx": "react-jsx",
+    "allowJs": false,
+    "skipLibCheck": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["packages", "tests", "scripts"]
+}
