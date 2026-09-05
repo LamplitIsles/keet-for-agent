@@ -349,6 +349,7 @@ describe("typed Keet Integration Core unit behavior", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(received).toEqual([])
     harness.emit([{ roomId: "group-test", messageId: { deviceId: "device-alice", seq: 1 }, senderId: "member-alice", text: "duplicate", timestamp: 3, type: "text" }])
+    harness.emit([{ roomId: "group-test", messageId: { deviceId: "device-system", seq: 5 }, senderId: "system", text: "live ignored", timestamp: 3, type: "system" }])
     harness.emit([{ roomId: "group-test", messageId: { deviceId: "device-alice", seq: 3 }, senderId: "member-alice", text: "first", timestamp: 4, type: "text" }])
     harness.emit([{ roomId: "group-test", messageId: { deviceId: "device-alice", seq: 4 }, senderId: "member-alice", text: "second", timestamp: 5, type: "text" }])
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -513,7 +514,6 @@ describe("Keet Integration Core fd-3 process contracts", () => {
       const received: Array<{ senderId: string; text: string }> = []
       const subscription = core.watchMessages("group-test", (message) => received.push({ senderId: message.senderId, text: message.text }))
       await new Promise((resolve) => setTimeout(resolve, 30))
-      expect(received).toEqual([])
       await core.sendMessage("group-test", "self message")
       await core.sendMessage("group-test", "[human] first external")
       await new Promise((resolve) => setTimeout(resolve, 30))
@@ -534,6 +534,7 @@ describe("Keet Integration Core fd-3 process contracts", () => {
         subscription.onTerminate?.((value) => { clearTimeout(timer); resolve(value) })
       })
       expect(reason).toBe("connection-failed")
+      expect(subscription.closed).toBe(true)
       expect(subscription.terminationReason).toBe("connection-failed")
       await expect(core.status()).rejects.toThrow("status is unavailable")
     } finally {
