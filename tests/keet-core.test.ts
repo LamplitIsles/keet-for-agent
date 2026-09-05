@@ -23,8 +23,8 @@ async function dataPath(prefix = "keet-core-test-"): Promise<string> {
   return directory
 }
 
-function options(data: string, logger?: (entry: KeetSidecarLog) => void) {
-  const value = { executablePath: nodeExecutable, bundlePath: fixture, dataPath: data, swarming: false, startupTimeoutMs: 3_000, shutdownTimeoutMs: 1_000 }
+function options(data: string, logger?: (entry: KeetSidecarLog) => void, overrides: Record<string, unknown> = {}) {
+  const value = { executablePath: nodeExecutable, bundlePath: fixture, dataPath: data, swarming: false, startupTimeoutMs: 3_000, shutdownTimeoutMs: 1_000, ...overrides }
   return logger ? { ...value, logger } : value
 }
 
@@ -181,6 +181,29 @@ describe("typed Keet Integration Core", () => {
     expect(await core.resolveDm("member-peer")).toEqual(accepted)
     expect(await core.listPendingDmRequests()).toEqual([])
     await expect(core.acceptDmRequest("member-peer")).rejects.toThrow("already resolved")
+    await core.close()
+  })
+
+  it("enriches a typed compact DirectMessage record when room info supplies the peer", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-dm-typed-compact-")))
+    expect(await core.listGroups()).toEqual([
+      { groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" },
+      { groupId: "group-dm", title: "Managed DM", description: "fixture DM", roomType: "DirectMessage", dmMemberId: "member-peer" },
+    ])
+    await expect(core.resolveDm("member-peer")).resolves.toEqual({ groupId: "group-dm", roomType: "DirectMessage", dmMemberId: "member-peer", title: "Managed DM", description: "fixture DM" })
+    await core.close()
+  })
+
+  it("waits for a delayed accepted DM room to converge through the canonical room list", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-dm-delayed-"), undefined, { pairingTimeoutMs: 3_000 }))
+    expect(await core.listGroups()).toEqual([{ groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" }])
+    expect(await core.listPendingDmRequests()).toEqual([{ memberId: "member-peer", displayName: "Peer" }])
+    const accepted = await core.acceptDmRequest("member-peer")
+    expect(accepted).toEqual({ groupId: "group-dm", roomType: "DirectMessage", dmMemberId: "member-peer", title: "Managed DM", description: "fixture DM" })
+    expect(await core.listGroups()).toEqual([
+      { groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" },
+      { groupId: "group-dm", title: "Managed DM", description: "fixture DM", roomType: "DirectMessage", dmMemberId: "member-peer" },
+    ])
     await core.close()
   })
 

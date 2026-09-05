@@ -98,10 +98,12 @@ export class KeetIntegrationCore implements KeetCore {
     })
     // getRecentRooms intentionally returns a compact recency record. Resolve
     // room metadata through the pinned getRoomInfo call when the compact
-    // record did not carry its type. Test workers may already include the
-    // metadata, so their fixture shape remains accepted.
+    // record did not carry its type or a DirectMessage peer identity. Test
+    // workers may already include the metadata, so their fixture shape remains
+    // accepted.
     return await Promise.all(initial.map(async (group) => {
-      if (group.roomType) return group
+      const needsMetadata = group.roomType === undefined || (group.roomType === "DirectMessage" && group.dmMemberId === undefined)
+      if (!needsMetadata) return group
       try {
         const rawInfo = await this.callWithSignal("getRoomInfo", [group.groupId], signal)
         const info = normalizeGroup(rawInfo)

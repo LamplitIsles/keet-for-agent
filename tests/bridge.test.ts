@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest"
+import { execFileSync } from "node:child_process"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools"
 import { KeetBridge, bridgeRpcHandler, type KeetBridgeAgent, type KeetBridgeDependencies } from "../packages/dsh-keet/src/bridge.js"
 import type { KeetCore, KeetMessage, KeetMessageId } from "../packages/dsh-keet/src/core-contract.js"
+import { KeetIntegrationCore } from "../packages/keet-core/src/index.js"
 
 const settings: { groupId: string; workspaceId: string; dmMemberId?: string } = { groupId: "group-fixed", workspaceId: "workspace" }
 const dmGroupId = "group-dm"
+const fakeWorker = fileURLToPath(new URL("./fixtures/fake-worker.mjs", import.meta.url))
+const nodeExecutable = execFileSync("which", ["node"], { encoding: "utf8" }).trim()
 
 function message(seq: number, text: string, extra: Partial<KeetMessage> = {}): KeetMessage {
   return { messageId: { deviceId: "device-human", seq }, groupId: settings.groupId, senderId: "human", senderLabel: "Alice", timestamp: seq, text, ...extra }
@@ -293,6 +301,31 @@ describe("Keet bridge", () => {
     expect(JSON.stringify(fixture.prompts[1])).toContain("group context")
     await bridge.stop()
     expect(core.closed).toBe(true)
+  })
+
+  it("starts through the real Integration Core and triggers exactly once for an external DM", async () => {
+    const dataPath = await mkdtemp(path.join(tmpdir(), "keet-bridge-official-shape-dm-typed-compact-"))
+    const core = await KeetIntegrationCore.start({ executablePath: nodeExecutable, bundlePath: fakeWorker, dataPath, swarming: false, startupTimeoutMs: 3_000, shutdownTimeoutMs: 1_000 })
+    const configured = { groupId: "group-test", workspaceId: "workspace", dmMemberId: "member-peer" }
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent, {}, configured))
+    try {
+      await bridge.start()
+      expect(bridge.readiness).toMatchObject({ state: "ready", groupId: "group-test", dmMemberId: "member-peer", destinations: [{ groupId: "group-test", kind: "group" }, { groupId: dmGroupId, kind: "dm", peerMemberId: "member-peer" }] })
+
+      // addChatMessage is the fixture's external-sender path. The actual Core
+      // subscription and Bridge classifier must carry this DM through to the
+      // Agent without a hand-written resolveDm seam.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await core.sendMessage(dmGroupId, "[human] bridge integration DM")
+      const deadline = Date.now() + 2_000
+      while (fixture.prompts.length < 1 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(fixture.prompts).toHaveLength(1)
+      expect(JSON.stringify(fixture.prompts[0])).toContain("bridge integration DM")
+    } finally {
+      await bridge.stop()
+      await rm(dataPath, { recursive: true, force: true })
+    }
   })
 
   it("fails the whole bridge when the configured DM resolves to another peer", async () => {
