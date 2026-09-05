@@ -178,20 +178,11 @@ export class KeetBridge {
       this.destinationsValue = Object.freeze(destinations.map((destination) => Object.freeze({ ...destination })))
       this.states.clear()
       for (const destination of this.destinationsValue) this.states.set(destination.groupId, makeDestinationState(destination))
-      let identityLabel = status.displayName?.trim() || ""
+      const identityLabel = status.displayName?.trim() || ""
       this.identity = { memberId: identityId, displayName: identityLabel }
       for (const destination of this.destinationsValue) {
-        try {
-          const destinationMembers = await core.listMembers(destination.groupId)
-          identityLabel ||= destinationMembers.find((member) => member.memberId === identityId)?.displayName?.trim() || ""
-        } catch {
-          // Membership is authoritative in the canonical startup room
-          // snapshot. Roster lookup only enriches the identity label and must
-          // not prevent a valid destination from becoming live.
-        }
         await this.primeOwnMessageIds(this.states.get(destination.groupId)!, core)
       }
-      this.identity = { memberId: identityId, displayName: identityLabel }
       if (this.stopped) return
       if (this.boundAgent) {
         try { this.registerAgentTools(this.boundAgent) } catch { this.reportError(); await this.failStartup("tool-registration-failed"); return }

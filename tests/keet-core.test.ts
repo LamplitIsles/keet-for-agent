@@ -241,6 +241,7 @@ describe("typed Keet Integration Core", () => {
     ] as const) {
       core.sidecar.call = async (name, args) => name === "getDmRequestsByStatus" ? malformed.raw : originalCall(name, args)
       await expect(core.listPendingDmRequests()).rejects.toThrow(malformed.message)
+      await expect(core.acceptDmRequest("member-peer")).rejects.toThrow(malformed.message)
     }
     core.sidecar.call = async (name, args) => name === "getDmRequestsByStatus"
       ? [valid, { ...valid, senderContactInfo: { ...valid.senderContactInfo, displayName: "Duplicate" } }]

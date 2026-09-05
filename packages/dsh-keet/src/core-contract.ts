@@ -53,7 +53,6 @@ export interface JoinResult { readonly groupId: string }
 export interface KeetCore {
   status(): Promise<KeetReadiness>
   listGroups(): Promise<ManagedGroup[]>
-  validateGroup(groupId: string): Promise<ManagedGroup>
   resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>

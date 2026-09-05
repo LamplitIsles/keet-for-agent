@@ -158,14 +158,10 @@ export class KeetIntegrationCore implements KeetCore {
 
   async listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]> {
     ensureSignal(signal)
-    const raw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
-    const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.requests) ? raw.requests : undefined
-    if (!values) throw publicError("Keet returned an invalid pending DM request snapshot")
+    const values = await this.pendingDmSnapshot(signal)
     const seen = new Set<string>()
     const result: KeetPendingDmRequest[] = []
-    for (const value of values.slice(0, MAX_DM_REQUESTS)) {
-      const request = normalizePendingDmRequest(value)
-      if (!request) throw publicError("Keet returned an invalid pending DM request")
+    for (const request of values) {
       if (seen.has(request.memberId)) continue
       seen.add(request.memberId)
       result.push({ memberId: request.memberId, ...(request.displayName ? { displayName: request.displayName } : {}) })
@@ -182,9 +178,8 @@ export class KeetIntegrationCore implements KeetCore {
     } catch (error) {
       if (!(error instanceof Error) || !/not resolved|operation failed/i.test(error.message)) throw error
     }
-    const raw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
-    const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.requests) ? raw.requests : []
-    const matches = values.map(normalizePendingDmRequestWithRoom).filter((request) => request?.memberId === id)
+    const values = await this.pendingDmSnapshot(signal)
+    const matches = values.filter((request) => request.memberId === id)
     if (matches.length === 0) throw publicError("DM request was not found or is stale")
     if (matches.length !== 1 || !matches[0]!.roomId) throw publicError("DM request is ambiguous")
     await this.callWithSignal("acceptDmRequest", [{ memberId: id, roomId: matches[0]!.roomId }], signal)
@@ -199,6 +194,19 @@ export class KeetIntegrationCore implements KeetCore {
       }
     }
     throw publicError("accepted DM did not become resolvable before the timeout")
+  }
+
+  private async pendingDmSnapshot(signal?: AbortSignal): Promise<RawPendingDmRequest[]> {
+    const raw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
+    const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.requests) ? raw.requests : undefined
+    if (!values) throw publicError("Keet returned an invalid pending DM request snapshot")
+    const result: RawPendingDmRequest[] = []
+    for (const value of values.slice(0, MAX_DM_REQUESTS)) {
+      const request = normalizePendingDmRequestWithRoom(value)
+      if (!request) throw publicError("Keet returned an invalid pending DM request")
+      result.push(request)
+    }
+    return result
   }
 
   /**
@@ -230,13 +238,6 @@ export class KeetIntegrationCore implements KeetCore {
     if (typeof token !== "string" || !token.trim() || token.includes("://") || token.length > 8_192) throw publicError("Keet returned an invalid invitation token")
     const value = token.trim()
     return { token: value, url: `keet://chat/${value}` }
-  }
-
-  async validateGroup(groupId: string): Promise<ManagedGroup> {
-    const id = boundedId(groupId, "Managed Group ID")
-    const group = (await this.listGroups()).find((candidate) => candidate.groupId === id)
-    if (!group) throw publicError("configured Managed Group is not joined")
-    return group
   }
 
   async listMembers(groupId: string): Promise<KeetMember[]> {
@@ -565,12 +566,6 @@ function normalizeRoomType(value: unknown): KeetRoomType | undefined {
 }
 
 interface RawPendingDmRequest extends KeetPendingDmRequest { readonly roomId?: string }
-
-function normalizePendingDmRequest(value: unknown): KeetPendingDmRequest | undefined {
-  const normalized = normalizePendingDmRequestWithRoom(value)
-  if (!normalized) return undefined
-  return { memberId: normalized.memberId, ...(normalized.displayName ? { displayName: normalized.displayName } : {}) }
-}
 
 function normalizePendingDmRequestWithRoom(value: unknown): RawPendingDmRequest | undefined {
   if (!isRecord(value)) return undefined
