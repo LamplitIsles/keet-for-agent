@@ -159,12 +159,14 @@ export class KeetIntegrationCore implements KeetCore {
   async listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]> {
     ensureSignal(signal)
     const raw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
-    const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.requests) ? raw.requests : []
+    const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.requests) ? raw.requests : undefined
+    if (!values) throw publicError("Keet returned an invalid pending DM request snapshot")
     const seen = new Set<string>()
     const result: KeetPendingDmRequest[] = []
     for (const value of values.slice(0, MAX_DM_REQUESTS)) {
       const request = normalizePendingDmRequest(value)
-      if (!request || seen.has(request.memberId)) continue
+      if (!request) throw publicError("Keet returned an invalid pending DM request")
+      if (seen.has(request.memberId)) continue
       seen.add(request.memberId)
       result.push({ memberId: request.memberId, ...(request.displayName ? { displayName: request.displayName } : {}) })
     }

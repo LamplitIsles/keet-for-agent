@@ -18,7 +18,7 @@ function message(seq: number, text: string, extra: Partial<KeetMessage> = {}): K
   return { messageId: { deviceId: "device-human", seq }, groupId: settings.groupId, senderId: "human", senderLabel: "Alice", timestamp: seq, text, ...extra }
 }
 
-function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembershipGroup?: string; rosterFailureGroup?: string; dm?: boolean; duplicateNames?: boolean; groups?: ManagedGroup[]; pending?: KeetPendingDmRequest[]; pendingFailure?: boolean } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
+function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembershipGroup?: string; rosterFailureGroup?: string; dm?: boolean; duplicateNames?: boolean; groups?: ManagedGroup[]; pending?: KeetPendingDmRequest[]; pendingFailure?: boolean; pendingMalformed?: "envelope" | "entry" } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
   const sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }> = []
   let closed = false
   const core: KeetCore & { sent: typeof sent; closed: boolean } = {
@@ -63,7 +63,12 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
     sendMessage: async (groupId, text, replyTo) => { sent.push({ groupId, text, ...(replyTo ? { replyTo } : {}) }); return { deviceId: "device-bot", seq: sent.length + 10 } },
     inspectInvitation: async () => ({ isRoomInvitation: true }),
     joinInvitation: async () => ({ groupId: settings.groupId }),
-    listPendingDmRequests: async () => { if (options.pendingFailure) throw new Error("pending snapshot unavailable"); return options.pending ?? [] },
+    listPendingDmRequests: async () => {
+      if (options.pendingFailure) throw new Error("pending snapshot unavailable")
+      if (options.pendingMalformed === "envelope") throw new Error("invalid pending DM request snapshot")
+      if (options.pendingMalformed === "entry") throw new Error("invalid pending DM request")
+      return options.pending ?? []
+    },
     acceptDmRequest: async () => ({ groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: "peer" }),
     updateIdentityProfile: async () => undefined,
     updateDisplayName: async () => undefined,
@@ -789,6 +794,18 @@ describe("Keet bridge", () => {
     await bridge.start()
     expect(bridge.readiness).toMatchObject({ state: "failed", detail: "core-start-failed" })
     expect(core.closed).toBe(true)
+  })
+
+  it("fails closed without subscriptions when Core rejects malformed pending-DM snapshots", async () => {
+    for (const kind of ["envelope", "entry"] as const) {
+      const handlers = new Map<string, (message: KeetMessage) => void>()
+      const core = fakeCore({ dm: true, pendingMalformed: kind, onWatch: (handler, groupId) => { handlers.set(groupId, handler) } })
+      const bridge = new KeetBridge(deps(core, makeAgent().agent))
+      await bridge.start()
+      expect(bridge.readiness, kind).toMatchObject({ state: "failed", detail: "core-start-failed" })
+      expect(handlers, kind).toHaveLength(0)
+      expect(core.closed, kind).toBe(true)
+    }
   })
 
   it("remains explicitly unbound without an eligible session and fails closed on terminal Core errors", async () => {
