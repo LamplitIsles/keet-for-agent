@@ -368,21 +368,19 @@ export class KeetBridge {
     state.activeActivity = activity
     this.stopController.signal.addEventListener("abort", parentAbort, { once: true })
 
-    const invoke = (operation: (() => Promise<void>) | undefined): void => {
-      if (!operation || !active) return
-      let result: Promise<void> | undefined
+    const invoke = (operation: () => Promise<void>): void => {
+      if (!active) return
+      let result: Promise<void>
       try { result = operation() } catch { if (active) this.reportError(); return }
       void Promise.resolve(result).catch(() => { if (active && !controller.signal.aborted) this.reportError() })
     }
-    if (chatIndex !== undefined && typeof core.setUnreadAnchor === "function") {
+    if (chatIndex !== undefined) {
       // Read admission is the consumed-message boundary. It remains owned by
       // the bridge until shutdown, even when the turn's typing owner settles.
-      invoke(() => core.setUnreadAnchor!(groupId, chatIndex + 1, this.stopController.signal))
+      invoke(() => core.setUnreadAnchor(groupId, chatIndex + 1, this.stopController.signal))
     }
-    if (typeof core.updateTypingIndicator === "function") {
-      invoke(() => core.updateTypingIndicator!(groupId, controller.signal))
-      timer = setInterval(() => invoke(() => core.updateTypingIndicator!(groupId, controller.signal)), DM_TYPING_REFRESH_MS)
-    }
+    invoke(() => core.updateTypingIndicator(groupId, controller.signal))
+    timer = setInterval(() => invoke(() => core.updateTypingIndicator(groupId, controller.signal)), DM_TYPING_REFRESH_MS)
     return activity
   }
 
