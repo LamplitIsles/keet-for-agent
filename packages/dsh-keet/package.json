@@ -1,7 +1,7 @@
 {
   "name": "@lamplitisles/dsh-keet",
   "version": "0.1.0",
-  "description": "Managed Group and optional DM bridge for DeepSeek Harness",
+  "description": "Automatically discovered Keet destinations bridge for DeepSeek Harness",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

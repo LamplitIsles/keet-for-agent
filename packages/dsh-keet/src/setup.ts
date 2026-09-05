@@ -51,10 +51,10 @@ export async function runSetup(argv: readonly string[], stdin = process.stdin, s
       } else if (parsed.command === "dm-accept") {
         if (!parsed.memberId) throw new Error("DM acceptance requires a Member ID")
         const result = await core.acceptDmRequest(parsed.memberId)
-        stdout.write(JSON.stringify({ ok: true, operation: "dm-accept", memberId: result.dmMemberId, groupId: result.groupId }) + "\n")
+        stdout.write(JSON.stringify({ ok: true, operation: "dm-accept", memberId: result.dmMemberId }) + "\n")
       } else {
-        const result = await core.joinInvitation(invitation!)
-        stdout.write(JSON.stringify({ ok: true, operation: "join", groupId: result.groupId }) + "\n")
+        await core.joinInvitation(invitation!)
+        stdout.write(JSON.stringify({ ok: true, operation: "join" }) + "\n")
       }
       return 0
     } finally { await core.close() }

@@ -1,8 +1,8 @@
 # `@lamplitisles/dsh-keet`
 
-This local DSH plugin connects one already-joined Keet Managed Group and,
-optionally, one accepted Managed DM to one existing DeepSeek Harness
-conversation. It targets DSH `0.1.2-rc.1` and the
+This local DSH plugin discovers every joined Keet `Default` room and accepted
+complete `DirectMessage` room in one existing DeepSeek Harness conversation. It
+targets DSH `0.1.2-rc.1` and the
 official Keet compatibility tuple documented in the workspace runtime guide.
 
 Build the package with Bun and install the resulting directory or tarball in a
@@ -15,16 +15,15 @@ npm pack ./packages/dsh-keet --pack-destination .local
 dsh plugin --profile web add .local/lamplitisles-dsh-keet-0.1.0.tgz
 ```
 
-The plugin has three restart-scoped settings: Managed Group ID, DSH workspace,
-and an optional accepted DM peer Member ID. Settings take effect after a DSH
-restart. The bridge validates the regular room as `Default`, resolves the
-configured peer from the canonical joined-room list as exactly one
-`DirectMessage`, and exposes no other joined rooms. A missing, duplicate,
-pending, mismatched, or non-DM room fails readiness closed.
-If readiness fails, verify the workspace and joined regular group first, then
-verify that the configured DM peer was accepted and copied exactly before
-restarting DSH. Failure text is bounded and does not include invitations or
-worker-private records.
+The plugin has one restart-scoped setting: the DSH workspace. At startup the
+bridge reads one bounded canonical joined-room snapshot and one bounded
+pending-request snapshot. Joined `Default` rooms become Managed Groups;
+complete `DirectMessage` rooms whose peer is not pending become Managed DMs.
+Broadcasts, unknown or incomplete rooms, pending requests, and duplicate room
+records are excluded. A pending-snapshot failure fails startup closed. An empty
+eligible set is valid, so onboarding can be completed before a later restart.
+Failure text is bounded and does not include invitations or worker-private
+records.
 The private official runtime is discovered at
 `$DSH_HOME/runtimes/keet/4.21.0-linux-x64`, while identity data is initialized
 under the selected workspace at `.dsh/dsh-keet/identity`. Join and name that
@@ -32,7 +31,7 @@ identity with `dsh-keet-setup`; invitation input is read from stdin and is
 never an Agent tool or setting.
 
 The bridge selects the latest eligible existing human conversation at startup.
-Each configured destination has an isolated bounded context buffer. Group
+Each discovered destination has an isolated bounded context buffer. Group
 messages retain mention, current-label, and verified-reply triggers. Every new
 ordinary external DM text opens one serialized Agent turn. Group prompts retain
 canonical message IDs and reply provenance while identifying the source with its
@@ -61,7 +60,7 @@ ordinary bridge path.
 Call `keet_list_groups` first. The other three tools require an exact returned
 `groupName` (caller whitespace is trimmed, matching remains case-sensitive):
 
-- `keet_list_groups` — configured Managed Group and optional Managed DM, each
+- `keet_list_groups` — every discovered Managed Group and Managed DM, each
   returned only as `{ groupName, kind }`;
 - `keet_list_members` — current bounded roster of display names only;
 - `keet_read_recent_messages` — 1–50 chronological ordinary text records;
@@ -99,7 +98,9 @@ bash -lc '
 '
 ```
 
-DM requests are never created or accepted by the Agent. Avatar setup accepts a
+DM requests are never created or accepted by the Agent. Join and acceptance
+success results do not expose room IDs; restart DSH after either operation so
+the next startup snapshot can discover the destination. Avatar setup accepts a
 local PNG, JPEG, or WebP up to 8 MiB, honors orientation, center-crops to a
 square, and prepares deterministic 64/128/256 pixel PNG variants below Keet's
 512 KiB inline limit. The square is passed to official clients, which apply a
