@@ -1,0 +1,30 @@
+# Keep the repository root limited to source, documentation, and build metadata.
+/*
+!/.gitignore
+!/AGENTS.md
+!/CONTEXT.md
+!/HANDOFF.md
+!/LICENSE
+!/README.md
+!/THIRD_PARTY_NOTICES.md
+!/package.json
+!/bun.lock
+!/tsconfig.json
+!/tsup.config.ts
+!/vitest.config.ts
+!/packages/
+!/packages/**
+!/scripts/
+!/scripts/**
+!/docs/
+!/docs/**
+!/tests/
+!/tests/**
+
+# Dependencies and generated output are never source.
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Scratch plans, tickets, reports, and archived local material are never tracked.
+.scratch/
