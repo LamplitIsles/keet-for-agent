@@ -28,7 +28,9 @@ group keeps mention, current-label, and verified-reply triggers; every new
 ordinary external DM text triggers one serialized Agent turn. Destination
 buffers and subscriptions are isolated, each injected context names its
 restart-scoped source `groupName`, and the Agent's final text remains in DSH
-unless `keet_send_message` is explicitly called.
+unless `keet_send_message` is explicitly called. After a successful send in a
+turn, the injected policy reduces the final DSH response to the exact `✓`
+acknowledgement so the already-delivered Keet content is not duplicated.
 
 The optional DM is admitted only from the canonical joined-room list: exactly
 one normalized `DirectMessage` room must name the configured peer Member ID.

@@ -158,7 +158,10 @@ destination tools:
 - `keet_send_message`: one non-empty text message up to 16,000 characters.
   Regular groups may use an exact `{ deviceId, seq }` reply target; successful
   sends return only `{ sent: true }`; DM sends are ordinary text and reject
-  `replyTo`.
+  `replyTo`. After a successful send in the current turn, the injected Agent
+  policy requires the final DSH response to be exactly `✓`, because the sent
+  content is already visible in Keet. Without a successful send, the Agent
+  responds normally.
 
 Destination names are captured once per DSH restart from bounded titles (line
 separators become spaces). Selectors trim input but otherwise match exactly and
