@@ -19,6 +19,19 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
   installed DSH Loader and a disposable DSH home.
 - `docs/runtime-extraction.md` is the operator guide for the private runtime.
 
+Core test boundary: Integration Core normalization, policy, orchestration,
+DM convergence, onboarding, profile, cancellation, and stream handling tests
+use a real but unstarted `KeetSidecar` whose consumed methods are replaced by
+a test-local scripted seam. The fake worker is reserved for the small fd-3
+process contract suite: admission, one representative startup/RPC path, one
+streaming path, terminal failure, intentional cleanup, and identity locking.
+Mocks and the fake worker do not establish official-client interoperability;
+the opt-in official-runtime smokes remain the only such evidence.
+README.md and AGENTS.md remain unchanged because this is a maintainer-only
+test architecture cleanup: user/operator behavior, commands, and test-safety
+conventions are unchanged. No domain glossary entry or ADR is needed for this
+reversible seam change.
+
 ## Product boundary
 
 The bridge discovers every joined `Default` room and every accepted complete
