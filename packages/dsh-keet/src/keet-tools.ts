@@ -1,6 +1,6 @@
 import { defineTool, type ToolDefinition, type ToolRunContext } from "@deepseek-ai/dsh-tools"
 import type { KeetCore, KeetMessage, KeetMessageId } from "./core-contract.js"
-import { MAX_DESTINATIONS, MAX_GROUP_MEMBERS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES } from "./constants.js"
+import { MAX_GROUP_MEMBERS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES } from "./constants.js"
 import { boundedMembers, renderKeetMessage } from "./keet-protocol.js"
 
 export const KEET_LIST_GROUPS = "keet_list_groups" as const
@@ -92,7 +92,7 @@ export function normalizeManagedDestinationName(title: unknown, fallback: string
 }
 
 function snapshotDestinations(destinations: readonly ManagedDestination[]): readonly ManagedDestination[] {
-  return Object.freeze(destinations.slice(0, MAX_DESTINATIONS).map((destination) => Object.freeze({
+  return Object.freeze(destinations.map((destination) => Object.freeze({
     groupId: destination.groupId.slice(0, MAX_PROVENANCE_CHARS),
     kind: destination.kind,
     groupName: normalizeManagedDestinationName(destination.groupName, destination.kind === "dm" ? "Managed DM" : "Managed Group"),
@@ -101,7 +101,7 @@ function snapshotDestinations(destinations: readonly ManagedDestination[]): read
 }
 
 function destinationsOf(deps: KeetToolDependencies): readonly ManagedDestination[] {
-  return deps.destinations.slice(0, MAX_DESTINATIONS)
+  return deps.destinations
 }
 
 function destinationOf(deps: KeetToolDependencies, groupNameValue: unknown, operation: "members" | "read" | "send"): ManagedDestination {
@@ -223,11 +223,11 @@ export function createKeetToolDefinitions(deps: KeetToolDependencies): readonly 
   const scopedDeps: KeetToolDependencies = { ...deps, destinations: snapshotDestinations(deps.destinations) }
   const list = defineTool({
     name: KEET_LIST_GROUPS,
-    description: "List only the configured Managed Group and optional Managed DM destinations. Use an exact returned groupName with the other Keet tools.",
+    description: "List every restart-scoped Managed Group and Managed DM discovered from the joined-room snapshot. Use an exact returned groupName with the other Keet tools.",
     parameters: {},
     output: {
       schema: { type: "object", additionalProperties: false, properties: { groups: { type: "array", required: true, items: { type: "object", additionalProperties: false, properties: { groupName: { type: "string", required: true }, kind: { type: "string", required: true } } } } } },
-      render: (_args, value) => renderText(value.groups?.length ? value.groups.map((group) => `${escapeRendererText(String(group.groupName))} (${escapeRendererText(String(group.kind))})`).join("\n") : "No configured Managed Destinations are ready."),
+      render: (_args, value) => renderText(value.groups?.length ? value.groups.map((group) => `${escapeRendererText(String(group.groupName))} (${escapeRendererText(String(group.kind))})`).join("\n") : "No discovered Managed Destinations are ready."),
     },
     async execute(_args, exec) { return listGroups(scopedDeps, signalOf(exec)) },
   })

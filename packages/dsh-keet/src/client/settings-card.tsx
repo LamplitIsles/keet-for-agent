@@ -89,37 +89,37 @@ export function KeetSettingsCard({ scope, readiness, workspaces, workspaceSource
   const effective = { ...baseline, ...draft }
   const validation = validateSettings(effective)
   const stale = Boolean(effective.workspaceId && workspaceSnapshot.phase === "ready" && !choices.some((choice) => choice.id === effective.workspaceId))
-  const invalid = stale || Boolean(validation.issues.workspaceId) || (effective.groupId.length > 0 && Boolean(validation.issues.groupId))
+  const invalid = stale || Boolean(validation.issues.workspaceId)
   const text = (key: string) => textFor(t, key)
   const edit = <K extends keyof KeetSettings>(field: K, value: KeetSettings[K]) => { if (writable && !saving) { setFailed(false); setDraft((current) => ({ ...current, [field]: value })) } }
-  const save = async () => { if (!writable || !dirty || invalid || saving) return; const staged = { ...draft }; setSaving(true); setFailed(false); try { for (const field of ["groupId", "workspaceId", "dmMemberId"] as const) if (field in staged) await scope.set(field, staged[field]); const next = scope.getSnapshot(); setSnapshot(next); setBaseline(snapshotValue(next)); setDraft({}) } catch { setDraft(staged); setFailed(true) } finally { setSaving(false) } }
-  const field = (fieldName: keyof KeetSettings, labelKey: string, hintKey: string) => {
-    const issue = fieldName === "groupId" && effective.groupId.length === 0 ? undefined : validation.issues[fieldName]
-    const fieldId = `${id}-${fieldName}`
-    return createElement("div", { className: styles.field, key: fieldName },
-      createElement("label", { className: styles.label, htmlFor: fieldId }, text(labelKey)),
-      createElement("input", {
-        id: fieldId,
-        className: `${styles.input} ${issue ? styles.inputInvalid : ""}`,
-        value: String(effective[fieldName]),
-        disabled: !writable || saving,
-        onChange: (event: { target: { value: string } }) => edit(fieldName, event.target.value),
-        "aria-invalid": issue ? true : undefined,
-        "aria-describedby": `${fieldId}-hint`,
-        "data-settings-field": fieldName,
-      }),
-      createElement("p", { className: `${styles.hint} ${issue ? styles.invalid : ""}`, id: `${fieldId}-hint` }, issue === "required" ? text("required") : text(hintKey)),
-    )
+  const save = async () => {
+    if (!writable || !dirty || invalid || saving) return
+    const staged = { ...draft }
+    setSaving(true)
+    setFailed(false)
+    try {
+      if ("workspaceId" in staged) await scope.set("workspaceId", staged.workspaceId!)
+      const next = scope.getSnapshot()
+      setSnapshot(next)
+      setBaseline(snapshotValue(next))
+      setDraft({})
+    } catch {
+      setDraft(staged)
+      setFailed(true)
+    } finally {
+      setSaving(false)
+    }
   }
+  const workspaceIssue = validation.issues.workspaceId
   const workspaceField = createElement("div", { className: styles.field },
     createElement("label", { className: styles.label, htmlFor: `${id}-workspaceId` }, text("workspaceId")),
-    createElement("select", { id: `${id}-workspaceId`, className: styles.select, value: String(effective.workspaceId), disabled: !writable || saving, onChange: (event: { target: { value: string } }) => edit("workspaceId", event.target.value), "aria-describedby": `${id}-workspaceId-hint`, "data-settings-field": "workspaceId" },
+    createElement("select", { id: `${id}-workspaceId`, className: `${styles.select} ${workspaceIssue ? styles.inputInvalid : ""}`, value: String(effective.workspaceId), disabled: !writable || saving, onChange: (event: { target: { value: string } }) => edit("workspaceId", event.target.value), "aria-invalid": workspaceIssue ? true : undefined, "aria-describedby": `${id}-workspaceId-hint`, "data-settings-field": "workspaceId" },
       createElement("option", { value: "" }, "—"),
       ...choices.map((choice) => createElement("option", { value: choice.id, key: choice.id }, choice.title)),
       stale ? createElement("option", { value: baseline.workspaceId }, baseline.workspaceId) : null,
     ),
-    createElement("p", { className: `${styles.hint} ${stale ? styles.invalid : ""}`, id: `${id}-workspaceId-hint` }, stale ? text("workspaceMissing") : text("workspaceHint")),
+    createElement("p", { className: `${styles.hint} ${stale || workspaceIssue ? styles.invalid : ""}`, id: `${id}-workspaceId-hint` }, stale ? text("workspaceMissing") : workspaceIssue === "required" ? text("required") : text("workspaceHint")),
   )
-  const content = createElement("div", { className: styles.form, "data-settings-card": SETTINGS_NAMESPACE }, workspaceField, field("groupId", "groupId", "groupIdHint"), field("dmMemberId", "dmMemberId", "dmMemberIdHint"), createElement("div", { className: styles.runtime, role: "status", "data-readiness": runtime.state }, createElement("strong", null, text("runtime")), createElement("span", { className: styles.runtimeState }, text(runtime.state))), createElement("p", { className: styles.hint }, text("restartHint")))
+  const content = createElement("div", { className: styles.form, "data-settings-card": SETTINGS_NAMESPACE }, workspaceField, createElement("div", { className: styles.runtime, role: "status", "data-readiness": runtime.state }, createElement("strong", null, text("runtime")), createElement("span", { className: styles.runtimeState }, text(runtime.state))), createElement("p", { className: styles.hint }, text("restartHint")))
   return createElement(Frame, { title: text("title"), description: text("description"), t: text, state: { available: snapshot.status === "ready", writable, dirty, invalid, saving, failed }, onSave: () => void save(), onDiscard: () => { if (!saving) { setDraft({}); setFailed(false) } } }, content)
 }

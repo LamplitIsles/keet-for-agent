@@ -142,7 +142,6 @@ export interface KeetCore {
   createRoom?(options: CreateGroupOptions): Promise<string>
   /** Test/onboarding helper; normal DSH operation never creates invitations. */
   createInvitation?(groupId: string, options?: Record<string, unknown>): Promise<Invitation>
-  validateGroup(groupId: string): Promise<ManagedGroup>
   /** Resolve an accepted direct message by the other participant's Member ID. */
   resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   /** List bounded pending requests without exposing internal room identifiers. */

@@ -21,10 +21,13 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
 
 ## Product boundary
 
-The bridge binds one already-joined Managed Group and, optionally, one accepted
-Managed DM to one existing DSH conversation selected from the configured
-workspace. It never creates or switches conversations or groups. The regular
-group keeps mention, current-label, and verified-reply triggers; every new
+The bridge discovers every joined `Default` room and every accepted complete
+`DirectMessage` room from one bounded startup snapshot, then binds all admitted
+destinations to one existing DSH conversation selected from the configured
+workspace. It never creates or switches conversations or groups. Pending DM
+requests, broadcasts, unknown room types, incomplete DMs, and duplicate room
+records are excluded; a pending-snapshot failure fails startup closed. Regular
+groups keep mention, current-label, and verified-reply triggers; every new
 ordinary external DM text triggers one serialized Agent turn. Destination
 buffers and subscriptions are isolated, each injected context names its
 restart-scoped source `groupName`, and the Agent's final text remains in DSH
@@ -32,14 +35,9 @@ unless `keet_send_message` is explicitly called. After a successful send in a
 turn, the injected policy reduces the final DSH response to the exact `✓`
 acknowledgement so the already-delivered Keet content is not duplicated.
 
-The optional DM is admitted only from the canonical joined-room list: exactly
-one normalized `DirectMessage` room must name the configured peer Member ID.
-There is no dedicated DM Member-ID lookup RPC or compatibility fallback;
-pending, missing, duplicate, and non-DM matches fail closed.
-
 The tools are `keet_list_groups`, `keet_list_members`,
-`keet_read_recent_messages`, and `keet_send_message`. The first lists only the
-configured destinations as `{ groupName, kind }`; the other three require an
+`keet_read_recent_messages`, and `keet_send_message`. The first lists all
+discovered destinations as `{ groupName, kind }`; the other three require an
 exact returned `groupName` (trimmed, case-sensitive, and restart-scoped).
 Regular history preserves canonical message IDs and optional reply provenance,
 while roster results contain only display names and send results contain only
@@ -50,7 +48,13 @@ sent.
 Setup is human-only: `join` reads exactly one invitation URL from stdin,
 `dm-requests` lists bounded sender identities, `dm-accept` accepts one exact
 pending sender, and `profile` can independently update display name and a
-prepared avatar.
+prepared avatar. Join and DM acceptance results do not expose room IDs;
+restart DSH after either operation so the next startup snapshot can admit the
+destination.
+
+A workspace with no eligible destinations is a valid connected state. When an
+Agent is bound, readiness and tools are available with an empty destination
+list until a later restart after onboarding.
 
 While active Managed DM work is running, the bridge publishes best-effort
 native activity: the triggering message is marked read at chat index plus one,

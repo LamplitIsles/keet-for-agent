@@ -1,7 +1,8 @@
 # Keet for Agent
 
-`@lamplitisles/dsh-keet` is a narrow DeepSeek Harness (DSH) plugin for one
-already-joined Keet Managed Group and, optionally, one accepted Managed DM. It uses the official Keet Linux x86-64 runtime
+`@lamplitisles/dsh-keet` is a narrow DeepSeek Harness (DSH) plugin for every
+joined Keet `Default` room and every accepted complete `DirectMessage` room
+discovered at startup. It uses the official Keet Linux x86-64 runtime
 through a typed Integration Core; the runtime itself is supplied privately by
 the operator and is never included in this repository or package artifact.
 
@@ -73,9 +74,8 @@ printf '%s\n' "$INVITATION" | dsh-keet-setup join \
   --workspace /path/to/dsh-workspace
 ```
 
-The command prints one bounded machine-readable result containing the Managed
-Group ID. Treat that output as sensitive operator data. Set the identity's
-current group display name separately:
+The command prints one bounded machine-readable success result and never
+exposes a room ID. Set the identity's current display name separately:
 
 ```sh
 dsh-keet-setup profile \
@@ -108,34 +108,35 @@ dsh-keet-setup dm-accept --workspace /path/to/dsh-workspace --member-id <peer-me
 ```
 
 The request list contains only bounded sender identity records. Acceptance is
-exact and returns the accepted peer Member ID plus its resolved DM group ID;
-the Agent and production bridge never initiate contact requests.
+exact and confirms only the selected peer Member ID; the Agent and production
+bridge never initiate contact requests. Restart DSH after joining or accepting
+so the next startup snapshot discovers the destination.
 
 ## Configure and use the bridge
 
-The native DSH settings card has three restart-scoped fields:
-
-1. DSH workspace;
-2. required Managed Group ID from onboarding; and
-3. optional accepted Managed DM peer Member ID.
+The native DSH settings card has one restart-scoped field: the DSH workspace.
+The bridge derives all allowed destinations from the Keet identity's canonical
+joined-room snapshot; no room or peer ID is copied into settings.
 
 The workspace can be saved before onboarding. On the next startup the Host
 initializes its private identity directory beneath that workspace. Runtime and
 identity paths are fixed Host conventions rather than browser-supplied values.
-If readiness is unavailable, verify the selected workspace, that the regular
-ID is a joined `Default` room, and that any DM peer was accepted and copied
-exactly; save the settings and restart DSH. Diagnostics stay bounded and do
-not echo invitations or Core-private records.
+If readiness is unavailable, verify the selected workspace and the fixed
+runtime, then save the settings and restart DSH. Diagnostics stay bounded and
+do not echo invitations or Core-private records.
 
-The Integration Core reads the canonical joined-room list at startup. A
-configured DM is usable only when exactly one listed room is typed
-`DirectMessage` and names the configured peer Member ID; a pending, missing,
-duplicate, or non-DM match fails readiness closed.
+The Integration Core reads the canonical joined-room list once at startup and
+also obtains one bounded pending-request snapshot. Joined `Default` rooms are
+managed groups. Complete `DirectMessage` rooms whose peer is not pending are
+managed DMs. Pending requests, broadcasts, unknown or incomplete records, and
+duplicate room IDs are excluded; failure to obtain the pending snapshot fails
+startup closed without admitting a DM.
 
 At startup the bridge selects the latest eligible existing human conversation
 in that workspace and keeps it for its lifetime. It never creates or switches
-conversations or groups. It exposes only the configured Managed Group and,
-when set, the one resolved Managed DM; unrelated joined rooms remain hidden.
+conversations or groups. It exposes every admitted destination; unrelated
+joined rooms remain hidden. An empty eligible set is a valid connected state
+and lets onboarding complete before a later restart.
 Each destination has an independent bounded FIFO context buffer. Group text
 keeps the existing mention, display-label, and verified-reply triggers. Every
 new ordinary external DM text starts one serialized Agent turn. Group prompt
@@ -166,8 +167,8 @@ An Agent turn's final DSH text is never relayed automatically. Call
 `keet_list_groups` first, then pass one exact returned `groupName` to the common
 destination tools:
 
-- `keet_list_groups`: the configured Managed Group and optional Managed DM,
-  returned only as `{ groupName, kind }`;
+- `keet_list_groups`: every discovered Managed Group and Managed DM, returned
+  only as `{ groupName, kind }`;
 - `keet_list_members`: at most 128 deterministic current display names (Member
   IDs remain Bridge-owned);
 - `keet_read_recent_messages`: 1–50 chronological bounded plain-text records;
@@ -183,7 +184,7 @@ destination tools:
 
 Destination names are captured once per DSH restart from bounded titles (line
 separators become spaces). Selectors trim input but otherwise match exactly and
-case-sensitively. Every destination tool rejects an arbitrary or unconfigured
+case-sensitively. Every destination tool rejects an arbitrary or undiscovered
 name before touching Core; normalized duplicate names fail closed, and an
 ambiguous send says that no message was sent. The tools never accept
 invitations, identity data, files, media, or formatting options.
@@ -223,6 +224,6 @@ The complete `.scratch/` tree is local-only and ignored. Raw
 Hypercore/Hyperswarm transports are separate networks and are not Keet
 compatibility substitutes.
 
-MCP, OpenClaw, Hermes, a general chat CLI, multiple groups or identities,
+MCP, OpenClaw, Hermes, a general chat CLI, multiple identities,
 automatic final-text delivery, files/media/calls, moderation, avatar removal,
 and private-only operation remain outside this v1 slice.

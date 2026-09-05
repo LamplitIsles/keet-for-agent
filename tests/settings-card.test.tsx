@@ -1,8 +1,9 @@
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { describe, expect, it } from "vitest"
 import { KeetSettingsCard, type KeetSettingsCardProps, type WorkspaceSource } from "../packages/dsh-keet/src/client/settings-card.js"
+import { KeetSettingsSchema } from "../packages/dsh-keet/src/settings.js"
 
-const initial = { groupId: "group", workspaceId: "workspace" }
+const initial = { workspaceId: "workspace" }
 
 function scopeFixture(options: { status?: "loading" | "ready"; writable?: boolean } = {}) {
   let snapshot: any = { status: options.status ?? "ready", mode: "host", writable: options.writable ?? true, value: { ...initial }, revision: 1 }
@@ -41,6 +42,11 @@ async function openCard(value: KeetSettingsCardProps): Promise<ReactTestRenderer
 function field(renderer: ReactTestRenderer, name: string) { return renderer.root.findByProps({ "data-settings-field": name }) }
 
 describe("native Keet settings card", () => {
+  it("normalizes stored settings to the workspace-only schema", () => {
+    expect(KeetSettingsSchema({ workspaceId: "workspace", groupId: "legacy-group", dmMemberId: "legacy-peer" } as never)).toEqual({ workspaceId: "workspace" })
+    expect(KeetSettingsSchema({ groupId: "legacy-group" } as never)).toEqual({ workspaceId: "" })
+  })
+
   it("stays hidden while settings are loading and starts collapsed when ready", async () => {
     const loading = scopeFixture({ status: "loading" })
     let renderer!: ReactTestRenderer
@@ -49,7 +55,7 @@ describe("native Keet settings card", () => {
     renderer.unmount()
     const ready = scopeFixture()
     renderer = await openCard(props(ready))
-    expect(field(renderer, "groupId").props.value).toBe("group")
+    expect(field(renderer, "workspaceId").props.value).toBe("workspace")
     renderer.unmount()
   })
 
@@ -65,9 +71,9 @@ describe("native Keet settings card", () => {
     renderer.unmount()
   })
 
-  it("allows saving a workspace before onboarding returns a group ID", async () => {
+  it("allows saving a workspace before onboarding discovers any destination", async () => {
     const fixture = scopeFixture()
-    fixture.publish({ groupId: "", workspaceId: "" })
+    fixture.publish({ workspaceId: "" })
     const renderer = await openCard(props(fixture))
     await act(async () => { field(renderer, "workspaceId").props.onChange({ target: { value: "workspace" } }) })
     expect(renderer.root.findByProps({ children: "Save" }).props.disabled).toBe(false)
@@ -79,28 +85,27 @@ describe("native Keet settings card", () => {
   it("validates required values and supports conflict-safe discard/save", async () => {
     const fixture = scopeFixture()
     const renderer = await openCard(props(fixture))
-    await act(async () => { field(renderer, "groupId").props.onChange({ target: { value: " " } }) })
-    expect(field(renderer, "groupId").props["aria-invalid"]).toBe(true)
+    await act(async () => { field(renderer, "workspaceId").props.onChange({ target: { value: " " } }) })
+    expect(field(renderer, "workspaceId").props["aria-invalid"]).toBe(true)
     const save = renderer.root.findByProps({ children: "Save" })
     expect(save.props.disabled).toBe(true)
-    fixture.publish({ ...initial, groupId: "external" })
-    expect(field(renderer, "groupId").props.value).toBe(" ")
+    fixture.publish({ workspaceId: "external" })
+    expect(field(renderer, "workspaceId").props.value).toBe(" ")
     const discard = renderer.root.findByProps({ children: "Discard" })
     await act(async () => { discard.props.onClick() })
-    expect(field(renderer, "groupId").props.value).toBe("external")
-    await act(async () => { field(renderer, "groupId").props.onChange({ target: { value: "saved" } }) })
+    expect(field(renderer, "workspaceId").props.value).toBe("external")
+    await act(async () => { field(renderer, "workspaceId").props.onChange({ target: { value: "other" } }) })
     await act(async () => { renderer.root.findByProps({ children: "Save" }).props.onClick() })
-    expect(fixture.calls.at(-1)).toEqual({ field: "groupId", value: "saved" })
+    expect(fixture.calls.at(-1)).toEqual({ field: "workspaceId", value: "other" })
     renderer.unmount()
   })
 
-  it("edits and saves the optional Managed DM peer alongside the group", async () => {
+  it("exposes only the workspace field and ignores stored routing IDs", async () => {
     const fixture = scopeFixture()
+    fixture.publish({ workspaceId: "workspace", groupId: "legacy-group", dmMemberId: "legacy-peer" })
     const renderer = await openCard(props(fixture))
-    expect(field(renderer, "dmMemberId").props.value).toBe("")
-    await act(async () => { field(renderer, "dmMemberId").props.onChange({ target: { value: "peer-member-id" } }) })
-    await act(async () => { renderer.root.findByProps({ children: "Save" }).props.onClick() })
-    expect(fixture.calls.at(-1)).toEqual({ field: "dmMemberId", value: "peer-member-id" })
+    expect(renderer.root.findAllByProps({ "data-settings-field": "groupId" })).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ "data-settings-field": "dmMemberId" })).toHaveLength(0)
     renderer.unmount()
   })
 
@@ -108,16 +113,16 @@ describe("native Keet settings card", () => {
     const fixture = scopeFixture()
     fixture.setReject()
     const renderer = await openCard(props(fixture))
-    await act(async () => { field(renderer, "groupId").props.onChange({ target: { value: "new-group" } }) })
+    await act(async () => { field(renderer, "workspaceId").props.onChange({ target: { value: "other" } }) })
     await act(async () => { renderer.root.findByProps({ children: "Save" }).props.onClick() })
-    expect(field(renderer, "groupId").props.value).toBe("new-group")
+    expect(field(renderer, "workspaceId").props.value).toBe("other")
     expect(renderer.root.findAllByProps({ role: "status" }).some((node) => String(node.props.children).includes("rejected"))).toBe(true)
     renderer.unmount()
 
     const readOnly = scopeFixture({ writable: false })
     const readonlyRenderer = await openCard(props(readOnly))
-    await act(async () => { field(readonlyRenderer, "groupId").props.onChange({ target: { value: "ignored" } }) })
-    expect(field(readonlyRenderer, "groupId").props.value).toBe("group")
+    await act(async () => { field(readonlyRenderer, "workspaceId").props.onChange({ target: { value: "ignored" } }) })
+    expect(field(readonlyRenderer, "workspaceId").props.value).toBe("workspace")
     expect(readonlyRenderer.root.findByProps({ children: "Save" }).props.disabled).toBe(true)
     readonlyRenderer.unmount()
   })

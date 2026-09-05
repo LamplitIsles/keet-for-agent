@@ -43,7 +43,7 @@ if (process.env.KEET_OFFICIAL_ONBOARDING_SMOKE !== "1") {
     await waitFor(async () => (await coreA.readRecentMessages(groupId, 50)).some((message) => message.text === snapshotText))
 
     const joined = await runSetup(setupPath, ["join", "--workspace", workspaceB], invitation.url, dshHome)
-    if (joined.operation !== "join" || joined.groupId !== groupId) throw new Error("onboarding returned an unexpected group result")
+    if (joined.operation !== "join") throw new Error("onboarding returned an unexpected join result")
     const profileResult = await runSetup(setupPath, ["profile", "--workspace", workspaceB, "--display-name", "Keet Assistant", "--avatar", avatarPath], undefined, dshHome)
     if (profileResult.operation !== "profile" || profileResult.displayName !== "Keet Assistant" || profileResult.avatar !== true) throw new Error("profile returned an unexpected result")
 
@@ -75,7 +75,7 @@ if (process.env.KEET_OFFICIAL_ONBOARDING_SMOKE !== "1") {
     const pending = await runSetup(setupPath, ["dm-requests", "--workspace", workspaceB], undefined, dshHome)
     if (pending.operation !== "dm-requests" || !pending.requests?.some((request) => request.memberId === statusA.identityId)) throw new Error("DM request listing returned an unexpected result")
     const accepted = await runSetup(setupPath, ["dm-accept", "--workspace", workspaceB, "--member-id", statusA.identityId], undefined, dshHome)
-    if (accepted.operation !== "dm-accept" || accepted.memberId !== statusA.identityId || !accepted.groupId) throw new Error("DM acceptance returned an unexpected result")
+    if (accepted.operation !== "dm-accept" || accepted.memberId !== statusA.identityId) throw new Error("DM acceptance returned an unexpected result")
     coreB = await KeetIntegrationCore.start({ executablePath, bundlePath, dataPath: identityB, swarming: true })
     sidecarB = coreB
     const dmB = await coreB.resolveDm(statusA.identityId)
@@ -117,7 +117,6 @@ if (process.env.KEET_OFFICIAL_ONBOARDING_SMOKE !== "1") {
 interface SetupResult {
   ok?: boolean
   operation?: "join" | "profile" | "dm-requests" | "dm-accept"
-  groupId?: string
   displayName?: string
   avatar?: boolean
   memberId?: string

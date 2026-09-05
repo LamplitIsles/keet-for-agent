@@ -65,7 +65,7 @@ describe("dsh-keet-setup", () => {
     expect(code).toBe(0)
     expect(calls).toEqual(["keet://chat/secret-token"])
     expect(stdout.value().trim().split("\n")).toHaveLength(1)
-    expect(stdout.value()).toContain('"groupId":"group-result"')
+    expect(JSON.parse(stdout.value())).toEqual({ ok: true, operation: "join" })
     expect(stdout.value()).not.toContain("secret-token")
     expect(stderr.value()).toBe("")
     expect(receivedOptions).toMatchObject({ executablePath: "/runtime/bare", bundlePath: "/runtime/core-worker.bundle", dataPath: "/identity", appVersion: "4.21.0", expectedCoreVersion: "4.21.5", expectedAbi: 35 })
@@ -117,7 +117,7 @@ describe("dsh-keet-setup", () => {
       },
     )
     expect(acceptedCode).toBe(0)
-    expect(JSON.parse(acceptedOut.value())).toEqual({ ok: true, operation: "dm-accept", memberId: "peer", groupId: "dm-room" })
+    expect(JSON.parse(acceptedOut.value())).toEqual({ ok: true, operation: "dm-accept", memberId: "peer" })
   })
 
   it("runs an avatar-only profile update through the observable CLI contract", async () => {

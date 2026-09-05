@@ -231,6 +231,25 @@ describe("typed Keet Integration Core", () => {
     await core.close()
   })
 
+  it("rejects malformed pending-DM envelopes and entries while preserving valid deduplication", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-dm-flow-pending-shapes-")))
+    const originalCall = core.sidecar.call.bind(core.sidecar)
+    const valid = { id: { memberId: "member-peer", roomId: "group-dm" }, senderContactInfo: { memberId: "member-peer", displayName: "Peer" } }
+    for (const malformed of [
+      { raw: { requests: { malformed: true } }, message: "invalid pending DM request snapshot" },
+      { raw: [valid, { malformed: true }], message: "invalid pending DM request" },
+    ] as const) {
+      core.sidecar.call = async (name, args) => name === "getDmRequestsByStatus" ? malformed.raw : originalCall(name, args)
+      await expect(core.listPendingDmRequests()).rejects.toThrow(malformed.message)
+      await expect(core.acceptDmRequest("member-peer")).rejects.toThrow(malformed.message)
+    }
+    core.sidecar.call = async (name, args) => name === "getDmRequestsByStatus"
+      ? [valid, { ...valid, senderContactInfo: { ...valid.senderContactInfo, displayName: "Duplicate" } }]
+      : originalCall(name, args)
+    await expect(core.listPendingDmRequests()).resolves.toEqual([{ memberId: "member-peer", displayName: "Peer" }])
+    await core.close()
+  })
+
   it("fails closed for zero, duplicate, mismatched-peer, and non-DM room matches", async () => {
     const cases = [
       { prefix: "keet-core-dm-missing-", message: "not resolved" },

@@ -101,12 +101,11 @@ dsh-keet-setup profile \
 ```
 
 The join command uses the official `getLinkInfo` and `startPairingRoom` flow,
-waits within a bound, and prints one Managed Group ID result. Invitation input
-is never accepted through argv or environment variables and never appears in
-logs or DSH settings. Do not delete existing identity data on a failed join.
-
-After onboarding, paste the returned Managed Group ID beside the selected DSH
-workspace and restart the plugin. The human-only profile operation can also
+waits within a bound, and prints one bounded success result without a room ID.
+Invitation input is never accepted through argv or environment variables and
+never appears in logs or DSH settings. Do not delete existing identity data on
+a failed join. Restart DSH after joining so the next startup snapshot can
+discover the new `Default` room. The human-only profile operation can also
 prepare an avatar from a local PNG, JPEG, or WebP:
 
 ```sh
@@ -122,6 +121,12 @@ clients apply their normal circular avatar mask, so the input should remain a
 square image rather than a pre-baked circle. Avatar-only updates preserve the
 current non-empty display name, and profile setup does not expose avatar
 removal.
+
+To authorize a direct message, list bounded pending sender identities and
+accept one exact Member ID through the human-only setup commands. Acceptance
+does not print a room ID; restart DSH afterward so the next canonical snapshot
+discovers the accepted DM. Pending requests and unsupported room records remain
+inactive.
 
 ## Opt-in official checks
 
