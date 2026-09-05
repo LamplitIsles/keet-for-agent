@@ -139,26 +139,33 @@ when set, the one resolved Managed DM; unrelated joined rooms remain hidden.
 Each destination has an independent bounded FIFO context buffer. Group text
 keeps the existing mention, display-label, and verified-reply triggers. Every
 new ordinary external DM text starts one serialized Agent turn. Group prompt
-records retain canonical `{ device_id, seq }` provenance; DM prompts identify
-the sender and destination but intentionally omit message IDs and reply
-relations. All records are quoted, untrusted data.
+records retain canonical `{ device_id, seq }` provenance and the startup source
+`groupName`; DM prompts identify the source and sender display label but
+intentionally omit message IDs, reply relations, and sender IDs. All records are
+quoted, untrusted data.
 
 An Agent turn's final DSH text is never relayed automatically. Call
-`keet_list_groups` first, then pass one returned `groupId` to the common
+`keet_list_groups` first, then pass one exact returned `groupName` to the common
 destination tools:
 
-- `keet_list_groups`: the configured Managed Group and optional Managed DM;
-- `keet_list_members`: at most 128 deterministic current member records;
+- `keet_list_groups`: the configured Managed Group and optional Managed DM,
+  returned only as `{ groupName, kind }`;
+- `keet_list_members`: at most 128 deterministic current display names (Member
+  IDs remain Bridge-owned);
 - `keet_read_recent_messages`: 1–50 chronological bounded plain-text records;
-  regular groups include stable message IDs and reply targets, while DM
-  results omit those fields;
+  regular groups include stable message IDs and optional reply targets, while
+  DM results omit sender/message/reply IDs;
 - `keet_send_message`: one non-empty text message up to 16,000 characters.
-  Regular groups may use an exact `{ deviceId, seq }` reply target; DM sends
-  are ordinary text and reject `replyTo`.
+  Regular groups may use an exact `{ deviceId, seq }` reply target; successful
+  sends return only `{ sent: true }`; DM sends are ordinary text and reject
+  `replyTo`.
 
-Every destination tool rejects an arbitrary or unconfigured group ID before
-touching Core. The tools never accept invitations, identity data, files,
-media, or formatting options.
+Destination names are captured once per DSH restart from bounded titles (line
+separators become spaces). Selectors trim input but otherwise match exactly and
+case-sensitively. Every destination tool rejects an arbitrary or unconfigured
+name before touching Core; normalized duplicate names fail closed, and an
+ambiguous send says that no message was sent. The tools never accept
+invitations, identity data, files, media, or formatting options.
 
 ## Verification
 

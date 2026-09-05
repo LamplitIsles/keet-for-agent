@@ -235,7 +235,7 @@ async function main(): Promise<void> {
       if (!patchText.includes(required)) throw new Error(`Cordis patch is missing ${required}`);
     }
     const hostBundle = await readFile(join(installed, "dist", "index.js"), "utf8");
-    for (const required of ["keet_list_groups", "keet_list_members", "keet_read_recent_messages", "keet_send_message", "groupId returned by keet_list_groups", "DM sends do not support replyTo", "dmMemberId"]) {
+    for (const required of ["keet_list_groups", "keet_list_members", "keet_read_recent_messages", "keet_send_message", "groupName returned by keet_list_groups", "DM sends do not support replyTo", "dmMemberId"]) {
       if (!hostBundle.includes(required)) throw new Error(`packed Host bundle is missing ${required}`);
     }
     const setupBundle = await readFile(join(installed, "dist", "setup.js"), "utf8");

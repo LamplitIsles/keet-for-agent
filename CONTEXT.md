@@ -26,7 +26,7 @@ only performs human onboarding, DM request acceptance, and profile updates.
 _Avoid_: Independent client implementation
 
 **Managed Group**:
-A pre-existing Keet group, already joined by the configured identity, that one DSH Keet Bridge exposes to its Active Conversation. Agents can read, reply to, and proactively send plain-text messages in that group; Keet tools do not accept an arbitrary room ID.
+A pre-existing Keet group, already joined by the configured identity, that one DSH Keet Bridge exposes to its Active Conversation. Agents can read, reply to, and proactively send plain-text messages in that group; destination tools select it by the exact startup `groupName`, never by an arbitrary room ID.
 _Avoid_: Approved Room, arbitrary room, adapter-created group
 
 **Managed DM**:
@@ -42,8 +42,31 @@ _Avoid_: contact request, arbitrary private room, Agent-created DM
 **Managed Destination**:
 One entry in the bridge's immutable startup allowlist: the required Managed
 Group and, at most, one resolved Managed DM. `keet_list_groups` returns these
-entries; the other Keet tools require one exact returned `groupId`.
+entries as an exact `groupName` and `kind`; the other Keet tools require that
+exact returned name.
 _Avoid_: all joined rooms, implicit target, arbitrary destination
+
+**Managed Destination Name**:
+The bounded, single-line name captured from a destination title when the bridge
+starts. Leading/trailing whitespace is trimmed and record-breaking line
+separators become spaces. Selectors trim their input, then compare this
+restart-scoped snapshot exactly and case-sensitively. Equal names are ambiguous
+and fail selected operations closed.
+_Avoid_: alias, fuzzy name, live rename, group ID
+
+**Single-session multiplexing**:
+The configured Managed Group and optional Managed DM share one existing DSH
+Active Conversation. Each destination keeps its own context buffer, while
+arrival classification and Agent turns remain serialized through that session.
+_Avoid_: one session per destination, session switching
+
+**Model-visible ID ownership**:
+Group IDs and Member IDs remain Bridge/Core-owned routing and classification
+state. Agent-visible list, roster, history, and send results omit those IDs;
+only regular-group canonical Keet Message IDs and optional reply targets remain
+because an Agent can use them for a native reply. Managed DM records expose no
+message or reply IDs.
+_Avoid_: sender ID in prompts, roster Member ID, send receipt Message ID
 
 **DSH Keet Bridge**:
 The DSH Adapter that carries new messages from the configured Managed Group and
@@ -86,19 +109,24 @@ _Avoid_: Every group message, mention only
 **Recent Destination Read**:
 A bounded retrieval of recent plain-text messages from one configured
 destination. Regular-group results include canonical message IDs and reply
-targets; DM results omit those fields. Reads provide context without creating a
-group or independently starting a turn.
+targets and sender display labels; DM results include only display labels and
+message data. Reads provide context without creating a group or independently
+starting a turn.
 _Avoid_: Room export, automatic catch-up
 
 **Managed Group Roster**:
-The bounded list of current members in the Managed Group, identified by stable member ID and current display name. It excludes other groups, device details, presence, historical membership, and identity secrets.
+The bounded list of current members in the Managed Group rendered to the Agent
+as display names only. The Bridge keeps stable Member IDs internally for
+classification and setup, but the roster excludes them along with other groups,
+device details, presence, historical membership, and identity secrets.
 _Avoid_: Account directory, membership history
 
 **Explicit Destination Send**:
 A plain-text message deliberately sent by an Agent tool to one configured
-destination. Regular-group sends may carry one exact canonical `replyTo` target;
-Managed DM sends are ordinary text and reject reply anchors. Completing an
-Agent turn does not itself send anything to Keet.
+destination selected by its exact returned `groupName`. Regular-group sends may
+carry one exact canonical `replyTo` target; Managed DM sends are ordinary text
+and reject reply anchors. Completing an Agent turn does not itself send
+anything to Keet.
 _Avoid_: Automatic reply, arbitrary-room send
 
 **Keet reply relation**:
