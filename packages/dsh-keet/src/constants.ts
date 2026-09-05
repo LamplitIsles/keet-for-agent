@@ -13,6 +13,7 @@ export const DEDUPE_LIMIT = 512
 export const CONTEXT_BUFFER_LIMIT = 64
 export const CLASSIFICATION_STOP_TIMEOUT_MS = 100
 export const MAX_DESTINATIONS = 2
+export const DM_TYPING_REFRESH_MS = 4_000
 
 export interface KeetSettings {
   groupId: string

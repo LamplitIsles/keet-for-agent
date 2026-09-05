@@ -35,10 +35,12 @@ const members = [
   { memberId: "member-alice", displayName: "Alice" },
 ]
 const officialShape = dataPath.includes("official-shape")
+const activityShape = dataPath.includes("activity-shape")
 const missingIdentity = dataPath.includes("missing-identity")
-const messages = officialShape ? [
+const messages = officialShape || activityShape ? [
   {
     timestamp: 4,
+    ...(activityShape ? { clock: 17 } : {}),
     memberId: "member-alice",
     member: { memberId: "member-alice", displayName: "Official Alice" },
     id: { deviceId: "device-alice", seq: 11 },
@@ -108,6 +110,8 @@ rpc.register(61, { request: any, response: any, onrequest: () => invitationToken
 rpc.register(66, { request: any, response: any, onrequest: ([room]) => room === dmGroupId && dmMode ? [...members, { memberId: dmMemberId, displayName: "Peer" }] : members })
 rpc.register(152, { request: any, response: any, onrequest: ([status]) => dmMode && status === 3 && !dmAccepted ? [{ id: { memberId: dmMemberId, roomId: dmGroupId }, roomId: dmGroupId, senderContactInfo: { memberId: dmMemberId, displayName: "Peer" }, status: { isPending: true }, message: "private request" }] : [] })
 rpc.register(154, { request: any, response: any, onrequest: ([request]) => { if (!dmMode || request?.memberId !== dmMemberId || request?.roomId !== dmGroupId) throw new Error("invalid DM request"); dmAccepted = true; return {} } })
+rpc.register(218, { request: any, response: any, onrequest: () => ({}) })
+rpc.register(220, { request: any, response: any, onrequest: () => ({}) })
 rpc.register(104, {
   request: any,
   response: any,
@@ -119,7 +123,7 @@ rpc.register(104, {
     return sent.messageId
   },
 })
-rpc.register(136, { request: any, response: any, onrequest: ([roomId, options]) => messages.filter((message) => officialShape || message.roomId === roomId).slice(-(options?.limit ?? 50)) })
+rpc.register(136, { request: any, response: any, onrequest: ([roomId, options]) => messages.filter((message) => officialShape || activityShape || message.roomId === roomId).slice(-(options?.limit ?? 50)) })
 rpc.register(139, {
   request: any,
   response: any,

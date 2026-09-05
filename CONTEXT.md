@@ -106,6 +106,15 @@ independently starting a turn. Managed DM ordinary external text uses a
 separate every-message trigger and is not a Reply Trigger.
 _Avoid_: Every group message, mention only
 
+**DM Activity Signal**:
+
+Bridge-owned, best-effort native read-anchor and typing metadata for one active
+Managed DM turn. The read anchor is published from the triggering chat index
+plus one at follow-up dispatch; typing refreshes every four seconds and stops
+when that work settles, sends successfully, or its bridge owner is cancelled.
+The signal is never model-visible and regular groups never emit it.
+_Avoid_: Agent presence, delivery guarantee, group activity
+
 **Recent Destination Read**:
 A bounded retrieval of recent plain-text messages from one configured
 destination. Regular-group results include canonical message IDs and reply

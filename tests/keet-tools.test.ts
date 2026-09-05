@@ -20,6 +20,8 @@ function fakeCore(overrides: Partial<KeetCore> = {}): KeetCore {
     listMembers: async (id) => id === dmId ? [{ memberId: "bot", displayName: "Bot" }, { memberId: "member-peer", displayName: "Peer" }] : [{ memberId: "z", displayName: "Zed" }, { memberId: "a", displayName: "Alice" }],
     readRecentMessages: async (id) => [{ messageId: target, groupId: id, senderId: "a", senderLabel: "Alice", timestamp: 1, text: "hello", replyTo: { deviceId: "device-self", seq: 3 } }],
     watchMessages: () => ({ closed: false, close: async () => undefined }),
+    setUnreadAnchor: async () => undefined,
+    updateTypingIndicator: async () => undefined,
     sendMessage: async () => ({ deviceId: "device-b", seq: 9 }),
     inspectInvitation: async () => ({ isRoomInvitation: true }),
     joinInvitation: async () => ({ groupId }),

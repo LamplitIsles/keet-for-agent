@@ -1,4 +1,4 @@
 - insert:
     - id: dsh-keet
       name: "@lamplitisles/dsh-keet"
-      inject: [connection, settings, tools, systemPrompt, workspaceRegistry, sessionController]
+      inject: [connection, settings, tools, systemPrompt, commands, workspaceRegistry, sessionController]

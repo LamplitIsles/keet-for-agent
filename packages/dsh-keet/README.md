@@ -41,6 +41,23 @@ message IDs and reply relations. Sender IDs never enter Agent prompts.
 Integration-authored messages and snapshot/history records never trigger. The
 Agent's final text is not sent automatically.
 
+At the start of active Managed DM work, the bridge marks the triggering chat
+index plus one as read and publishes native typing activity. Typing refreshes
+every four seconds until the work settles, fails, is cancelled, or a successful
+send to that DM occurs; queued messages publish neither signal. These calls are
+best-effort and the receiving Keet client eventually expires the last typing
+timestamp after its native five-second active window. Regular groups never emit either
+signal.
+
+An ordinary DM text equal byte-for-byte to `/compact` is handled by the
+composed `@deepseek-ai/dsh-commands` service before it enters the context buffer.
+It runs once against the bound Active Conversation without an Agent follow-up or model
+history entry, then sends one bounded outcome to the same DM. The DSH command
+and compaction backend must be composed; unavailable/empty results use a
+generic bounded response, and failures do not retry or fall back to an Agent
+turn. Whitespace, arguments, casing changes, and group messages use the
+ordinary bridge path.
+
 Call `keet_list_groups` first. The other three tools require an exact returned
 `groupName` (caller whitespace is trimmed, matching remains case-sensitive):
 

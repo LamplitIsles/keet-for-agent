@@ -1,4 +1,5 @@
 import type { Context } from "@deepseek-ai/cordis"
+import type {} from "@deepseek-ai/dsh-commands"
 import { KeetIntegrationCore } from "@lamplitisles/keet-integration-core"
 import { KeetBridge, bridgeRpcHandler, type KeetBridgeAgent, type KeetBridgeDependencies } from "./bridge.js"
 import { RPC_CHANNEL, SETTINGS_NAMESPACE } from "./constants.js"
@@ -11,6 +12,7 @@ export const inject = [
   "settings",
   "tools",
   "systemPrompt",
+  "commands",
   "workspaceRegistry",
   "sessionController",
 ] as const
@@ -23,6 +25,7 @@ type HostContext = Context & {
     inspect: (sessionId: string, signal?: AbortSignal) => Promise<unknown>
     resolveAgent: KeetBridgeDependencies["resolveAgent"]
   }
+  commands: NonNullable<KeetBridgeDependencies["commands"]>
 }
 
 export function apply(ctx: HostContext): void {
@@ -34,6 +37,7 @@ export function apply(ctx: HostContext): void {
     inspectSession: async (id) => await ctx.sessionController.inspect(id) as any,
     resolveAgent: async (id) => await ctx.sessionController.resolveAgent(id),
     coreFactory: async (options) => await KeetIntegrationCore.start(options),
+    commands: ctx.commands,
     onError: () => { if (process.env.NODE_ENV !== "test") console.error("[dsh-keet] bridge operation failed") },
   }
   const bridge = new KeetBridge(bridgeDeps)
@@ -45,7 +49,7 @@ export function apply(ctx: HostContext): void {
 }
 
 export { KeetBridge, bridgeRpcHandler }
-export type { KeetBridgeAgent, KeetBridgeDependencies, KeetBridgeReadiness, KeetBridgeReadinessState } from "./bridge.js"
+export type { KeetBridgeAgent, KeetBridgeDependencies, KeetBridgeReadiness, KeetBridgeReadinessState, KeetCommandService } from "./bridge.js"
 export { createKeetToolDefinitions, normalizeManagedDestinationName, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE } from "./keet-tools.js"
 export type { KeetToolDependencies, KeetListGroupsResult, KeetListMembersResult, KeetReadRecentMessagesResult, KeetSendMessageResult, KeetMemberResult, KeetGroupMessageResult, KeetDmMessageResult, ManagedDestination, ManagedDestinationSummary, ManagedDestinationKind } from "./keet-tools.js"
 export { KeetSettingsSchema } from "./settings.js"
