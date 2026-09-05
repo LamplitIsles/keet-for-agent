@@ -125,9 +125,6 @@ function ensureReady(deps: KeetToolDependencies): KeetCore {
 }
 
 function groupNameArg(args: unknown): unknown { return args && typeof args === "object" ? (args as { groupName?: unknown }).groupName : undefined }
-function rejectLegacySelector(args: unknown): void {
-  if (args && typeof args === "object" && Object.prototype.hasOwnProperty.call(args, "groupId")) throw safeError("groupName must be one returned by keet_list_groups.")
-}
 function escapeRendererText(value: string): string { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }
 function escapeRendererAttr(value: string): string { return escapeRendererText(value).replace(/"/g, "&quot;").replace(/[\r\n\u2028\u2029]+/g, " ") }
 
@@ -152,7 +149,6 @@ async function listGroups(deps: KeetToolDependencies, signal: AbortSignal): Prom
 
 async function listMembers(deps: KeetToolDependencies, args: unknown, signal: AbortSignal): Promise<KeetListMembersResult> {
   if (signal.aborted) throw cancelled(signal)
-  rejectLegacySelector(args)
   const destination = destinationOf(deps, groupNameArg(args), "members")
   const core = ensureReady(deps)
   try {
@@ -169,7 +165,6 @@ async function listMembers(deps: KeetToolDependencies, args: unknown, signal: Ab
 
 async function readMessages(deps: KeetToolDependencies, args: unknown, signal: AbortSignal): Promise<KeetReadRecentMessagesResult> {
   if (signal.aborted) throw cancelled(signal)
-  rejectLegacySelector(args)
   const record = args && typeof args === "object" ? args as { groupName?: unknown; last?: unknown } : {}
   const destination = destinationOf(deps, record.groupName, "read")
   if (!validLast(record.last)) throw safeError("last must be an integer from 1 to 50.")
@@ -188,7 +183,6 @@ async function readMessages(deps: KeetToolDependencies, args: unknown, signal: A
 
 async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: AbortSignal): Promise<KeetSendMessageResult> {
   if (signal.aborted) throw cancelled(signal)
-  rejectLegacySelector(args)
   const record = args && typeof args === "object" ? args as { groupName?: unknown; text?: unknown; replyTo?: unknown } : {}
   const destination = destinationOf(deps, record.groupName, "send")
   if (!validBody(record.text)) throw safeError("text must be non-empty and at most 16,000 characters.")

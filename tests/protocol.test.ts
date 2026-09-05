@@ -96,7 +96,7 @@ describe("Keet message protocol", () => {
     expect(rendered.length).toBeLessThanOrEqual(16_000)
   })
 
-  it("bounds and sorts members with stable ID fallback", () => {
+  it("bounds display-only members and hides missing labels", () => {
     const members = boundedMembers([{ memberId: "z", displayName: "" }, { memberId: "a", displayName: "Alice" }, ...Array.from({ length: 200 }, (_, index) => ({ memberId: `m-${index}`, displayName: "x" }))])
     expect(members[0]).toEqual({ displayName: "Alice" })
     expect(boundedMembers([{ memberId: "z", displayName: "" }])).toEqual([{ displayName: "Unknown member" }])

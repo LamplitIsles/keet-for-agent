@@ -86,7 +86,6 @@ describe("Managed Destination Keet tools", () => {
     await expect(tools[3]!.execute({ groupName: " Shared Name ", text: "must not send" }, exec())).rejects.toThrow("no message was sent")
     expect(invoked).toBe(0)
     await expect(tools[3]!.execute({ groupName: "shared name", text: "must not send" }, exec())).rejects.toThrow("not an allowed")
-    await expect(tools[3]!.execute({ groupName: "Shared Name", groupId: "first", text: "must not send" }, exec())).rejects.toThrow("groupName")
     expect(invoked).toBe(0)
   })
 
