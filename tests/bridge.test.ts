@@ -18,13 +18,9 @@ function message(seq: number, text: string, extra: Partial<KeetMessage> = {}): K
   return { messageId: { deviceId: "device-human", seq }, groupId: settings.groupId, senderId: "human", senderLabel: "Alice", timestamp: seq, text, ...extra }
 }
 
-function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembership?: boolean; dm?: boolean; wrongDmPeer?: boolean; duplicateNames?: boolean; groups?: ManagedGroup[]; pending?: KeetPendingDmRequest[]; pendingFailure?: boolean } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
+function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembershipGroup?: string; rosterFailureGroup?: string; dm?: boolean; duplicateNames?: boolean; groups?: ManagedGroup[]; pending?: KeetPendingDmRequest[]; pendingFailure?: boolean } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
   const sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }> = []
   let closed = false
-  const dmMethods: Pick<KeetCore, "resolveDm"> = { resolveDm: async () => {
-    if (!options.dm) throw new Error("Managed DM is not configured")
-    return { groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: options.wrongDmPeer ? "other" : "peer", title: options.duplicateNames ? "Shared\nName" : "Managed DM" }
-  } }
   const core: KeetCore & { sent: typeof sent; closed: boolean } = {
     sent,
     get closed() { return closed },
@@ -34,8 +30,12 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
     },
     listGroups: async () => options.groups ?? [{ groupId: settings.groupId, roomType: "Default", title: options.duplicateNames ? " Shared\nName " : "Test group" }, ...(options.dm ? [{ groupId: dmGroupId, roomType: "DirectMessage" as const, title: options.duplicateNames ? "Shared Name" : "Managed DM", dmMemberId: "peer" }] : [])],
     validateGroup: async (groupId) => ({ groupId, roomType: "Default", title: options.duplicateNames ? " Shared\nName " : "Test group" }),
-    ...dmMethods,
-    listMembers: async (groupId) => [...(options.missingMembership ? [] : [{ memberId: "bot", displayName: "Keet Bot" }]), ...(groupId === dmGroupId ? [{ memberId: "peer", displayName: "Peer" }] : [{ memberId: "human", displayName: "Alice" }])],
+    resolveDm: async () => ({ groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: "peer", title: options.duplicateNames ? "Shared\nName" : "Managed DM" }),
+    listMembers: async (groupId) => {
+      if (groupId === options.rosterFailureGroup) throw new Error("roster unavailable")
+      const missingSelf = groupId === options.missingMembershipGroup
+      return [...(missingSelf ? [] : [{ memberId: "bot", displayName: "Keet Bot" }]), ...(groupId === dmGroupId ? [{ memberId: "peer", displayName: "Peer" }] : [{ memberId: "human", displayName: "Alice" }])]
+    },
     readRecentMessages: async (groupId) => [{ ...message(1, "old self reply", { groupId }), senderId: "bot", senderLabel: "Keet Bot", messageId: { deviceId: "device-bot", seq: 1 } }],
     watchMessages: (_group, handler) => {
       options.onWatch?.(handler, _group)
@@ -294,7 +294,7 @@ describe("Keet bridge", () => {
     expect(fixture.prompts).toHaveLength(1)
     expect(JSON.stringify(fixture.prompts[0])).toContain("human follow-up")
     expect(JSON.stringify(fixture.prompts[0])).not.toContain("integration response")
-    expect(bridge.contextBuffer).toHaveLength(0)
+    expect(bridge.contextBuffers.get(settings.groupId)).toEqual([])
     await bridge.stop()
   })
 
@@ -324,7 +324,7 @@ describe("Keet bridge", () => {
     deliver(message(52, "reply to another participant", { replyTo: { deviceId: "device-other", seq: 9 } }))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(fixture.prompts).toHaveLength(1)
-    expect(bridge.contextBuffer.map((record) => record.text)).toEqual(["reply to another participant"])
+    expect(bridge.contextBuffers.get(settings.groupId)?.map((record) => record.text)).toEqual(["reply to another participant"])
     await bridge.stop()
   })
 
@@ -807,15 +807,74 @@ describe("Keet bridge", () => {
     await failed.stop()
   })
 
-  it("fails closed unless the integration identity is a current group member", async () => {
-    for (const failure of [{ missingIdentity: true }, { missingMembership: true }]) {
-      const core = fakeCore(failure)
-      const bridge = new KeetBridge(deps(core, makeAgent().agent))
+  it("fails closed when the Integration Core identity is unavailable", async () => {
+    const core = fakeCore({ missingIdentity: true })
+    const bridge = new KeetBridge(deps(core, makeAgent().agent))
+    await bridge.start()
+    expect(bridge.readiness).toMatchObject({ state: "failed", detail: "core-start-failed" })
+    expect(core.closed).toBe(true)
+    expect(bridge.agent).toBeUndefined()
+  })
+
+  it("treats per-destination roster failures and missing self membership as optional enrichment", async () => {
+    const scenarios: readonly { name: string; triggerGroup: string; rosterFailureGroup?: string; missingMembershipGroup?: string }[] = [
+      { name: "roster failure", rosterFailureGroup: "group-one", triggerGroup: "group-two" },
+      { name: "missing self", missingMembershipGroup: "group-two", triggerGroup: "group-one" },
+    ]
+    for (const scenario of scenarios) {
+      const handlers = new Map<string, (message: KeetMessage) => void>()
+      const core = fakeCore({
+        groups: [
+          { groupId: "group-one", roomType: "Default", title: "One" },
+          { groupId: "group-two", roomType: "Default", title: "Two" },
+        ],
+        onWatch: (handler, groupId) => { handlers.set(groupId, handler) },
+        ...(scenario.rosterFailureGroup ? { rosterFailureGroup: scenario.rosterFailureGroup } : {}),
+        ...(scenario.missingMembershipGroup ? { missingMembershipGroup: scenario.missingMembershipGroup } : {}),
+      })
+      const fixture = makeAgent()
+      const bridge = new KeetBridge(deps(core, fixture.agent))
       await bridge.start()
-      expect(bridge.readiness, JSON.stringify(failure)).toMatchObject({ state: "failed", detail: "core-start-failed" })
-      expect(core.closed, JSON.stringify(failure)).toBe(true)
-      expect(bridge.agent).toBeUndefined()
+
+      expect(bridge.readiness, scenario.name).toMatchObject({ state: "ready", destinations: [{ groupName: "One", kind: "group" }, { groupName: "Two", kind: "group" }] })
+      expect([...handlers.keys()], scenario.name).toEqual(["group-one", "group-two"])
+      handlers.get(scenario.triggerGroup)!(message(80, `${scenario.name} trigger`, { groupId: scenario.triggerGroup, mentions: ["bot"] }))
+      await flushBridge()
+      expect(fixture.prompts, scenario.name).toHaveLength(1)
+      expect(JSON.stringify(fixture.prompts[0]), scenario.name).toContain(`${scenario.name} trigger`)
+      await bridge.stop()
     }
+  })
+
+  it("serializes group and accepted-DM triggers through one Agent queue with source-specific prompts", async () => {
+    const handlers = new Map<string, (message: KeetMessage) => void>()
+    let releaseFirst!: () => void
+    const firstPending = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let followups = 0
+    const fixture = makeAgent(async () => {
+      followups += 1
+      if (followups === 1) await firstPending
+    })
+    const core = fakeCore({ dm: true, onWatch: (handler, groupId) => { handlers.set(groupId, handler) } })
+    const bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+
+    handlers.get(settings.groupId)!(message(81, "group trigger", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(1)
+    expect(JSON.stringify(fixture.prompts[0])).toContain("source group name=\\\"Test group\\\"")
+
+    handlers.get(dmGroupId)!(dmMessage(82, "accepted DM trigger"))
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(1)
+
+    releaseFirst()
+    await flushBridge()
+    expect(followups).toBe(2)
+    expect(fixture.prompts).toHaveLength(2)
+    expect(JSON.stringify(fixture.prompts[1])).toContain("accepted DM trigger")
+    expect(JSON.stringify(fixture.prompts[1])).toContain("source group name=\\\"Managed DM\\\"")
+    await bridge.stop()
   })
 
   it("releases bridge-owned Core state without disposing the shared Agent when startup fails", async () => {

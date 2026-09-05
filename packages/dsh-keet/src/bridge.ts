@@ -17,7 +17,7 @@ export interface KeetBridgeReadiness {
   workspaceId?: string
   sessionId?: string
   destinations?: readonly ManagedDestinationSummary[]
-  detail?: "invalid-settings" | "workspace-not-found" | "local-paths-failed" | "session-inspection-failed" | "core-start-failed" | "group-not-found" | "tool-registration-failed" | "connection-failed"
+  detail?: "invalid-settings" | "workspace-not-found" | "local-paths-failed" | "session-inspection-failed" | "core-start-failed" | "tool-registration-failed" | "connection-failed"
 }
 
 export interface KeetBridgeAgent extends Pick<Agent, "id" | "followup"> {
@@ -102,11 +102,6 @@ export class KeetBridge {
   get agent(): KeetBridgeAgent | undefined { return this.boundAgent }
   /** Public destination snapshot; routing IDs remain bridge-owned. */
   get destinations(): readonly ManagedDestinationSummary[] { return this.publicDestinations() }
-  /** Diagnostic view of the first regular destination; DM context is isolated. */
-  get contextBuffer(): readonly KeetContextRecord[] {
-    const state = [...this.states.values()].find((candidate) => candidate.destination.kind === "group")
-    return state?.contextBuffer.map(cloneRecord) ?? []
-  }
   get contextBuffers(): ReadonlyMap<string, readonly KeetContextRecord[]> {
     return new Map([...this.states].map(([id, state]) => [id, state.contextBuffer.map(cloneRecord)] as const))
   }
@@ -186,9 +181,14 @@ export class KeetBridge {
       let identityLabel = status.displayName?.trim() || ""
       this.identity = { memberId: identityId, displayName: identityLabel }
       for (const destination of this.destinationsValue) {
-        const destinationMembers = await core.listMembers(destination.groupId)
-        if (!destinationMembers.some((member) => member.memberId === identityId)) throw new Error("integration identity is not a current destination member")
-        identityLabel ||= destinationMembers.find((member) => member.memberId === identityId)?.displayName?.trim() || ""
+        try {
+          const destinationMembers = await core.listMembers(destination.groupId)
+          identityLabel ||= destinationMembers.find((member) => member.memberId === identityId)?.displayName?.trim() || ""
+        } catch {
+          // Membership is authoritative in the canonical startup room
+          // snapshot. Roster lookup only enriches the identity label and must
+          // not prevent a valid destination from becoming live.
+        }
         await this.primeOwnMessageIds(this.states.get(destination.groupId)!, core)
       }
       this.identity = { memberId: identityId, displayName: identityLabel }
