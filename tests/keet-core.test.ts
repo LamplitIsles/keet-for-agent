@@ -199,6 +199,28 @@ describe("typed Keet Integration Core", () => {
     await core.close()
   })
 
+  it("rejects an oversized prepared avatar before any profile RPC", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-avatar-boundary-")))
+    const calls: string[] = []
+    const originalCall = core.sidecar.call.bind(core.sidecar)
+    core.sidecar.call = async (name, args) => {
+      calls.push(name)
+      return originalCall(name, args)
+    }
+    const oversizedBytes = Buffer.alloc(512 * 1024 + 1, 0x61)
+    const makeVariant = (size: number, bytes = Buffer.from(`avatar-${size}`)) => ({
+      bytes,
+      contentType: "image/png",
+      width: size,
+      height: size,
+      hash: createHash("sha256").update(bytes).digest("hex"),
+    })
+    const avatar = { small: makeVariant(64, oversizedBytes), medium: makeVariant(128), large: makeVariant(256) }
+    await expect(core.updateIdentityProfile({ avatar })).rejects.toThrow("too large or invalid")
+    expect(calls).toEqual([])
+    await core.close()
+  })
+
   it("enforces exclusive identity ownership and releases it on close", async () => {
     const data = await dataPath()
     const first = new KeetSidecar(options(data))
