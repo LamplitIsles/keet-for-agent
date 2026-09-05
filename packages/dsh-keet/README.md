@@ -52,7 +52,9 @@ Call `keet_list_groups` first. The other three tools require an exact returned
   while DM records omit all message/reply IDs;
 - `keet_send_message` — explicit bounded text delivery returning only
   `{ sent: true }`. Regular groups accept an exact `{ deviceId, seq }` reply
-  target; DM sends are ordinary text and reject `replyTo`.
+  target; DM sends are ordinary text and reject `replyTo`. After a successful
+  send in the current turn, the injected Agent policy requires the final DSH
+  response to be exactly `✓`; without a successful send, it responds normally.
 
 Names are captured when DSH starts after trimming bounded titles and replacing
 line separators with spaces. A missing title uses the bounded fallback name.
