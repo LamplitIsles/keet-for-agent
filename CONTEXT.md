@@ -30,8 +30,10 @@ A pre-existing Keet group, already joined by the configured identity, that one D
 _Avoid_: Approved Room, arbitrary room, adapter-created group
 
 **Managed DM**:
-An accepted one-to-one Keet room resolved by the other participant's stable
-Member ID. It is optional, shares the Integration Identity and Active
+An accepted one-to-one Keet room typed `DirectMessage`, resolved from the
+canonical joined-room list by the other participant's stable Member ID. The
+resolution requires exactly one matching room; there is no dedicated Member-ID
+lookup RPC. It is optional, shares the Integration Identity and Active
 Conversation with the Managed Group, and is the only private destination the
 bridge may expose. Every new ordinary external DM text triggers a turn; DM
 prompts and history omit canonical message IDs and reply relations.

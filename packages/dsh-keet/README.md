@@ -18,7 +18,9 @@ dsh plugin --profile web add .local/lamplitisles-dsh-keet-0.1.0.tgz
 The plugin has three restart-scoped settings: Managed Group ID, DSH workspace,
 and an optional accepted DM peer Member ID. Settings take effect after a DSH
 restart. The bridge validates the regular room as `Default`, resolves the
-configured peer as `DirectMessage`, and exposes no other joined rooms.
+configured peer from the canonical joined-room list as exactly one
+`DirectMessage`, and exposes no other joined rooms. A missing, duplicate,
+pending, mismatched, or non-DM room fails readiness closed.
 If readiness fails, verify the workspace and joined regular group first, then
 verify that the configured DM peer was accepted and copied exactly before
 restarting DSH. Failure text is bounded and does not include invitations or

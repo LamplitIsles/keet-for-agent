@@ -10,8 +10,8 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
 ## Source of truth
 
 - `packages/keet-core/src/` owns the typed sidecar lifecycle, pinned runtime
-  admission, normalized group/member/message values, subscriptions, sends,
-  onboarding, and profile update.
+  admission, normalized room/group/member/message values, canonical room-list
+  DM resolution, subscriptions, sends, onboarding, and profile update.
 - `packages/dsh-keet/src/` owns the DSH Host bridge, Managed Destination tools, setup
   executable, settings schema/client, and protocol rendering.
 - `tests/` uses fake workers and test-owned temporary paths for ordinary gates.
@@ -28,6 +28,11 @@ group keeps mention, current-label, and verified-reply triggers; every new
 ordinary external DM text triggers one serialized Agent turn. Destination
 buffers and subscriptions are isolated, and the Agent's final text remains in
 DSH unless `keet_send_message` is explicitly called.
+
+The optional DM is admitted only from the canonical joined-room list: exactly
+one normalized `DirectMessage` room must name the configured peer Member ID.
+There is no dedicated DM Member-ID lookup RPC or compatibility fallback;
+pending, missing, duplicate, and non-DM matches fail closed.
 
 The tools are `keet_list_groups`, `keet_list_members`,
 `keet_read_recent_messages`, and `keet_send_message`. The first lists only the

@@ -107,6 +107,11 @@ ID is a joined `Default` room, and that any DM peer was accepted and copied
 exactly; save the settings and restart DSH. Diagnostics stay bounded and do
 not echo invitations or Core-private records.
 
+The Integration Core reads the canonical joined-room list at startup. A
+configured DM is usable only when exactly one listed room is typed
+`DirectMessage` and names the configured peer Member ID; a pending, missing,
+duplicate, or non-DM match fails readiness closed.
+
 At startup the bridge selects the latest eligible existing human conversation
 in that workspace and keeps it for its lifetime. It never creates or switches
 conversations or groups. It exposes only the configured Managed Group and,

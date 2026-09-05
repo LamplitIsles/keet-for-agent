@@ -168,7 +168,7 @@ describe("typed Keet Integration Core", () => {
     await core.close()
   })
 
-  it("lists pending human DM requests, accepts one exact sender, and resolves only the resulting DM", async () => {
+  it("resolves and accepts a DM from the official-shaped room list without a dedicated lookup RPC", async () => {
     const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-dm-flow-")))
     expect(await core.listGroups()).toEqual([
       { groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" },
@@ -182,6 +182,21 @@ describe("typed Keet Integration Core", () => {
     expect(await core.listPendingDmRequests()).toEqual([])
     await expect(core.acceptDmRequest("member-peer")).rejects.toThrow("already resolved")
     await core.close()
+  })
+
+  it("fails closed for zero, duplicate, mismatched-peer, and non-DM room matches", async () => {
+    const cases = [
+      { prefix: "keet-core-dm-missing-", message: "not resolved" },
+      { prefix: "keet-core-dm-duplicate-", message: "ambiguous" },
+      { prefix: "keet-core-dm-mismatched-peer-", message: "not resolved" },
+      { prefix: "keet-core-dm-broadcast-", message: "unsupported room type" },
+      { prefix: "keet-core-dm-default-", message: "unsupported room type" },
+    ]
+    for (const testCase of cases) {
+      const core = await KeetIntegrationCore.start(options(await dataPath(testCase.prefix)))
+      await expect(core.resolveDm("member-peer")).rejects.toThrow(testCase.message)
+      await core.close()
+    }
   })
 
   it("encodes bounded prepared avatar variants and preserves the current name for avatar-only updates", async () => {

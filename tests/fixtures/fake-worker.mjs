@@ -12,12 +12,16 @@ const groupId = "group-test"
 const dmGroupId = "group-dm"
 const dmMemberId = "member-peer"
 const selfId = "identity-self"
-const dmMode = dataPath.includes("dm-flow") || dataPath.includes("dm-broadcast")
+const dmMode = dataPath.includes("dm-flow") || dataPath.includes("dm-broadcast") || dataPath.includes("dm-duplicate") || dataPath.includes("dm-mismatched-peer") || dataPath.includes("dm-default")
 const roomTypesMode = dataPath.includes("room-types")
 const broadcastGroupId = "group-broadcast"
 const dmBroadcast = dataPath.includes("dm-broadcast")
+const dmDefault = dataPath.includes("dm-default")
+const dmDuplicate = dataPath.includes("dm-duplicate")
+const dmMismatchedPeer = dataPath.includes("dm-mismatched-peer")
 let dmAccepted = dataPath.includes("dm-broadcast")
-const groups = [{ roomId: groupId, title: "Test group", description: "fixture" }, ...(roomTypesMode ? [{ roomId: broadcastGroupId, title: "Broadcast", description: "fixture broadcast" }] : []), ...(dmMode ? [{ roomId: dmGroupId, title: "Managed DM", description: "fixture DM" }] : [])]
+const dmRoomMemberId = dmMismatchedPeer ? "member-other" : dmMemberId
+const groups = [{ roomId: groupId, title: "Test group", description: "fixture" }, ...(roomTypesMode ? [{ roomId: broadcastGroupId, title: "Broadcast", description: "fixture broadcast" }] : []), ...(dmMode ? [{ roomId: dmGroupId, title: "Managed DM", description: "fixture DM" }, ...(dmDuplicate ? [{ roomId: dmGroupId, title: "Managed DM duplicate", description: "fixture DM duplicate" }] : [])] : [])]
 const members = [
   { memberId: selfId, displayName: "Fixture Bot" },
   { memberId: "member-alice", displayName: "Alice" },
@@ -68,11 +72,10 @@ rpc.register(19, { request: any, response: any, onrequest: ([profile]) => { if (
 rpc.register(22, { request: any, response: any, onrequest: ([value]) => ({ isRoomInvitation: value === invitationToken, title: "Test group" }) })
 rpc.register(25, { request: any, response: any, onrequest: ([options]) => { void options; return groupId } })
 rpc.register(28, { request: any, response: any, onrequest: () => ({ roomId: groupId }) })
-rpc.register(39, { request: any, response: any, onrequest: ([room]) => room === groupId ? ({ roomId: groupId, title: "Test group", description: "fixture", roomType: "Default" }) : room === broadcastGroupId && roomTypesMode ? ({ roomId: broadcastGroupId, title: "Broadcast", description: "fixture broadcast", roomType: "Broadcast" }) : room === dmGroupId && dmMode ? ({ roomId: dmGroupId, title: "Managed DM", description: "fixture DM", roomType: dmBroadcast ? "Broadcast" : "DirectMessage", dmMemberId }) : null })
+rpc.register(39, { request: any, response: any, onrequest: ([room]) => room === groupId ? ({ roomId: groupId, title: "Test group", description: "fixture", roomType: "Default" }) : room === broadcastGroupId && roomTypesMode ? ({ roomId: broadcastGroupId, title: "Broadcast", description: "fixture broadcast", roomType: "Broadcast" }) : room === dmGroupId && dmMode ? ({ roomId: dmGroupId, title: "Managed DM", description: "fixture DM", roomType: dmBroadcast ? "Broadcast" : dmDefault ? "Default" : "DirectMessage", dmMemberId: dmRoomMemberId }) : null })
 rpc.register(43, { request: any, response: any, onrequest: () => ({ rooms: groups }) })
 rpc.register(61, { request: any, response: any, onrequest: () => invitationToken })
 rpc.register(66, { request: any, response: any, onrequest: ([room]) => room === dmGroupId && dmMode ? [...members, { memberId: dmMemberId, displayName: "Peer" }] : members })
-rpc.register(151, { request: any, response: any, onrequest: ([memberId]) => dmMode && memberId === dmMemberId ? ({ roomId: dmGroupId, dmMemberId, recipient: dmMemberId }) : ({ roomId: null, dmMemberId: String(memberId ?? ""), recipient: String(memberId ?? "") }) })
 rpc.register(152, { request: any, response: any, onrequest: ([status]) => dmMode && status === 3 && !dmAccepted ? [{ id: { memberId: dmMemberId, roomId: dmGroupId }, roomId: dmGroupId, senderContactInfo: { memberId: dmMemberId, displayName: "Peer" }, status: { isPending: true }, message: "private request" }] : [] })
 rpc.register(154, { request: any, response: any, onrequest: ([request]) => { if (!dmMode || request?.memberId !== dmMemberId || request?.roomId !== dmGroupId) throw new Error("invalid DM request"); dmAccepted = true; return {} } })
 rpc.register(104, {

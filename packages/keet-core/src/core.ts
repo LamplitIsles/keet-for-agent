@@ -80,7 +80,17 @@ export class KeetIntegrationCore implements KeetCore {
   }
 
   async listGroups(): Promise<ManagedGroup[]> {
-    const raw = await this.safeCall("getRecentRooms", [])
+    return this.listGroupsFromRoomList()
+  }
+
+  /**
+   * Read the worker's canonical room list and enrich compact recency records
+   * with room metadata when necessary.  DM resolution deliberately uses this
+   * same path; the pinned worker has no dedicated Member-ID lookup RPC.
+   */
+  private async listGroupsFromRoomList(signal?: AbortSignal): Promise<ManagedGroup[]> {
+    ensureSignal(signal)
+    const raw = await this.callWithSignal("getRecentRooms", [], signal)
     const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.rooms) ? raw.rooms : []
     const initial = values.slice(0, MAX_GROUPS).flatMap((value) => {
       const group = normalizeGroup(value)
@@ -93,7 +103,7 @@ export class KeetIntegrationCore implements KeetCore {
     return await Promise.all(initial.map(async (group) => {
       if (group.roomType) return group
       try {
-        const rawInfo = await this.callWithSignal("getRoomInfo", [group.groupId])
+        const rawInfo = await this.callWithSignal("getRoomInfo", [group.groupId], signal)
         const info = normalizeGroup(rawInfo)
         if (info && info.groupId === group.groupId) return {
           ...group,
@@ -101,7 +111,8 @@ export class KeetIntegrationCore implements KeetCore {
           ...(info.title === undefined && group.title !== undefined ? { title: group.title } : {}),
           ...(info.description === undefined && group.description !== undefined ? { description: group.description } : {}),
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof Error && error.message === "Keet operation cancelled") throw error
         // A compact room record can omit metadata. It remains visible until a
         // destination admission path requires an explicit room type.
       }
@@ -112,39 +123,30 @@ export class KeetIntegrationCore implements KeetCore {
   async resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm> {
     const id = boundedMemberId(memberId, "DM Member ID")
     ensureSignal(signal)
-    const raw = await this.callWithSignal("getDmByMemberId", [id], signal)
-    const resolved = normalizeDmResolution(raw, id)
-    if (!resolved) throw publicError("configured Managed DM is not resolved")
-    if (hasUnsupportedRoomType(raw)) throw publicError("resolved Managed DM has an unsupported room type")
-    // The pinned worker's member lookup includes pending contact requests as
-    // well as accepted contacts. Pending status is authoritative for this
-    // boundary: a request is not a usable Managed DM until explicitly accepted.
-    const pendingRaw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
-    const pendingValues = Array.isArray(pendingRaw) ? pendingRaw : isRecord(pendingRaw) && Array.isArray(pendingRaw.requests) ? pendingRaw.requests : []
-    if (pendingValues.some((value) => normalizePendingDmRequest(value)?.memberId === id)) throw publicError("configured Managed DM is not resolved")
-    let room = normalizeGroup(raw)
-    if (!room || room.groupId !== resolved.groupId || room.roomType === undefined) {
-      try {
-        const info = await this.callWithSignal("getRoomInfo", [resolved.groupId], signal)
-        if (hasUnsupportedRoomType(info)) throw publicError("resolved Managed DM has an unsupported room type")
-        const normalized = normalizeGroup(info)
-        if (normalized && normalized.groupId === resolved.groupId) room = { ...room, ...normalized }
-      } catch (error) {
-        if (error instanceof Error && error.message === "resolved Managed DM has an unsupported room type") throw error
-        // A DM lookup is still useful on workers that omit room metadata; the
-        // lookup itself is authoritative for the direct-message relation.
+    const groups = await this.listGroupsFromRoomList(signal)
+    const matches = groups.filter((group) => group.roomType === "DirectMessage" && group.dmMemberId === id)
+    if (matches.length > 1) throw publicError("configured Managed DM is ambiguous")
+    if (matches.length === 0) {
+      // A room carrying this peer but a non-DM kind is an explicit mismatch,
+      // not an unresolved direct room.  Fail closed instead of widening the
+      // destination to a default or broadcast room.
+      if (groups.some((group) => group.dmMemberId === id && group.roomType !== "DirectMessage")) {
+        throw publicError("configured Managed DM has an unsupported room type")
       }
+      throw publicError("configured Managed DM is not resolved")
     }
-    const roomType = room?.roomType ?? "DirectMessage"
-    if (roomType !== "DirectMessage") throw publicError("resolved Managed DM has an unsupported room type")
-    const peer = room?.dmMemberId ?? resolved.memberId
-    if (peer !== id) throw publicError("resolved Managed DM belongs to another Member ID")
+    const resolved = matches[0]!
+    // A pending contact request is not a usable Managed DM until the human
+    // acceptance operation has completed, even if the room list is already
+    // converging on its direct-message record.
+    const pending = await this.listPendingDmRequests(signal)
+    if (pending.some((request) => request.memberId === id)) throw publicError("configured Managed DM is not resolved")
     return {
       groupId: resolved.groupId,
       roomType: "DirectMessage",
       dmMemberId: id,
-      ...(room?.title !== undefined ? { title: room.title } : {}),
-      ...(room?.description !== undefined ? { description: room.description } : {}),
+      ...(resolved.title !== undefined ? { title: resolved.title } : {}),
+      ...(resolved.description !== undefined ? { description: resolved.description } : {}),
     }
   }
 
@@ -184,7 +186,7 @@ export class KeetIntegrationCore implements KeetCore {
       try {
         return await this.resolveDm(id, signal)
       } catch (error) {
-        if (error instanceof Error && /unsupported room type|belongs to another Member ID/.test(error.message)) throw error
+        if (error instanceof Error && /ambiguous|unsupported room type|belongs to another Member ID/.test(error.message)) throw error
         await delay(Math.min(100 * (attempt + 1), 1_000), signal)
       }
     }
@@ -534,23 +536,6 @@ function normalizeRoomType(value: unknown): KeetRoomType | undefined {
     case "2": case "direct": case "direct-message": case "directMessage": case "DirectMessage": case "dm": return "DirectMessage"
     default: return undefined
   }
-}
-
-function hasUnsupportedRoomType(value: unknown): boolean {
-  if (!isRecord(value)) return false
-  const config = isRecord(value.config) ? value.config : undefined
-  const settings = isRecord(value.settings) ? value.settings : config && isRecord(config.settings) ? config.settings : undefined
-  const raw = value.roomType ?? value.type ?? value.kind ?? config?.roomType ?? config?.type ?? settings?.roomType ?? settings?.type
-  return raw !== undefined && normalizeRoomType(raw) === undefined
-}
-
-function normalizeDmResolution(value: unknown, memberId: string): { groupId: string; memberId: string } | undefined {
-  if (!isRecord(value)) return undefined
-  const groupId = firstString(value.groupId, value.roomId, value.id)
-  if (!groupId || groupId.length > MAX_GROUP_ID) return undefined
-  const resolvedMember = firstString(value.dmMemberId, value.memberId, value.recipient) ?? memberId
-  if (resolvedMember !== memberId) return undefined
-  return { groupId: groupId.slice(0, MAX_GROUP_ID), memberId: resolvedMember.slice(0, MAX_MEMBER_ID) }
 }
 
 interface RawPendingDmRequest extends KeetPendingDmRequest { readonly roomId?: string }

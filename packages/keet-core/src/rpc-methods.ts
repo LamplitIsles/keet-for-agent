@@ -16,7 +16,6 @@ export const RPC_METHODS = {
   /** Used only by the disposable opt-in official interoperability smoke. */
   sendDmRequest: 144,
   updateIdentityProfile: 19,
-  getDmByMemberId: 151,
   getDmRequestsByStatus: 152,
   acceptDmRequest: 154,
   boot: 225,
