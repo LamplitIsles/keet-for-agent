@@ -250,17 +250,17 @@ describe("typed Keet Integration Core", () => {
     await core.close()
   })
 
-  it.each([
-    { prefix: "keet-core-dm-missing-", message: "not resolved" },
-    { prefix: "keet-core-dm-duplicate-", message: "ambiguous" },
-    { prefix: "keet-core-dm-mismatched-peer-", message: "not resolved" },
-    { prefix: "keet-core-dm-broadcast-", message: "unsupported room type" },
-    { prefix: "keet-core-dm-default-", message: "unsupported room type" },
-  ])("fails closed for room match case %#", async (testCase) => {
-    const core = await KeetIntegrationCore.start(options(await dataPath(testCase.prefix)))
-    try {
+  it("fails closed for zero, duplicate, mismatched-peer, and non-DM room matches", async () => {
+    const cases = [
+      { prefix: "keet-core-dm-missing-", message: "not resolved" },
+      { prefix: "keet-core-dm-duplicate-", message: "ambiguous" },
+      { prefix: "keet-core-dm-mismatched-peer-", message: "not resolved" },
+      { prefix: "keet-core-dm-broadcast-", message: "unsupported room type" },
+      { prefix: "keet-core-dm-default-", message: "unsupported room type" },
+    ]
+    for (const testCase of cases) {
+      const core = await KeetIntegrationCore.start(options(await dataPath(testCase.prefix)))
       await expect(core.resolveDm("member-peer")).rejects.toThrow(testCase.message)
-    } finally {
       await core.close()
     }
   })
