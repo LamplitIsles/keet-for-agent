@@ -99,6 +99,32 @@ function makeAgent(onFollowup?: (message: unknown) => unknown, whenIdle: () => P
   return { agent, tools, disposed, prompts }
 }
 
+async function flushBridge(): Promise<void> {
+  // Bridge classification and destination queues are deliberately promise
+  // based. A bounded microtask drain keeps these tests deterministic without
+  // waiting on wall-clock timers.
+  for (let index = 0; index < 96; index += 1) await Promise.resolve()
+}
+
+interface DmHarness {
+  bridge: KeetBridge
+  core: ReturnType<typeof fakeCore>
+  fixture: ReturnType<typeof makeAgent>
+  handlers: Map<string, (message: KeetMessage) => void>
+}
+
+function dmHarness(onFollowup?: (message: unknown) => unknown, coreOptions: Parameters<typeof fakeCore>[0] = {}): DmHarness {
+  const handlers = new Map<string, (message: KeetMessage) => void>()
+  const core = fakeCore({ dm: true, onWatch: (handler, groupId) => { handlers.set(groupId, handler) }, ...coreOptions })
+  const fixture = makeAgent(onFollowup)
+  const bridge = new KeetBridge(deps(core, fixture.agent, {}, { ...settings, dmMemberId: "peer" }))
+  return { bridge, core, fixture, handlers }
+}
+
+function dmMessage(seq: number, text: string, extra: Partial<KeetMessage> = {}): KeetMessage {
+  return message(seq, text, { groupId: dmGroupId, ...extra })
+}
+
 describe("Keet bridge", () => {
   it("initializes workspace-owned paths before onboarding has a group ID", async () => {
     let resolvedWorkspace: { path: string } | undefined
@@ -354,7 +380,7 @@ describe("Keet bridge", () => {
     const pending = new Promise<void>((resolve) => { release = resolve })
     const fixture = makeAgent(async () => pending)
     const bridge = new KeetBridge(deps(core, fixture.agent, {}, { ...settings, dmMemberId: "peer" }))
-    vi.useFakeTimers()
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
     try {
       await bridge.start()
       const dmDeliver = handlers.get(dmGroupId)!
@@ -379,6 +405,25 @@ describe("Keet bridge", () => {
     }
   })
 
+  it("keeps whitespace, casing, and argument DM /compact near-misses on the ordinary Agent path", async () => {
+    const harness = dmHarness()
+    const commandCalls: unknown[][] = []
+    harness.fixture.agent.ctx = {
+      ...harness.fixture.agent.ctx,
+      commands: { execute: async (...args: unknown[]) => { commandCalls.push(args); return undefined } },
+    } as never
+    await harness.bridge.start()
+    const nearMisses = [" /compact", "/COMPACT", "/compact ", "/compact now"]
+    const deliver = harness.handlers.get(dmGroupId)!
+    nearMisses.forEach((text, index) => deliver(dmMessage(index + 20, text, { chatIndex: index + 20 })))
+    await flushBridge()
+
+    expect(commandCalls).toHaveLength(0)
+    expect(harness.fixture.prompts).toHaveLength(nearMisses.length)
+    expect(harness.core.sent).toHaveLength(0)
+    await harness.bridge.stop()
+  })
+
   it("intercepts exact Managed DM /compact through the command service and sends one bounded result", async () => {
     const handlers = new Map<string, (message: KeetMessage) => void>()
     const core = fakeCore({ dm: true, onWatch: (handler, groupId) => { handlers.set(groupId, handler) } })
@@ -400,6 +445,265 @@ describe("Keet bridge", () => {
     expect(bridge.contextBuffers.get(dmGroupId)).toEqual([])
     expect(core.sent).toEqual([{ groupId: dmGroupId, text: "Compacted." }])
     await bridge.stop()
+  })
+
+  it("maps exact Managed DM /compact outcomes with one result-send attempt and no fallback Agent turn", async () => {
+    const generic = "The /compact command is unavailable."
+    const cases: readonly { name: string; expected: string; result?: unknown; failSend?: boolean }[] = [
+      { name: "missing command", expected: generic },
+      { name: "error/busy result", expected: "busy: compaction already active", result: { commandId: "command-error", result: { kind: "error", text: "busy: compaction already active" } } },
+      { name: "no-text result", expected: generic, result: { commandId: "command-empty", result: { kind: "success" } } },
+      { name: "empty-text result", expected: generic, result: { commandId: "command-blank", result: { kind: "success", text: "  " } } },
+      { name: "result-send failure", expected: "Compacted.", result: { commandId: "command-send-failure", result: { kind: "success", text: "Compacted." } }, failSend: true },
+    ]
+
+    for (const testCase of cases) {
+      const harness = dmHarness()
+      const commandCalls: unknown[][] = []
+      if (testCase.result !== undefined) {
+        harness.fixture.agent.ctx = {
+          ...harness.fixture.agent.ctx,
+          commands: { execute: async (...args: unknown[]) => { commandCalls.push(args); return testCase.result } },
+        } as never
+      }
+      let sendAttempts = 0
+      const send = harness.core.sendMessage.bind(harness.core)
+      harness.core.sendMessage = async (groupId, text, replyTo, signal) => {
+        sendAttempts += 1
+        if (testCase.failSend) throw new Error("result delivery failed")
+        return send(groupId, text, replyTo, signal)
+      }
+      await harness.bridge.start()
+      harness.handlers.get(dmGroupId)!(dmMessage(30, "/compact", { chatIndex: 30 }))
+      await flushBridge()
+
+      expect(commandCalls, testCase.name).toHaveLength(testCase.result === undefined ? 0 : 1)
+      expect(sendAttempts, testCase.name).toBe(1)
+      expect(harness.fixture.prompts, testCase.name).toHaveLength(0)
+      expect(harness.bridge.contextBuffers.get(dmGroupId), testCase.name).toEqual([])
+      expect(harness.core.sent, testCase.name).toEqual(testCase.failSend ? [] : [{ groupId: dmGroupId, text: testCase.expected }])
+      await harness.bridge.stop()
+    }
+  })
+
+  it("cancels an exact Managed DM /compact without sending, retrying, or entering a follow-up", async () => {
+    const harness = dmHarness()
+    let commandSignal!: AbortSignal
+    let sendAttempts = 0
+    harness.fixture.agent.ctx = {
+      ...harness.fixture.agent.ctx,
+      commands: {
+        execute: async (_agent: unknown, _line: string, _images: readonly unknown[], signal: AbortSignal) => {
+          commandSignal = signal
+          return new Promise<never>((_resolve, reject) => {
+            if (signal.aborted) { reject(new Error("command cancelled")); return }
+            signal.addEventListener("abort", () => reject(new Error("command cancelled")), { once: true })
+          })
+        },
+      },
+    } as never
+    const send = harness.core.sendMessage.bind(harness.core)
+    harness.core.sendMessage = async (...args) => { sendAttempts += 1; return send(...args) }
+    await harness.bridge.start()
+    harness.handlers.get(dmGroupId)!(dmMessage(31, "/compact", { chatIndex: 31 }))
+    await flushBridge()
+    expect(commandSignal).toBeInstanceOf(AbortSignal)
+    expect(harness.fixture.prompts).toHaveLength(0)
+
+    await harness.bridge.stop()
+    await flushBridge()
+    expect(commandSignal.aborted).toBe(true)
+    expect(sendAttempts).toBe(0)
+    expect(harness.core.sent).toHaveLength(0)
+  })
+
+  it("suppresses self DM commands while leaving regular-group /compact handling unchanged", async () => {
+    const harness = dmHarness()
+    const commandCalls: unknown[][] = []
+    const activityCalls: string[] = []
+    harness.fixture.agent.ctx = {
+      ...harness.fixture.agent.ctx,
+      commands: { execute: async (...args: unknown[]) => { commandCalls.push(args); return { result: { kind: "success", text: "must not run" } } } },
+    } as never
+    harness.core.setUnreadAnchor = async () => { activityCalls.push("read") }
+    harness.core.updateTypingIndicator = async () => { activityCalls.push("typing") }
+    await harness.bridge.start()
+    harness.handlers.get(dmGroupId)!(dmMessage(32, "/compact", { senderId: "bot", senderLabel: "Keet Bot", chatIndex: 32 }))
+    harness.handlers.get(settings.groupId)!(message(33, "/compact", { mentions: ["bot"] }))
+    await flushBridge()
+
+    expect(commandCalls).toHaveLength(0)
+    expect(harness.fixture.prompts).toHaveLength(1)
+    expect(activityCalls).toEqual([])
+    expect(harness.core.sent).toHaveLength(0)
+    await harness.bridge.stop()
+  })
+
+  it("keeps queued DM work inactive and gives consecutive turns isolated activity owners", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    const firstPending = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const secondPending = new Promise<void>((resolve) => { releaseSecond = resolve })
+    let followups = 0
+    const harness = dmHarness(async () => {
+      followups += 1
+      if (followups === 1) await firstPending
+      if (followups === 2) await secondPending
+    })
+    const activity: Array<{ name: "read" | "typing"; length?: number; signal: AbortSignal }> = []
+    harness.core.setUnreadAnchor = async (_groupId, length, signal) => { activity.push({ name: "read", length, signal: signal! }) }
+    harness.core.updateTypingIndicator = async (_groupId, signal) => { activity.push({ name: "typing", signal: signal! }) }
+    try {
+      await harness.bridge.start()
+      const deliver = harness.handlers.get(dmGroupId)!
+      deliver(dmMessage(40, "first DM", { chatIndex: 40 }))
+      await flushBridge()
+      expect(harness.fixture.prompts).toHaveLength(1)
+
+      deliver(dmMessage(41, "queued DM", { chatIndex: 41 }))
+      await flushBridge()
+      expect(activity.map(({ name, length }) => ({ name, length }))).toEqual([
+        { name: "read", length: 41 },
+        { name: "typing", length: undefined },
+      ])
+      expect(harness.fixture.prompts).toHaveLength(1)
+
+      releaseFirst()
+      await flushBridge()
+      expect(harness.fixture.prompts).toHaveLength(2)
+      expect(activity.map(({ name, length }) => ({ name, length }))).toEqual([
+        { name: "read", length: 41 },
+        { name: "typing", length: undefined },
+        { name: "read", length: 42 },
+        { name: "typing", length: undefined },
+      ])
+      const firstTyping = activity.find(({ name }) => name === "typing")!
+      const secondTyping = activity.filter(({ name }) => name === "typing")[1]!
+      expect(firstTyping.signal.aborted).toBe(true)
+      expect(secondTyping.signal.aborted).toBe(false)
+      expect(activity.find(({ name }) => name === "read")!.signal.aborted).toBe(false)
+
+      vi.advanceTimersByTime(4_000)
+      expect(activity.filter(({ name }) => name === "typing")).toHaveLength(3)
+      harness.bridge.markSent(dmGroupId, { deviceId: "device-bot", seq: 140 })
+      expect(secondTyping.signal.aborted).toBe(true)
+      vi.advanceTimersByTime(8_000)
+      expect(activity.filter(({ name }) => name === "typing")).toHaveLength(3)
+      releaseSecond()
+      await flushBridge()
+    } finally {
+      vi.useRealTimers()
+      await harness.bridge.stop()
+    }
+  })
+
+  it("stops DM typing ownership after both normal and failing follow-up settlement", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    try {
+      for (const failing of [false, true]) {
+        const harness = dmHarness(async () => { if (failing) throw new Error("follow-up failed") })
+        const typingSignals: AbortSignal[] = []
+        harness.core.updateTypingIndicator = async (_groupId, signal) => { typingSignals.push(signal!) }
+        try {
+          await harness.bridge.start()
+          harness.handlers.get(dmGroupId)!(dmMessage(failing ? 51 : 50, "settling DM", { chatIndex: failing ? 51 : 50 }))
+          await flushBridge()
+          expect(harness.fixture.prompts).toHaveLength(1)
+          expect(typingSignals).toHaveLength(1)
+          expect(typingSignals[0]!.aborted).toBe(true)
+          vi.advanceTimersByTime(12_000)
+          expect(typingSignals).toHaveLength(1)
+        } finally {
+          await harness.bridge.stop()
+        }
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("aborts DM activity refresh on explicit stop and connection failure", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    try {
+      const stopped = dmHarness(() => new Promise<void>(() => undefined))
+      const stoppedTyping: AbortSignal[] = []
+      stopped.core.updateTypingIndicator = async (_groupId, signal) => { stoppedTyping.push(signal!) }
+      await stopped.bridge.start()
+      stopped.handlers.get(dmGroupId)!(dmMessage(60, "stop me", { chatIndex: 60 }))
+      await flushBridge()
+      expect(stoppedTyping).toHaveLength(1)
+      await stopped.bridge.stop()
+      expect(stoppedTyping[0]!.aborted).toBe(true)
+      vi.advanceTimersByTime(8_000)
+      expect(stoppedTyping).toHaveLength(1)
+
+      let terminate!: () => void
+      const failed = dmHarness(() => new Promise<void>(() => undefined), { onSubscription: (close) => { terminate = close } })
+      const failedTyping: AbortSignal[] = []
+      failed.core.updateTypingIndicator = async (_groupId, signal) => { failedTyping.push(signal!) }
+      await failed.bridge.start()
+      failed.handlers.get(dmGroupId)!(dmMessage(61, "connection fails", { chatIndex: 61 }))
+      await flushBridge()
+      expect(failedTyping).toHaveLength(1)
+      terminate()
+      await flushBridge()
+      expect(failed.bridge.readiness).toMatchObject({ state: "failed", detail: "connection-failed" })
+      expect(failedTyping[0]!.aborted).toBe(true)
+      vi.advanceTimersByTime(8_000)
+      expect(failedTyping).toHaveLength(1)
+      await failed.bridge.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps startup rollback free of DM activity ownership before readiness", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    const activityCalls: string[] = []
+    const core = fakeCore({ dm: true, failWatch: true })
+    core.setUnreadAnchor = async () => { activityCalls.push("read") }
+    core.updateTypingIndicator = async () => { activityCalls.push("typing") }
+    const bridge = new KeetBridge(deps(core, makeAgent().agent, {}, { ...settings, dmMemberId: "peer" }))
+    try {
+      await bridge.start()
+      expect(bridge.readiness).toMatchObject({ state: "failed", detail: "core-start-failed" })
+      vi.advanceTimersByTime(8_000)
+      expect(activityCalls).toEqual([])
+    } finally {
+      vi.useRealTimers()
+      await bridge.stop()
+    }
+  })
+
+  it("keeps rejected read and typing activity non-load-bearing for DM follow-up and explicit sends", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    const harness = dmHarness(async () => pending)
+    let readCalls = 0
+    let typingCalls = 0
+    harness.core.setUnreadAnchor = async () => { readCalls += 1; throw new Error("read unavailable") }
+    harness.core.updateTypingIndicator = async () => { typingCalls += 1; throw new Error("typing unavailable") }
+    try {
+      await harness.bridge.start()
+      harness.handlers.get(dmGroupId)!(dmMessage(70, "work despite activity errors", { chatIndex: 70 }))
+      await flushBridge()
+      expect(harness.fixture.prompts).toHaveLength(1)
+      expect(readCalls).toBe(1)
+      expect(typingCalls).toBe(1)
+
+      const send = harness.fixture.tools.find((tool) => tool.name === "keet_send_message")!
+      await expect(send.execute({ groupName: "Managed DM", text: "explicit while busy" }, undefined as never)).resolves.toEqual({ sent: true })
+      expect(harness.core.sent).toEqual([{ groupId: dmGroupId, text: "explicit while busy" }])
+      vi.advanceTimersByTime(8_000)
+      expect(typingCalls).toBe(1)
+      release()
+      await flushBridge()
+    } finally {
+      vi.useRealTimers()
+      await harness.bridge.stop()
+    }
   })
 
   it("starts through the real Integration Core and triggers exactly once for an external DM", async () => {
