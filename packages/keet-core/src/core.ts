@@ -148,10 +148,6 @@ export class KeetIntegrationCore implements KeetCore {
     }
   }
 
-  async getDmByMemberId(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm> {
-    return this.resolveDm(memberId, signal)
-  }
-
   async listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]> {
     ensureSignal(signal)
     const raw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
@@ -165,10 +161,6 @@ export class KeetIntegrationCore implements KeetCore {
       result.push({ memberId: request.memberId, ...(request.displayName ? { displayName: request.displayName } : {}) })
     }
     return result
-  }
-
-  async getPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]> {
-    return this.listPendingDmRequests(signal)
   }
 
   async acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm> {

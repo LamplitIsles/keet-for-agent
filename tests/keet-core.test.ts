@@ -178,7 +178,7 @@ describe("typed Keet Integration Core", () => {
     await expect(core.resolveDm("member-peer")).rejects.toThrow("not resolved")
     const accepted = await core.acceptDmRequest("member-peer")
     expect(accepted).toEqual({ groupId: "group-dm", roomType: "DirectMessage", dmMemberId: "member-peer", title: "Managed DM", description: "fixture DM" })
-    expect(await core.getDmByMemberId("member-peer")).toEqual(accepted)
+    expect(await core.resolveDm("member-peer")).toEqual(accepted)
     expect(await core.listPendingDmRequests()).toEqual([])
     await expect(core.acceptDmRequest("member-peer")).rejects.toThrow("already resolved")
     await core.close()

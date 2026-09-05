@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { KeetIntegrationCore } from "@lamplitisles/keet-integration-core"
-import type { KeetCore, KeetCoreOptions, KeetManagedDm, KeetPendingDmRequest, PreparedAvatar } from "./core-contract.js"
+import type { KeetCore, KeetCoreOptions, KeetPendingDmRequest, PreparedAvatar } from "./core-contract.js"
 import { prepareAvatar, validatePreparedAvatar } from "./avatar.js"
 import { resolveKeetRuntimePaths } from "./local-paths.js"
 import { createKeetRuntimeOptions } from "./runtime-options.js"
@@ -20,15 +20,7 @@ export interface SetupArguments {
   memberId?: string
 }
 
-type SetupCore = {
-  close(): Promise<void>
-  joinInvitation?: KeetCore["joinInvitation"]
-  updateDisplayName?: KeetCore["updateDisplayName"]
-  updateIdentityProfile?: KeetCore["updateIdentityProfile"]
-  listPendingDmRequests?: KeetCore["listPendingDmRequests"]
-  getPendingDmRequests?: KeetCore["getPendingDmRequests"]
-  acceptDmRequest?: KeetCore["acceptDmRequest"]
-}
+type SetupCore = Pick<KeetCore, "close" | "joinInvitation" | "updateIdentityProfile" | "listPendingDmRequests" | "acceptDmRequest">
 export interface SetupDependencies {
   coreFactory?: (options: KeetCoreOptions) => Promise<SetupCore>
   resolveRuntimePaths?: (workspaceDir: string) => Promise<{ runtimeDir: string; identityDataDir: string }>
@@ -51,21 +43,16 @@ export async function runSetup(argv: readonly string[], stdin = process.stdin, s
     const core = await (dependencies.coreFactory?.(createKeetRuntimeOptions(paths)) ?? KeetIntegrationCore.start(createKeetRuntimeOptions(paths)))
     try {
       if (parsed.command === "profile") {
-        if (core.updateIdentityProfile) await core.updateIdentityProfile({ ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}), ...(avatar ? { avatar } : {}) })
-        else if (parsed.displayName !== undefined && !avatar && core.updateDisplayName) await core.updateDisplayName(parsed.displayName)
-        else throw new Error("profile operation unavailable")
+        await core.updateIdentityProfile({ ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}), ...(avatar ? { avatar } : {}) })
         stdout.write(JSON.stringify({ ok: true, operation: "profile", ...(parsed.displayName !== undefined ? { displayName: parsed.displayName.trim() } : {}), ...(avatar ? { avatar: true } : {}) }) + "\n")
       } else if (parsed.command === "dm-requests") {
-        const listRequests = core.listPendingDmRequests ?? core.getPendingDmRequests
-        if (!listRequests) throw new Error("DM request listing unavailable")
-        const requests = await listRequests.call(core)
+        const requests = await core.listPendingDmRequests()
         stdout.write(JSON.stringify({ ok: true, operation: "dm-requests", requests: requests.slice(0, 32).map(publicPendingRequest) }) + "\n")
       } else if (parsed.command === "dm-accept") {
-        if (!core.acceptDmRequest || !parsed.memberId) throw new Error("DM acceptance unavailable")
+        if (!parsed.memberId) throw new Error("DM acceptance requires a Member ID")
         const result = await core.acceptDmRequest(parsed.memberId)
         stdout.write(JSON.stringify({ ok: true, operation: "dm-accept", memberId: result.dmMemberId, groupId: result.groupId }) + "\n")
       } else {
-        if (!core.joinInvitation) throw new Error("join operation unavailable")
         const result = await core.joinInvitation(invitation!)
         stdout.write(JSON.stringify({ ok: true, operation: "join", groupId: result.groupId }) + "\n")
       }

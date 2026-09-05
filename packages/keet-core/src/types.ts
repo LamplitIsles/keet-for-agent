@@ -139,13 +139,11 @@ export interface KeetCore {
   createInvitation?(groupId: string, options?: Record<string, unknown>): Promise<Invitation>
   validateGroup(groupId: string): Promise<ManagedGroup>
   /** Resolve an accepted direct message by the other participant's Member ID. */
-  resolveDm?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
-  getDmByMemberId?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
+  resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   /** List bounded pending requests without exposing internal room identifiers. */
-  listPendingDmRequests?(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
-  getPendingDmRequests?(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
+  listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
   /** Accept exactly one already-pending request and wait for its DM room. */
-  acceptDmRequest?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
+  acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listMembers(groupId: string): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
@@ -154,7 +152,7 @@ export interface KeetCore {
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>
   updateDisplayName(displayName: string, signal?: AbortSignal): Promise<void>
   /** Update the complete attested profile; omitted fields are preserved. */
-  updateIdentityProfile?(profile: { readonly displayName?: string; readonly avatar?: PreparedAvatar }, signal?: AbortSignal): Promise<void>
+  updateIdentityProfile(profile: { readonly displayName?: string; readonly avatar?: PreparedAvatar }, signal?: AbortSignal): Promise<void>
   close(): Promise<void>
 }
 

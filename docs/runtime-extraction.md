@@ -106,9 +106,22 @@ is never accepted through argv or environment variables and never appears in
 logs or DSH settings. Do not delete existing identity data on a failed join.
 
 After onboarding, paste the returned Managed Group ID beside the selected DSH
-workspace and restart the plugin. Avatar import is not supported: the official
-profile RPC requires Keet's internal multi-size image-file representation, not
-a filesystem path.
+workspace and restart the plugin. The human-only profile operation can also
+prepare an avatar from a local PNG, JPEG, or WebP:
+
+```sh
+dsh-keet-setup profile \
+  --workspace /path/to/dsh-workspace \
+  --avatar /path/to/avatar.png
+```
+
+The input must be a readable image no larger than 8 MiB. Setup honors image
+orientation, center-crops a square, and emits deterministic 64, 128, and 256
+pixel PNG variants; each inline variant is bounded to 512 KiB. Official Keet
+clients apply their normal circular avatar mask, so the input should remain a
+square image rather than a pre-baked circle. Avatar-only updates preserve the
+current non-empty display name, and profile setup does not expose avatar
+removal.
 
 ## Opt-in official checks
 

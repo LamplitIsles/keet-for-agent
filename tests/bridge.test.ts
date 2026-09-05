@@ -13,7 +13,10 @@ function message(seq: number, text: string, extra: Partial<KeetMessage> = {}): K
 function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failGroup?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembership?: boolean; dm?: boolean; wrongDmPeer?: boolean } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
   const sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }> = []
   let closed = false
-  const dmMethods: Pick<KeetCore, "resolveDm"> = options.dm ? { resolveDm: async () => ({ groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: options.wrongDmPeer ? "other" : "peer", title: "Managed DM" }) } : {}
+  const dmMethods: Pick<KeetCore, "resolveDm"> = { resolveDm: async () => {
+    if (!options.dm) throw new Error("Managed DM is not configured")
+    return { groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: options.wrongDmPeer ? "other" : "peer", title: "Managed DM" }
+  } }
   const core: KeetCore & { sent: typeof sent; closed: boolean } = {
     sent,
     get closed() { return closed },
@@ -50,6 +53,9 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
     sendMessage: async (groupId, text, replyTo) => { sent.push({ groupId, text, ...(replyTo ? { replyTo } : {}) }); return { deviceId: "device-bot", seq: sent.length + 10 } },
     inspectInvitation: async () => ({ isRoomInvitation: true }),
     joinInvitation: async () => ({ groupId: settings.groupId }),
+    listPendingDmRequests: async () => [],
+    acceptDmRequest: async () => ({ groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: "peer" }),
+    updateIdentityProfile: async () => undefined,
     updateDisplayName: async () => undefined,
     close: async () => { closed = true },
   }

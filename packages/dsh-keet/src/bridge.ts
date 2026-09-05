@@ -144,9 +144,7 @@ export class KeetBridge {
       if (regular.roomType !== "Default") throw new Error("configured Managed Group has an unsupported room type")
       const destinations: ManagedDestination[] = [{ groupId: this.settings.groupId, kind: "group", label: regular.title?.trim() || "Managed Group" }]
       if (this.settings.dmMemberId.trim()) {
-        const resolveDm = core.resolveDm ?? core.getDmByMemberId
-        if (typeof resolveDm !== "function") throw new Error("Managed DM lookup is unavailable")
-        const dm = await resolveDm.call(core, this.settings.dmMemberId.trim(), this.stopController.signal)
+        const dm = await core.resolveDm(this.settings.dmMemberId.trim(), this.stopController.signal)
         if (dm.roomType !== "DirectMessage" || dm.dmMemberId !== this.settings.dmMemberId.trim() || dm.groupId === regular.groupId) throw new Error("configured Managed DM does not match the requested peer")
         destinations.push({ groupId: dm.groupId, kind: "dm", label: dm.title?.trim() || "Managed DM", peerMemberId: dm.dmMemberId })
       }

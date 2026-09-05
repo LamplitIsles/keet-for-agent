@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { deflateSync } from "node:zlib"
 import { describe, expect, it } from "vitest"
-import { AVATAR_VARIANT_SIZES, prepareAvatar, validatePreparedAvatar } from "../packages/dsh-keet/src/avatar.js"
+import { prepareAvatar } from "../packages/dsh-keet/src/avatar.js"
 
 describe("avatar preparation", () => {
   it("creates deterministic square PNG variants with bounded hashes", async () => {
@@ -11,16 +12,20 @@ describe("avatar preparation", () => {
     try {
       const input = path.join(directory, "source.png")
       await writeGeneratedAvatar(input)
-      const first = await prepareAvatar(input)
-      const second = await prepareAvatar(input)
-      validatePreparedAvatar(first)
-      expect(first).toEqual(second)
-      for (const [name, size] of Object.entries(AVATAR_VARIANT_SIZES) as Array<[keyof typeof AVATAR_VARIANT_SIZES, number]>) {
-        expect(first[name].width).toBe(size)
-        expect(first[name].height).toBe(size)
-        expect(first[name].contentType).toBe("image/png")
-        expect(first[name].hash).toMatch(/^[a-f0-9]{64}$/)
-      }
+      const script = `
+        import { prepareAvatar, validatePreparedAvatar } from "./packages/dsh-keet/src/avatar.ts"
+        const first = await prepareAvatar(process.env.AVATAR_INPUT)
+        const second = await prepareAvatar(process.env.AVATAR_INPUT)
+        validatePreparedAvatar(first)
+        validatePreparedAvatar(second)
+        for (const [name, size] of [["small", 64], ["medium", 128], ["large", 256]]) {
+          if (first[name].width !== size || first[name].height !== size || first[name].contentType !== "image/png" || !/^[a-f0-9]{64}$/.test(first[name].hash)) throw new Error("invalid avatar variant")
+          if (first[name].hash !== second[name].hash) throw new Error("avatar output is not deterministic")
+        }
+        console.log("ok")
+      `
+      const result = execFileSync("node", ["--import", "tsx", "--input-type=module", "-e", script], { cwd: path.resolve(new URL("..", import.meta.url).pathname), env: { ...process.env, AVATAR_INPUT: input }, encoding: "utf8" })
+      expect(result.trim()).toBe("ok")
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

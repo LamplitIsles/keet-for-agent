@@ -78,10 +78,10 @@ if (process.env.KEET_OFFICIAL_ONBOARDING_SMOKE !== "1") {
     if (accepted.operation !== "dm-accept" || accepted.memberId !== statusA.identityId || !accepted.groupId) throw new Error("DM acceptance returned an unexpected result")
     coreB = await KeetIntegrationCore.start({ executablePath, bundlePath, dataPath: identityB, swarming: true })
     sidecarB = coreB
-    const dmB = await coreB.getDmByMemberId(statusA.identityId)
-    let dmA: Awaited<ReturnType<KeetIntegrationCore["getDmByMemberId"]>>
+    const dmB = await coreB.resolveDm(statusA.identityId)
+    let dmA: Awaited<ReturnType<KeetIntegrationCore["resolveDm"]>>
     await waitFor(async () => {
-      try { dmA = await coreA.getDmByMemberId(statusB.identityId); return dmA.groupId === dmB.groupId } catch { return false }
+      try { dmA = await coreA.resolveDm(statusB.identityId); return dmA.groupId === dmB.groupId } catch { return false }
     })
     const dmCallbacks: string[] = []
     const dmSubscription = coreB.watchMessages(dmB.groupId, (message) => dmCallbacks.push(message.text))
