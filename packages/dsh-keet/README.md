@@ -60,12 +60,28 @@ dsh-keet-setup dm-accept --workspace /path/to/workspace --member-id <peer-member
 dsh-keet-setup profile --workspace /path/to/workspace --avatar /path/to/avatar.png
 ```
 
+Each setup operation needs exclusive ownership of the workspace identity.
+Stop the running DSH bridge first and ensure it starts again afterward; for a
+systemd user service, run the operation in a Bash subshell with an exit trap:
+
+```sh
+bash -lc '
+  set -e
+  trap "systemctl --user start dsh.service" EXIT
+  systemctl --user stop dsh.service
+  dsh-keet-setup profile --workspace /path/to/workspace \
+    --avatar /path/to/avatar.png
+'
+```
+
 DM requests are never created or accepted by the Agent. Avatar setup accepts a
 local PNG, JPEG, or WebP up to 8 MiB, honors orientation, center-crops to a
 square, and prepares deterministic 64/128/256 pixel PNG variants below Keet's
 512 KiB inline limit. The square is passed to official clients, which apply a
-circular display mask. Avatar-only updates preserve the current display name;
-avatar removal is not a v1 operation.
+circular display mask. For an avatar-only CLI update, Core reads the current
+non-empty display name and resends it with the avatar as required by Keet; the
+operation fails if no current name exists. Avatar removal is not a v1
+operation.
 
 The artifact contains source-derived code, declarations, the client bundle,
 Cordis patch, license, and notices. Runtime assets and identity/group data are

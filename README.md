@@ -44,6 +44,24 @@ Keep runtime files outside the repository. The plugin creates the writable
 identity directory at `<workspace>/.dsh/dsh-keet/identity`; one bridge process
 owns that directory at a time.
 
+Stop the running bridge before using any `dsh-keet-setup` operation against
+that workspace. If DSH runs as the user service shown below, this Bash wrapper
+attempts to start the service again when setup succeeds or fails:
+
+```sh
+bash -lc '
+  set -e
+  trap "systemctl --user start dsh.service" EXIT
+  systemctl --user stop dsh.service
+  dsh-keet-setup profile --workspace /path/to/dsh-workspace \
+    --avatar /path/to/avatar.png
+'
+```
+
+Use the same stop/setup/restart pattern for `join`, `dm-requests`, and
+`dm-accept`. Operators using another service manager should stop and restart
+the process that owns the identity directory by its equivalent mechanism.
+
 ## One-time onboarding
 
 Create a fresh identity and join it to a pre-existing group with the human-only
@@ -76,9 +94,11 @@ Avatar input must be a local PNG, JPEG, or WebP no larger than 8 MiB. Setup
 honors orientation, center-crops to a square, and creates deterministic 64,
 128, and 256 pixel PNG variants, each below Keet's 512 KiB inline limit. The
 asset remains square; official clients apply their circular presentation mask.
-An avatar-only update preserves the current non-empty display name. Setup has
-no chat, room creation, invitation creation, biography, or avatar-removal
-surface.
+An avatar-only CLI update reads the current non-empty display name and resends
+it with the new avatar because the underlying Keet profile update requires the
+name. It fails without changing the profile if the identity has no current
+display name. Setup has no chat, room creation, invitation creation, biography,
+or avatar-removal surface.
 
 To inspect and accept a human-sent DM request, use the setup executable:
 
