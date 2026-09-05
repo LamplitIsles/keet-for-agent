@@ -10,9 +10,9 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
 ## Source of truth
 
 - `packages/keet-core/src/` owns the typed sidecar lifecycle, pinned runtime
-  admission, normalized group/member/message values, subscriptions, sends,
-  onboarding, and profile update.
-- `packages/dsh-keet/src/` owns the DSH Host bridge, fixed-group tools, setup
+  admission, normalized room/group/member/message values, canonical room-list
+  DM resolution, subscriptions, sends, onboarding, and profile update.
+- `packages/dsh-keet/src/` owns the DSH Host bridge, Managed Destination tools, setup
   executable, settings schema/client, and protocol rendering.
 - `tests/` uses fake workers and test-owned temporary paths for ordinary gates.
 - `scripts/pack-smoke.ts` verifies the actual packed tarball through the
@@ -21,17 +21,28 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
 
 ## Product boundary
 
-The bridge binds one already-joined Managed Group to one existing DSH
-conversation selected from the configured workspace. It never creates or
-switches conversations or groups. Ordinary text is bounded context; a mention,
-the current non-empty display label, or a Keet replyTo relation to an integration-authored
-message triggers one serialized Agent turn. The Agent's final text remains in
+The bridge binds one already-joined Managed Group and, optionally, one accepted
+Managed DM to one existing DSH conversation selected from the configured
+workspace. It never creates or switches conversations or groups. The regular
+group keeps mention, current-label, and verified-reply triggers; every new
+ordinary external DM text triggers one serialized Agent turn. Destination
+buffers and subscriptions are isolated, and the Agent's final text remains in
 DSH unless `keet_send_message` is explicitly called.
 
-The only tools are `keet_list_members`, `keet_read_recent_messages`, and
-`keet_send_message`. All are fixed to the configured group and bounded. Setup
-is human-only: `dsh-keet-setup join --workspace <path>` reads exactly one
-invitation URL from stdin, and `profile` updates only the display name.
+The optional DM is admitted only from the canonical joined-room list: exactly
+one normalized `DirectMessage` room must name the configured peer Member ID.
+There is no dedicated DM Member-ID lookup RPC or compatibility fallback;
+pending, missing, duplicate, and non-DM matches fail closed.
+
+The tools are `keet_list_groups`, `keet_list_members`,
+`keet_read_recent_messages`, and `keet_send_message`. The first lists only the
+configured destinations; the other three require an exact returned `groupId`.
+Regular history and sends preserve canonical reply provenance. DM history and
+prompts omit message IDs/reply relations, and DM sends are ordinary text.
+Setup is human-only: `join` reads exactly one invitation URL from stdin,
+`dm-requests` lists bounded sender identities, `dm-accept` accepts one exact
+pending sender, and `profile` can independently update display name and a
+prepared avatar.
 
 ## Compatibility and safety
 
@@ -69,5 +80,8 @@ Loader passes do not establish official-client interoperability. The real-worker
 smoke verifies only the official worker's Keet reply relation round-trip; it does
 not verify desktop UI rendering.
 
-Avatar import remains deferred because the official profile operation expects
-Keet's internal multi-size image-file representation rather than a path.
+Profile avatar input is prepared by setup from a local PNG, JPEG, or WebP up to
+8 MiB into deterministic square 64/128/256 PNG variants below Keet's 512 KiB
+inline limit. Avatar-only updates preserve the current display name. Official
+clients apply the circular presentation mask; this repository does not claim a
+desktop visual smoke.

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
+import { createHash } from "node:crypto"
 import { mkdtemp, rm } from "node:fs/promises"
 import { execFileSync } from "node:child_process"
 import { writeFile } from "node:fs/promises"
@@ -22,8 +23,8 @@ async function dataPath(prefix = "keet-core-test-"): Promise<string> {
   return directory
 }
 
-function options(data: string, logger?: (entry: KeetSidecarLog) => void) {
-  const value = { executablePath: nodeExecutable, bundlePath: fixture, dataPath: data, swarming: false, startupTimeoutMs: 3_000, shutdownTimeoutMs: 1_000 }
+function options(data: string, logger?: (entry: KeetSidecarLog) => void, overrides: Record<string, unknown> = {}) {
+  const value = { executablePath: nodeExecutable, bundlePath: fixture, dataPath: data, swarming: false, startupTimeoutMs: 3_000, shutdownTimeoutMs: 1_000, ...overrides }
   return logger ? { ...value, logger } : value
 }
 
@@ -53,7 +54,7 @@ describe("typed Keet Integration Core", () => {
     const logs: KeetSidecarLog[] = []
     const core = await KeetIntegrationCore.start(options(data, (entry) => logs.push(entry)))
     expect(await core.status()).toMatchObject({ state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: "identity-self", displayName: "Fixture Bot" })
-    expect(await core.listGroups()).toEqual([{ groupId: "group-test", title: "Test group", description: "fixture" }])
+    expect(await core.listGroups()).toEqual([{ groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" }])
     expect(await core.listMembers("group-test")).toEqual([
       { memberId: "identity-self", displayName: "Fixture Bot" },
       { memberId: "member-alice", displayName: "Alice" },
@@ -61,6 +62,7 @@ describe("typed Keet Integration Core", () => {
     expect(await core.readRecentMessages("group-test", 50)).toEqual([
       expect.objectContaining({ messageId: { deviceId: "device-alice", seq: 1 }, senderId: "member-alice", text: "initial context" }),
       expect.objectContaining({ messageId: { deviceId: "device-self", seq: 2 }, senderId: "identity-self", text: "initial self" }),
+      expect.objectContaining({ messageId: { deviceId: "device-alice", seq: 5 }, senderId: "member-alice", text: "valid nested reply after nullable field", replyTo: { deviceId: "device-self", seq: 2 } }),
     ])
     await expect(core.readRecentMessages("group-test", 0)).rejects.toThrow("1 to 50")
     await expect(core.readRecentMessages("other", 1)).resolves.toEqual([])
@@ -70,7 +72,7 @@ describe("typed Keet Integration Core", () => {
     expect(logs.map((entry) => entry.event)).toContain("sidecar.worker-output-discarded")
   })
 
-  it("normalizes the official v1 member label and chat mentions while excluding edits", async () => {
+  it("normalizes official nullable reply fields and member labels while excluding edits and conflicting replies", async () => {
     const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-official-shape-")))
     const history = await core.readRecentMessages("group-test", 50)
     expect(history).toEqual([
@@ -84,8 +86,22 @@ describe("typed Keet Integration Core", () => {
         mentions: ["identity-self"],
       },
     ])
+    expect(history[0]).not.toHaveProperty("replyTo")
     expect(classifyTrigger(history[0]!, { memberId: "identity-self", displayName: "Fixture Bot" }, new Set())?.triggerKind).toBe("mention")
     await core.close()
+  })
+
+  it("normalizes admitted room kinds and rejects a resolved DM with the wrong kind", async () => {
+    const typed = await KeetIntegrationCore.start(options(await dataPath("keet-core-room-types-")))
+    expect(await typed.listGroups()).toEqual([
+      { groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" },
+      { groupId: "group-broadcast", title: "Broadcast", description: "fixture broadcast", roomType: "Broadcast" },
+    ])
+    await typed.close()
+
+    const wrongDm = await KeetIntegrationCore.start(options(await dataPath("keet-core-dm-broadcast-")))
+    await expect(wrongDm.resolveDm("member-peer")).rejects.toThrow("unsupported room type")
+    await wrongDm.close()
   })
 
   it("suppresses the initial snapshot, forwards live self and external text, filters nonordinary records, deduplicates, and tears down", async () => {
@@ -130,7 +146,7 @@ describe("typed Keet Integration Core", () => {
     expect(subscription.terminationReason).toBe("closed")
   })
 
-  it("preserves canonical Keet replyTo IDs and rejects targets outside the fixed group before mutation", async () => {
+  it("preserves canonical Keet replyTo IDs and rejects targets outside the selected group before mutation", async () => {
     const core = await KeetIntegrationCore.start(options(await dataPath()))
     const target = { deviceId: "device-alice", seq: 1 }
     const sent = await core.sendMessage("group-test", "reply", target)
@@ -151,6 +167,97 @@ describe("typed Keet Integration Core", () => {
     const controller = new AbortController()
     controller.abort()
     await expect(core.readRecentMessages("group-test", 1, controller.signal)).rejects.toThrow("cancelled")
+    await core.close()
+  })
+
+  it("resolves and accepts a DM from the official-shaped room list without a dedicated lookup RPC", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-dm-flow-")))
+    expect(await core.listGroups()).toEqual([
+      { groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" },
+      { groupId: "group-dm", title: "Managed DM", description: "fixture DM", roomType: "DirectMessage", dmMemberId: "member-peer" },
+    ])
+    expect(await core.listPendingDmRequests()).toEqual([{ memberId: "member-peer", displayName: "Peer" }])
+    await expect(core.resolveDm("member-peer")).rejects.toThrow("not resolved")
+    const accepted = await core.acceptDmRequest("member-peer")
+    expect(accepted).toEqual({ groupId: "group-dm", roomType: "DirectMessage", dmMemberId: "member-peer", title: "Managed DM", description: "fixture DM" })
+    expect(await core.resolveDm("member-peer")).toEqual(accepted)
+    expect(await core.listPendingDmRequests()).toEqual([])
+    await expect(core.acceptDmRequest("member-peer")).rejects.toThrow("already resolved")
+    await core.close()
+  })
+
+  it("enriches a typed compact DirectMessage record when room info supplies the peer", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-dm-typed-compact-")))
+    expect(await core.listGroups()).toEqual([
+      { groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" },
+      { groupId: "group-dm", title: "Managed DM", description: "fixture DM", roomType: "DirectMessage", dmMemberId: "member-peer" },
+    ])
+    await expect(core.resolveDm("member-peer")).resolves.toEqual({ groupId: "group-dm", roomType: "DirectMessage", dmMemberId: "member-peer", title: "Managed DM", description: "fixture DM" })
+    await core.close()
+  })
+
+  it("waits for a delayed accepted DM room to converge through the canonical room list", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-dm-delayed-"), undefined, { pairingTimeoutMs: 3_000 }))
+    expect(await core.listGroups()).toEqual([{ groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" }])
+    expect(await core.listPendingDmRequests()).toEqual([{ memberId: "member-peer", displayName: "Peer" }])
+    const accepted = await core.acceptDmRequest("member-peer")
+    expect(accepted).toEqual({ groupId: "group-dm", roomType: "DirectMessage", dmMemberId: "member-peer", title: "Managed DM", description: "fixture DM" })
+    expect(await core.listGroups()).toEqual([
+      { groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" },
+      { groupId: "group-dm", title: "Managed DM", description: "fixture DM", roomType: "DirectMessage", dmMemberId: "member-peer" },
+    ])
+    await core.close()
+  })
+
+  it("fails closed for zero, duplicate, mismatched-peer, and non-DM room matches", async () => {
+    const cases = [
+      { prefix: "keet-core-dm-missing-", message: "not resolved" },
+      { prefix: "keet-core-dm-duplicate-", message: "ambiguous" },
+      { prefix: "keet-core-dm-mismatched-peer-", message: "not resolved" },
+      { prefix: "keet-core-dm-broadcast-", message: "unsupported room type" },
+      { prefix: "keet-core-dm-default-", message: "unsupported room type" },
+    ]
+    for (const testCase of cases) {
+      const core = await KeetIntegrationCore.start(options(await dataPath(testCase.prefix)))
+      await expect(core.resolveDm("member-peer")).rejects.toThrow(testCase.message)
+      await core.close()
+    }
+  })
+
+  it("encodes bounded prepared avatar variants and preserves the current name for avatar-only updates", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-avatar-")))
+    const makeVariant = (size: number) => {
+      const bytes = Buffer.from(`avatar-${size}`)
+      return { bytes, contentType: "image/png", width: size, height: size, hash: createHash("sha256").update(bytes).digest("hex") }
+    }
+    const avatar = { small: makeVariant(64), medium: makeVariant(128), large: makeVariant(256) }
+    await core.updateIdentityProfile({ avatar })
+    expect((await core.status()).displayName).toBe("Fixture Bot")
+    expect((await core.listMembers("group-test")).find((member) => member.memberId === "identity-self")?.avatar).toMatchObject({ present: true })
+    const invalid = { ...avatar, small: { ...avatar.small, hash: "0".repeat(64) } }
+    await expect(core.updateIdentityProfile({ avatar: invalid })).rejects.toThrow("hash does not match")
+    await core.close()
+  })
+
+  it("rejects an oversized prepared avatar before any profile RPC", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-avatar-boundary-")))
+    const calls: string[] = []
+    const originalCall = core.sidecar.call.bind(core.sidecar)
+    core.sidecar.call = async (name, args) => {
+      calls.push(name)
+      return originalCall(name, args)
+    }
+    const oversizedBytes = Buffer.alloc(512 * 1024 + 1, 0x61)
+    const makeVariant = (size: number, bytes = Buffer.from(`avatar-${size}`)) => ({
+      bytes,
+      contentType: "image/png",
+      width: size,
+      height: size,
+      hash: createHash("sha256").update(bytes).digest("hex"),
+    })
+    const avatar = { small: makeVariant(64, oversizedBytes), medium: makeVariant(128), large: makeVariant(256) }
+    await expect(core.updateIdentityProfile({ avatar })).rejects.toThrow("too large or invalid")
+    expect(calls).toEqual([])
     await core.close()
   })
 

@@ -28,10 +28,14 @@ through the real DSH Loader in a disposable DSH home. It is the v1 local/link
 or tarball operator path. There is no publication, registry, or release
 workflow, and nothing may be pushed from this task.
 
-Official runtime tests are opt-in only. `bun run real-worker-smoke` requires
-`KEET_OFFICIAL_RUNTIME_SMOKE=1`; the two-sidecar onboarding smoke requires
-`KEET_OFFICIAL_ONBOARDING_SMOKE=1`. Both use fresh temporary identity paths.
-Never infer official-client interoperability from fake-worker or Loader tests.
+Official runtime tests are high-cost operator checks. Run them only when the
+user explicitly requests an official-runtime smoke in the current task; the
+opt-in environment variables enable execution but do not grant permission.
+`bun run real-worker-smoke` requires `KEET_OFFICIAL_RUNTIME_SMOKE=1`; the
+two-sidecar onboarding smoke requires `KEET_OFFICIAL_ONBOARDING_SMOKE=1`.
+Both use fresh temporary identity paths. When they are not requested, report
+official-client interoperability as unverified rather than running them.
+Never infer it from fake-worker or Loader tests.
 
 The implementation seam is the official fd-3 `tiny-buffer-rpc` sidecar. Raw
 Hypercore/Hyperswarm transports are different networks and do not satisfy

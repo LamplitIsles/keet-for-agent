@@ -2,6 +2,7 @@ export const RPC_METHODS = {
   swarmReady: 0,
   getVersion: 1,
   getIdentity: 6,
+  getRoomInfo: 39,
   getLinkInfo: 22,
   createRoom: 25,
   startPairingRoom: 28,
@@ -12,7 +13,11 @@ export const RPC_METHODS = {
   addChatMessage: 104,
   getChatMessages: 136,
   subscribeChatMessages: 139,
+  /** Used only by the disposable opt-in official interoperability smoke. */
+  sendDmRequest: 144,
   updateIdentityProfile: 19,
+  getDmRequestsByStatus: 152,
+  acceptDmRequest: 154,
   boot: 225,
 } as const
 

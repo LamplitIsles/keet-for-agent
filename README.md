@@ -1,7 +1,7 @@
 # Keet for Agent
 
 `@lamplitisles/dsh-keet` is a narrow DeepSeek Harness (DSH) plugin for one
-already-joined Keet group. It uses the official Keet Linux x86-64 runtime
+already-joined Keet Managed Group and, optionally, one accepted Managed DM. It uses the official Keet Linux x86-64 runtime
 through a typed Integration Core; the runtime itself is supplied privately by
 the operator and is never included in this repository or package artifact.
 
@@ -65,45 +65,80 @@ dsh-keet-setup profile \
   --display-name "Keet Assistant"
 ```
 
-The profile command changes only the display name. Avatar import is deferred:
-the official profile RPC expects Keet's internal multi-size image-file value,
-not a filesystem path. The setup executable has no chat, room creation,
-invitation creation, biography, or avatar surface.
+The profile operation accepts either field independently (or both):
+
+```sh
+dsh-keet-setup profile --workspace /path/to/dsh-workspace \
+  --display-name "Keet Assistant" --avatar /path/to/avatar.png
+```
+
+Avatar input must be a local PNG, JPEG, or WebP no larger than 8 MiB. Setup
+honors orientation, center-crops to a square, and creates deterministic 64,
+128, and 256 pixel PNG variants, each below Keet's 512 KiB inline limit. The
+asset remains square; official clients apply their circular presentation mask.
+An avatar-only update preserves the current non-empty display name. Setup has
+no chat, room creation, invitation creation, biography, or avatar-removal
+surface.
+
+To inspect and accept a human-sent DM request, use the setup executable:
+
+```sh
+dsh-keet-setup dm-requests --workspace /path/to/dsh-workspace
+dsh-keet-setup dm-accept --workspace /path/to/dsh-workspace --member-id <peer-member-id>
+```
+
+The request list contains only bounded sender identity records. Acceptance is
+exact and returns the accepted peer Member ID plus its resolved DM group ID;
+the Agent and production bridge never initiate contact requests.
 
 ## Configure and use the bridge
 
-The native DSH settings card has exactly two restart-scoped fields:
+The native DSH settings card has three restart-scoped fields:
 
-1. DSH workspace; and
-2. Managed Group ID from onboarding.
+1. DSH workspace;
+2. required Managed Group ID from onboarding; and
+3. optional accepted Managed DM peer Member ID.
 
 The workspace can be saved before onboarding. On the next startup the Host
 initializes its private identity directory beneath that workspace. Runtime and
 identity paths are fixed Host conventions rather than browser-supplied values.
+If readiness is unavailable, verify the selected workspace, that the regular
+ID is a joined `Default` room, and that any DM peer was accepted and copied
+exactly; save the settings and restart DSH. Diagnostics stay bounded and do
+not echo invitations or Core-private records.
+
+The Integration Core reads the canonical joined-room list at startup. A
+configured DM is usable only when exactly one listed room is typed
+`DirectMessage` and names the configured peer Member ID; a pending, missing,
+duplicate, or non-DM match fails readiness closed.
 
 At startup the bridge selects the latest eligible existing human conversation
 in that workspace and keeps it for its lifetime. It never creates or switches
-conversations or groups. Ordinary new text is retained in a bounded FIFO
-context buffer. External messages are rendered once as concise structured
-`<message>` records containing their canonical `{ device_id, seq }` message ID
-components and sender identity; the integration's own messages are retained
-only for reply-target ownership. Only a mention of the identity, a literal
-occurrence of its current non-empty display label, or a Keet replyTo relation to
-one of its messages starts one serialized Agent turn. Group records are quoted,
-untrusted data.
+conversations or groups. It exposes only the configured Managed Group and,
+when set, the one resolved Managed DM; unrelated joined rooms remain hidden.
+Each destination has an independent bounded FIFO context buffer. Group text
+keeps the existing mention, display-label, and verified-reply triggers. Every
+new ordinary external DM text starts one serialized Agent turn. Group prompt
+records retain canonical `{ device_id, seq }` provenance; DM prompts identify
+the sender and destination but intentionally omit message IDs and reply
+relations. All records are quoted, untrusted data.
 
-An Agent turn's final DSH text is never relayed automatically. Delivery is
-always explicit through the fixed-group tools:
+An Agent turn's final DSH text is never relayed automatically. Call
+`keet_list_groups` first, then pass one returned `groupId` to the common
+destination tools:
 
+- `keet_list_groups`: the configured Managed Group and optional Managed DM;
 - `keet_list_members`: at most 128 deterministic current member records;
-- `keet_read_recent_messages`: 1–50 chronological bounded plain-text records,
-  including stable message and sender IDs and Keet replyTo targets;
-- `keet_send_message`: one non-empty text message up to 16,000 characters,
-  optionally using an exact `{ deviceId, seq }` Keet replyTo target from a
-  recent read.
+- `keet_read_recent_messages`: 1–50 chronological bounded plain-text records;
+  regular groups include stable message IDs and reply targets, while DM
+  results omit those fields;
+- `keet_send_message`: one non-empty text message up to 16,000 characters.
+  Regular groups may use an exact `{ deviceId, seq }` reply target; DM sends
+  are ordinary text and reject `replyTo`.
 
-The tools never accept an arbitrary group selector, invitation, identity,
-files, media, or formatting options.
+Every destination tool rejects an arbitrary or unconfigured group ID before
+touching Core. The tools never accept invitations, identity data, files,
+media, or formatting options.
 
 ## Verification
 
@@ -124,9 +159,11 @@ similarly skipped unless `KEET_OFFICIAL_ONBOARDING_SMOKE=1` is set; see the
 operator guide for its required runtime variables. Never use a real user's
 identity, group, invitation, or data directory in tests.
 
-The real-worker smoke verifies that the official worker round-trips a Keet
-reply relation. It does not verify desktop UI rendering; that visual check
-remains a separate disposable operator smoke.
+The real-worker smoke verifies the official worker's Keet reply relation. The
+opt-in two-sidecar onboarding smoke additionally accepts one human DM request,
+resolves the DM on both identities, sends ordinary DM text, and propagates a
+generated avatar observation. Neither smoke claims desktop UI rendering; the
+manual circular-avatar check remains a separate disposable operator smoke.
 
 ## Scope and privacy
 
@@ -139,5 +176,5 @@ Hypercore/Hyperswarm transports are separate networks and are not Keet
 compatibility substitutes.
 
 MCP, OpenClaw, Hermes, a general chat CLI, multiple groups or identities,
-automatic final-text delivery, files/media/calls, moderation, and avatar
-import remain outside this v1 slice.
+automatic final-text delivery, files/media/calls, moderation, avatar removal,
+and private-only operation remain outside this v1 slice.

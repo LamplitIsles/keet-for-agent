@@ -34,7 +34,8 @@ const dshExternals = [
   "@deepseek-ai/dsh-workspace",
   "@deepseek-ai/schemastery",
   "react",
-  "react/jsx-runtime"
+  "react/jsx-runtime",
+  "sharp",
 ];
 
 function cssModulesPlugin(): EsbuildPlugin {

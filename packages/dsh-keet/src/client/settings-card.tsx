@@ -92,7 +92,7 @@ export function KeetSettingsCard({ scope, readiness, workspaces, workspaceSource
   const invalid = stale || Boolean(validation.issues.workspaceId) || (effective.groupId.length > 0 && Boolean(validation.issues.groupId))
   const text = (key: string) => textFor(t, key)
   const edit = <K extends keyof KeetSettings>(field: K, value: KeetSettings[K]) => { if (writable && !saving) { setFailed(false); setDraft((current) => ({ ...current, [field]: value })) } }
-  const save = async () => { if (!writable || !dirty || invalid || saving) return; const staged = { ...draft }; setSaving(true); setFailed(false); try { for (const field of ["groupId", "workspaceId"] as const) if (field in staged) await scope.set(field, staged[field]); const next = scope.getSnapshot(); setSnapshot(next); setBaseline(snapshotValue(next)); setDraft({}) } catch { setDraft(staged); setFailed(true) } finally { setSaving(false) } }
+  const save = async () => { if (!writable || !dirty || invalid || saving) return; const staged = { ...draft }; setSaving(true); setFailed(false); try { for (const field of ["groupId", "workspaceId", "dmMemberId"] as const) if (field in staged) await scope.set(field, staged[field]); const next = scope.getSnapshot(); setSnapshot(next); setBaseline(snapshotValue(next)); setDraft({}) } catch { setDraft(staged); setFailed(true) } finally { setSaving(false) } }
   const field = (fieldName: keyof KeetSettings, labelKey: string, hintKey: string) => {
     const issue = fieldName === "groupId" && effective.groupId.length === 0 ? undefined : validation.issues[fieldName]
     const fieldId = `${id}-${fieldName}`
@@ -120,6 +120,6 @@ export function KeetSettingsCard({ scope, readiness, workspaces, workspaceSource
     ),
     createElement("p", { className: `${styles.hint} ${stale ? styles.invalid : ""}`, id: `${id}-workspaceId-hint` }, stale ? text("workspaceMissing") : text("workspaceHint")),
   )
-  const content = createElement("div", { className: styles.form, "data-settings-card": SETTINGS_NAMESPACE }, workspaceField, field("groupId", "groupId", "groupIdHint"), createElement("div", { className: styles.runtime, role: "status", "data-readiness": runtime.state }, createElement("strong", null, text("runtime")), createElement("span", { className: styles.runtimeState }, text(runtime.state))), createElement("p", { className: styles.hint }, text("restartHint")))
+  const content = createElement("div", { className: styles.form, "data-settings-card": SETTINGS_NAMESPACE }, workspaceField, field("groupId", "groupId", "groupIdHint"), field("dmMemberId", "dmMemberId", "dmMemberIdHint"), createElement("div", { className: styles.runtime, role: "status", "data-readiness": runtime.state }, createElement("strong", null, text("runtime")), createElement("span", { className: styles.runtimeState }, text(runtime.state))), createElement("p", { className: styles.hint }, text("restartHint")))
   return createElement(Frame, { title: text("title"), description: text("description"), t: text, state: { available: snapshot.status === "ready", writable, dirty, invalid, saving, failed }, onSave: () => void save(), onDiscard: () => { if (!saving) { setDraft({}); setFailed(false) } } }, content)
 }

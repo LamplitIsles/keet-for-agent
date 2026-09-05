@@ -9,8 +9,27 @@ import any from "tiny-buffer-rpc/any.js"
 const dataPath = process.argv[2]
 const ipc = new net.Socket({ fd: 3, readable: true, writable: true })
 const groupId = "group-test"
+const dmGroupId = "group-dm"
+const dmMemberId = "member-peer"
 const selfId = "identity-self"
-const groups = [{ roomId: groupId, title: "Test group", description: "fixture" }]
+const dmMode = dataPath.includes("dm-flow") || dataPath.includes("dm-broadcast") || dataPath.includes("dm-duplicate") || dataPath.includes("dm-mismatched-peer") || dataPath.includes("dm-default") || dataPath.includes("dm-typed-compact") || dataPath.includes("dm-delayed")
+const roomTypesMode = dataPath.includes("room-types")
+const broadcastGroupId = "group-broadcast"
+const dmBroadcast = dataPath.includes("dm-broadcast")
+const dmDefault = dataPath.includes("dm-default")
+const dmDuplicate = dataPath.includes("dm-duplicate")
+const dmMismatchedPeer = dataPath.includes("dm-mismatched-peer")
+const dmTypedCompact = dataPath.includes("dm-typed-compact")
+const dmDelayed = dataPath.includes("dm-delayed")
+let dmAccepted = dataPath.includes("dm-broadcast") || (dmTypedCompact && !dmDelayed)
+const dmRoomMemberId = dmMismatchedPeer ? "member-other" : dmMemberId
+const dmRoomRecords = [
+  { roomId: dmGroupId, title: "Managed DM", description: "fixture DM", ...(dmTypedCompact ? { roomType: "DirectMessage" } : {}) },
+  ...(dmDuplicate ? [{ roomId: dmGroupId, title: "Managed DM duplicate", description: "fixture DM duplicate", ...(dmTypedCompact ? { roomType: "DirectMessage" } : {}) }] : []),
+]
+const groups = [{ roomId: groupId, title: "Test group", description: "fixture" }, ...(roomTypesMode ? [{ roomId: broadcastGroupId, title: "Broadcast", description: "fixture broadcast" }] : [])]
+if (dmMode && !dmDelayed) groups.push(...dmRoomRecords)
+let delayedRoomListPolls = 0
 const members = [
   { memberId: selfId, displayName: "Fixture Bot" },
   { memberId: "member-alice", displayName: "Alice" },
@@ -24,7 +43,8 @@ const messages = officialShape ? [
     member: { memberId: "member-alice", displayName: "Official Alice" },
     id: { deviceId: "device-alice", seq: 11 },
     deleted: false,
-    message: { text: "official mention" },
+    replyTo: null,
+    message: { text: "official mention", replyTo: null },
     chat: { text: "official mention", edited: false, mentions: [{ type: "mention", memberId: selfId }] },
   },
   {
@@ -33,15 +53,26 @@ const messages = officialShape ? [
     member: { memberId: "member-alice", displayName: "Official Alice" },
     id: { deviceId: "device-alice", seq: 12 },
     deleted: false,
-    message: { text: "edited official record" },
+    replyTo: null,
+    message: { text: "edited official record", replyTo: null },
     chat: { text: "edited official record", edited: true, mentions: [] },
+  },
+  {
+    timestamp: 6,
+    memberId: "member-alice",
+    member: { memberId: "member-alice", displayName: "Official Alice" },
+    id: { deviceId: "device-alice", seq: 13 },
+    deleted: false,
+    replyTo: { deviceId: "device-self", seq: 2 },
+    message: { text: "conflicting official reply", replyTo: { deviceId: "device-other", seq: 3 } },
+    chat: { text: "conflicting official reply", edited: false, mentions: [] },
   },
 ] : [
   { roomId: groupId, messageId: { deviceId: "device-alice", seq: 1 }, senderId: "member-alice", senderName: "Alice", timestamp: 1, type: "text", text: "initial context" },
   { roomId: groupId, messageId: { deviceId: "device-self", seq: 2 }, senderId: selfId, senderName: "Fixture Bot", timestamp: 2, type: "text", text: "initial self" },
   { roomId: groupId, messageId: { deviceId: "device-system", seq: 3 }, senderId: "system", timestamp: 3, type: "system", text: "ignored system" },
   { roomId: groupId, messageId: { deviceId: "device-alice", seq: 4 }, senderId: "member-alice", senderName: "Alice", timestamp: 4, type: "text", text: "ignored malformed reply", replyTo: { deviceId: "device-self" } },
-  { roomId: groupId, messageId: { deviceId: "device-alice", seq: 5 }, senderId: "member-alice", senderName: "Alice", timestamp: 5, type: "text", text: "ignored masked malformed reply", replyTo: null, options: { replyTo: { deviceId: "device-self", seq: 2 } } },
+  { roomId: groupId, messageId: { deviceId: "device-alice", seq: 5 }, senderId: "member-alice", senderName: "Alice", timestamp: 5, type: "text", text: "valid nested reply after nullable field", replyTo: null, options: { replyTo: { deviceId: "device-self", seq: 2 } } },
 ]
 const streams = new Set()
 let nextSeq = 10
@@ -57,13 +88,26 @@ const rpc = new TinyBufferRPC((message) => {
 rpc.register(0, { request: any, response: any, onrequest: () => true })
 rpc.register(1, { request: any, response: any, onrequest: () => ({ modules: { "keet-core": "4.21.5" }, abi: { production: 35 } }) })
 rpc.register(6, { request: any, response: any, onrequest: () => missingIdentity ? {} : ({ memberId: selfId, displayName: "Fixture Bot" }) })
-rpc.register(19, { request: any, response: any, onrequest: ([profile]) => { if (profile?.displayName) members[0].displayName = profile.displayName; return {} } })
+rpc.register(19, { request: any, response: any, onrequest: ([profile]) => { if (profile?.displayName) members[0].displayName = profile.displayName; if (profile?.avatar) members[0].avatar = profile.avatar; return {} } })
 rpc.register(22, { request: any, response: any, onrequest: ([value]) => ({ isRoomInvitation: value === invitationToken, title: "Test group" }) })
 rpc.register(25, { request: any, response: any, onrequest: ([options]) => { void options; return groupId } })
 rpc.register(28, { request: any, response: any, onrequest: () => ({ roomId: groupId }) })
-rpc.register(43, { request: any, response: any, onrequest: () => ({ rooms: groups }) })
+rpc.register(39, { request: any, response: any, onrequest: ([room]) => room === groupId ? ({ roomId: groupId, title: "Test group", description: "fixture", roomType: "Default" }) : room === broadcastGroupId && roomTypesMode ? ({ roomId: broadcastGroupId, title: "Broadcast", description: "fixture broadcast", roomType: "Broadcast" }) : room === dmGroupId && dmMode ? ({ roomId: dmGroupId, title: "Managed DM", description: "fixture DM", roomType: dmBroadcast ? "Broadcast" : dmDefault ? "Default" : "DirectMessage", dmMemberId: dmRoomMemberId }) : null })
+rpc.register(43, {
+  request: any,
+  response: any,
+  onrequest: () => {
+    if (dmDelayed && dmAccepted && !groups.some((room) => room.roomId === dmGroupId)) {
+      delayedRoomListPolls += 1
+      if (delayedRoomListPolls >= 2) groups.push(...dmRoomRecords)
+    }
+    return { rooms: groups }
+  },
+})
 rpc.register(61, { request: any, response: any, onrequest: () => invitationToken })
-rpc.register(66, { request: any, response: any, onrequest: () => members })
+rpc.register(66, { request: any, response: any, onrequest: ([room]) => room === dmGroupId && dmMode ? [...members, { memberId: dmMemberId, displayName: "Peer" }] : members })
+rpc.register(152, { request: any, response: any, onrequest: ([status]) => dmMode && status === 3 && !dmAccepted ? [{ id: { memberId: dmMemberId, roomId: dmGroupId }, roomId: dmGroupId, senderContactInfo: { memberId: dmMemberId, displayName: "Peer" }, status: { isPending: true }, message: "private request" }] : [] })
+rpc.register(154, { request: any, response: any, onrequest: ([request]) => { if (!dmMode || request?.memberId !== dmMemberId || request?.roomId !== dmGroupId) throw new Error("invalid DM request"); dmAccepted = true; return {} } })
 rpc.register(104, {
   request: any,
   response: any,

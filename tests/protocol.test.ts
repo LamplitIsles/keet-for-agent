@@ -33,6 +33,17 @@ describe("Keet message protocol", () => {
     expect(rendered.length).toBeLessThanOrEqual(16_000)
   })
 
+  it("renders Managed DM prompts with sender context but no model-visible message or reply IDs", () => {
+    const record = normalizeKeetRecord({ ...base, groupId: "dm-room", replyTo: { deviceId: "bot-device", seq: 2 } }, "dm-room")!
+    const rendered = renderKeetContextPrompt([record], record, { kind: "dm", label: "Private peer" })
+    expect(rendered.startsWith("[Keet Managed DM messages — Private peer")).toBe(true)
+    expect(rendered).toContain('<message sender_id="alice" sender_label="Alice" trigger=true>')
+    expect(rendered).not.toContain("device_id")
+    expect(rendered).not.toContain("seq=")
+    expect(rendered).not.toContain("replyTo")
+    expect(rendered).toContain("hello")
+  })
+
   it("keeps a bounded head, middle, and tail inside a complete maximum-size record", () => {
     const record = classifyTrigger({ ...base, text: `${"H".repeat(5_400)}${"M".repeat(5_200)}${"T".repeat(5_400)}`, mentions: ["bot"] }, identity, new Set())!
     const rendered = renderKeetContextPrompt([record], record)

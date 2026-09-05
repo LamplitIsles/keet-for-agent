@@ -12,13 +12,16 @@ export const MAX_MESSAGE_TEXT = 16_000
 export const DEDUPE_LIMIT = 512
 export const CONTEXT_BUFFER_LIMIT = 64
 export const CLASSIFICATION_STOP_TIMEOUT_MS = 100
+export const MAX_DESTINATIONS = 2
 
 export interface KeetSettings {
   groupId: string
   workspaceId: string
+  dmMemberId: string
 }
 
 export const DEFAULT_SETTINGS: KeetSettings = Object.freeze({
   groupId: "",
   workspaceId: "",
+  dmMemberId: "",
 })
