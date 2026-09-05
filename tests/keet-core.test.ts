@@ -62,6 +62,7 @@ describe("typed Keet Integration Core", () => {
     expect(await core.readRecentMessages("group-test", 50)).toEqual([
       expect.objectContaining({ messageId: { deviceId: "device-alice", seq: 1 }, senderId: "member-alice", text: "initial context" }),
       expect.objectContaining({ messageId: { deviceId: "device-self", seq: 2 }, senderId: "identity-self", text: "initial self" }),
+      expect.objectContaining({ messageId: { deviceId: "device-alice", seq: 5 }, senderId: "member-alice", text: "valid nested reply after nullable field", replyTo: { deviceId: "device-self", seq: 2 } }),
     ])
     await expect(core.readRecentMessages("group-test", 0)).rejects.toThrow("1 to 50")
     await expect(core.readRecentMessages("other", 1)).resolves.toEqual([])
@@ -71,7 +72,7 @@ describe("typed Keet Integration Core", () => {
     expect(logs.map((entry) => entry.event)).toContain("sidecar.worker-output-discarded")
   })
 
-  it("normalizes the official v1 member label and chat mentions while excluding edits", async () => {
+  it("normalizes official nullable reply fields and member labels while excluding edits and conflicting replies", async () => {
     const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-official-shape-")))
     const history = await core.readRecentMessages("group-test", 50)
     expect(history).toEqual([
@@ -85,6 +86,7 @@ describe("typed Keet Integration Core", () => {
         mentions: ["identity-self"],
       },
     ])
+    expect(history[0]).not.toHaveProperty("replyTo")
     expect(classifyTrigger(history[0]!, { memberId: "identity-self", displayName: "Fixture Bot" }, new Set())?.triggerKind).toBe("mention")
     await core.close()
   })

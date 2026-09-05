@@ -620,7 +620,12 @@ function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefi
   const options = isRecord(value.options) ? value.options : undefined
   const replyCandidates: unknown[] = []
   const collectReply = (record: RawRecord | undefined, key: string) => {
-    if (record !== undefined && Object.prototype.hasOwnProperty.call(record, key)) replyCandidates.push(record[key])
+    if (record === undefined || !Object.prototype.hasOwnProperty.call(record, key)) return
+    const candidate = record[key]
+    // Official ordinary text records explicitly carry nullable reply fields.
+    // Null/undefined means “no reply”; only present non-null candidates are
+    // validated below so malformed or conflicting targets still fail closed.
+    if (candidate !== null && candidate !== undefined) replyCandidates.push(candidate)
   }
   collectReply(value, "replyTo")
   collectReply(value, "replyToId")

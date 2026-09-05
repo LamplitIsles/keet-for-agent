@@ -43,7 +43,8 @@ const messages = officialShape ? [
     member: { memberId: "member-alice", displayName: "Official Alice" },
     id: { deviceId: "device-alice", seq: 11 },
     deleted: false,
-    message: { text: "official mention" },
+    replyTo: null,
+    message: { text: "official mention", replyTo: null },
     chat: { text: "official mention", edited: false, mentions: [{ type: "mention", memberId: selfId }] },
   },
   {
@@ -52,15 +53,26 @@ const messages = officialShape ? [
     member: { memberId: "member-alice", displayName: "Official Alice" },
     id: { deviceId: "device-alice", seq: 12 },
     deleted: false,
-    message: { text: "edited official record" },
+    replyTo: null,
+    message: { text: "edited official record", replyTo: null },
     chat: { text: "edited official record", edited: true, mentions: [] },
+  },
+  {
+    timestamp: 6,
+    memberId: "member-alice",
+    member: { memberId: "member-alice", displayName: "Official Alice" },
+    id: { deviceId: "device-alice", seq: 13 },
+    deleted: false,
+    replyTo: { deviceId: "device-self", seq: 2 },
+    message: { text: "conflicting official reply", replyTo: { deviceId: "device-other", seq: 3 } },
+    chat: { text: "conflicting official reply", edited: false, mentions: [] },
   },
 ] : [
   { roomId: groupId, messageId: { deviceId: "device-alice", seq: 1 }, senderId: "member-alice", senderName: "Alice", timestamp: 1, type: "text", text: "initial context" },
   { roomId: groupId, messageId: { deviceId: "device-self", seq: 2 }, senderId: selfId, senderName: "Fixture Bot", timestamp: 2, type: "text", text: "initial self" },
   { roomId: groupId, messageId: { deviceId: "device-system", seq: 3 }, senderId: "system", timestamp: 3, type: "system", text: "ignored system" },
   { roomId: groupId, messageId: { deviceId: "device-alice", seq: 4 }, senderId: "member-alice", senderName: "Alice", timestamp: 4, type: "text", text: "ignored malformed reply", replyTo: { deviceId: "device-self" } },
-  { roomId: groupId, messageId: { deviceId: "device-alice", seq: 5 }, senderId: "member-alice", senderName: "Alice", timestamp: 5, type: "text", text: "ignored masked malformed reply", replyTo: null, options: { replyTo: { deviceId: "device-self", seq: 2 } } },
+  { roomId: groupId, messageId: { deviceId: "device-alice", seq: 5 }, senderId: "member-alice", senderName: "Alice", timestamp: 5, type: "text", text: "valid nested reply after nullable field", replyTo: null, options: { replyTo: { deviceId: "device-self", seq: 2 } } },
 ]
 const streams = new Set()
 let nextSeq = 10
