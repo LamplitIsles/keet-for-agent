@@ -34,6 +34,8 @@ export interface KeetMessage {
   readonly senderLabel: string
   readonly timestamp: number
   readonly text: string
+  /** Bridge-internal top-level chat position; never rendered to the Agent. */
+  readonly chatIndex?: number
   readonly mentions?: readonly string[]
   readonly replyTo?: KeetMessageId
 }
@@ -58,6 +60,10 @@ export interface KeetCore {
   listMembers(groupId: string): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
+  /** Mark a Managed DM read through the native chat-index boundary. */
+  setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void>
+  /** Publish one native Managed DM typing timestamp refresh. */
+  updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void>
   sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal): Promise<KeetMessageId | undefined>
   inspectInvitation(invitation: string, signal?: AbortSignal): Promise<InvitationInfo>
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>

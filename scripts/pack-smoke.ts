@@ -231,7 +231,7 @@ async function main(): Promise<void> {
       if (name.startsWith("@deepseek-ai/dsh-") && version !== "0.1.2-rc.1") throw new Error(`non-rc DSH peer: ${name}@${version}`);
     }
     const patchText = await readFile(join(installed, "cordis.patch.yml"), "utf8");
-    for (const required of ["dsh-keet", "@lamplitisles/dsh-keet", "connection", "settings", "tools", "systemPrompt", "workspaceRegistry", "sessionController"]) {
+    for (const required of ["dsh-keet", "@lamplitisles/dsh-keet", "connection", "settings", "tools", "systemPrompt", "commands", "workspaceRegistry", "sessionController"]) {
       if (!patchText.includes(required)) throw new Error(`Cordis patch is missing ${required}`);
     }
     const hostBundle = await readFile(join(installed, "dist", "index.js"), "utf8");

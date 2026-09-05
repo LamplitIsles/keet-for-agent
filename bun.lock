@@ -20,6 +20,7 @@
         "@deepseek-ai/dsh-client-ui-settings-plugins": "0.1.2-rc.1",
         "@deepseek-ai/dsh-client-ui-slots": "0.1.2-rc.1",
         "@deepseek-ai/dsh-client-ui-workspace": "0.1.2-rc.1",
+        "@deepseek-ai/dsh-commands": "0.1.2-rc.1",
         "@deepseek-ai/dsh-credentials": "0.1.2-rc.1",
         "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
         "@deepseek-ai/dsh-session": "0.1.2-rc.1",
@@ -64,6 +65,7 @@
         "@deepseek-ai/dsh-client-ui-settings-plugins": "0.1.2-rc.1",
         "@deepseek-ai/dsh-client-ui-slots": "0.1.2-rc.1",
         "@deepseek-ai/dsh-client-ui-workspace": "0.1.2-rc.1",
+        "@deepseek-ai/dsh-commands": "0.1.2-rc.1",
         "@deepseek-ai/dsh-credentials": "0.1.2-rc.1",
         "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
         "@deepseek-ai/dsh-session": "0.1.2-rc.1",
@@ -127,6 +129,8 @@
     "@deepseek-ai/dsh-client-ui-workspace": ["@deepseek-ai/dsh-client-ui-workspace@0.1.2-rc.1", "", { "dependencies": { "clsx": "^2.0.0" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.2" } }, "sha512-9zp9ZRfC1nmGEvtF6g5aP9gSgIhA6wAv1LPldxCs5Iicv+5oXr32JqhUzC0X7uCEnh2cFLEcYtEmEllcXsislQ=="],
 
     "@deepseek-ai/dsh-code-runtime": ["@deepseek-ai/dsh-code-runtime@0.1.2-rc.1", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.2" } }, "sha512-dv5UszPJb/AFcarZc2c6h5z/X80bsrSd3bfIOugwNVclSI6P+L3ixseoZKgyks7T0Ap0h6ngXGk2WeoUkmYxnQ=="],
+
+    "@deepseek-ai/dsh-commands": ["@deepseek-ai/dsh-commands@0.1.2-rc.1", "", { "dependencies": { "@deepseek-ai/dsh-util-crypto": "^0.1.2-rc.1", "zod": "^4.4.3" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.2", "@deepseek-ai/dsh-agent": "^0.1.2-rc.1", "@deepseek-ai/dsh-attachment": "^0.1.2-rc.1", "@deepseek-ai/dsh-brand": "^0.1.2-rc.1", "@deepseek-ai/dsh-invariants": "^0.1.2-rc.1", "@deepseek-ai/dsh-llm": "^0.1.2-rc.1", "@deepseek-ai/dsh-scope": "^0.1.2-rc.1", "@deepseek-ai/dsh-session": "^0.1.2-rc.1", "@deepseek-ai/dsh-typert-protocol": "^0.1.2-rc.1" } }, "sha512-uBh4JTX7pOkFhmbWjXjVLnOQOawyccC7+DazbHrLRN6/wy4OgTRH+DaW0+ibLq+XRAO19OvBTtuoh3x/KkJx1Q=="],
 
     "@deepseek-ai/dsh-credentials": ["@deepseek-ai/dsh-credentials@0.1.2-rc.1", "", { "dependencies": { "@deepseek-ai/dsh-brand": "^0.1.2-rc.1" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.2", "@deepseek-ai/dsh-invariants": "^0.1.2-rc.1" } }, "sha512-e7DGpuYQqiD4dOWGQeY/XAWPTjbax/MkrXBwsB8wBtNpoPiAKiLYgd+iFiQc66BGOlutSRFz31IKdbduqPbTxA=="],
 

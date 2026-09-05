@@ -52,6 +52,18 @@ Setup is human-only: `join` reads exactly one invitation URL from stdin,
 pending sender, and `profile` can independently update display name and a
 prepared avatar.
 
+While active Managed DM work is running, the bridge publishes best-effort
+native activity: the triggering message is marked read at chat index plus one,
+and typing refreshes every four seconds until the work settles or a successful
+same-DM send stops ownership. Queued messages remain unread; the receiving
+client expires the last typing timestamp after its native five-second window.
+An exact ordinary DM text of `/compact` is intercepted before context/model
+input, executed once through the composed DSH command registry against the
+bound Agent, and returned as one bounded message in that DM. It creates no
+Agent turn or model-history entry; unavailable or failed command/delivery
+paths do not retry or fall back. The Host composition must inject the
+`commands` service (and its compaction backend).
+
 ## Compatibility and safety
 
 Only Linux x86-64 with Keet 4.21.0, `@holepunchto/keet-core` 4.21.5, and ABI

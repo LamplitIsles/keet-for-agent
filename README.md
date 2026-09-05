@@ -144,6 +144,24 @@ records retain canonical `{ device_id, seq }` provenance and the startup source
 intentionally omit message IDs, reply relations, and sender IDs. All records are
 quoted, untrusted data.
 
+When a Managed DM turn (including `/compact`) actually begins, the bridge marks
+the triggering message read at its normalized chat index plus one and publishes
+native typing activity. Typing refreshes every four seconds while the work is
+active; activity calls are best-effort, and the receiving Keet client expires
+the last typing timestamp naturally after its native five-second active window. Queued messages
+remain unread and do not publish typing. A successful send to that DM, command
+settlement, failure, cancellation, or bridge shutdown stops refresh ownership.
+
+An ordinary Managed DM whose text is exactly `/compact` is intercepted before
+the context buffer and Agent follow-up. It runs once through the composed
+`@deepseek-ai/dsh-commands` service against the bound Active Conversation, creates no Agent turn or
+model-history entry, and sends one bounded command outcome back to that same
+DM. The command service and its compaction backend must be present in the DSH
+composition; unavailable or empty outcomes receive a bounded generic result,
+and delivery failures are reported without retrying or falling back to an
+Agent turn. Whitespace, arguments, casing changes, and regular-group messages
+remain ordinary bridge input.
+
 An Agent turn's final DSH text is never relayed automatically. Call
 `keet_list_groups` first, then pass one exact returned `groupName` to the common
 destination tools:

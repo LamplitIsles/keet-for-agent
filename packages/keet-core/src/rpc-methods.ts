@@ -18,6 +18,10 @@ export const RPC_METHODS = {
   updateIdentityProfile: 19,
   getDmRequestsByStatus: 152,
   acceptDmRequest: 154,
+  /** Native Managed DM read position; the worker enforces room/policy gates. */
+  setUnreadAnchor: 218,
+  /** Native Managed DM typing timestamp refresh; the worker enforces room gates. */
+  updateTypingIndicator: 220,
   boot: 225,
 } as const
 

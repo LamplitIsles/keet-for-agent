@@ -8,6 +8,8 @@ export interface KeetContextRecord {
   readonly senderLabel: string
   readonly timestamp: number
   readonly text: string
+  /** Bridge-internal chat position; never rendered or returned by tools. */
+  readonly chatIndex?: number
   readonly replyTo?: KeetMessageId
 }
 
@@ -51,6 +53,7 @@ export function normalizeKeetRecord(message: KeetMessage, groupId: string): Keet
   if (raw.deleted === true || raw.edited === true || raw.isDeleted === true || raw.isEdit === true || raw.relatesTo !== undefined || raw["m.relates_to"] !== undefined) return undefined
   const replyTo = message.replyTo === undefined || message.replyTo === null ? undefined : normalizeProtocolMessageId(message.replyTo)
   if (message.replyTo !== undefined && message.replyTo !== null && !replyTo) return undefined
+  const chatIndex = normalizeChatIndex((message as unknown as { chatIndex?: unknown }).chatIndex)
   const senderLabel = typeof message.senderLabel === "string" && message.senderLabel.trim() && message.senderLabel !== message.senderId ? message.senderLabel : "Unknown sender"
   return {
     messageId,
@@ -59,6 +62,7 @@ export function normalizeKeetRecord(message: KeetMessage, groupId: string): Keet
     senderLabel: senderLabel.slice(0, MAX_PROVENANCE_CHARS),
     timestamp: Number.isFinite(message.timestamp) ? message.timestamp : 0,
     text: boundedText(message.text),
+    ...(chatIndex !== undefined ? { chatIndex } : {}),
     ...(replyTo ? { replyTo } : {}),
   }
 }
@@ -223,4 +227,7 @@ function normalizeProtocolMessageId(value: unknown): KeetMessageId | undefined {
   const seq = candidate.seq
   if (typeof candidate.deviceId !== "string" || !candidate.deviceId.trim() || candidate.deviceId.length > MAX_PROVENANCE_CHARS || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0) return undefined
   return { deviceId: candidate.deviceId.slice(0, MAX_PROVENANCE_CHARS), seq }
+}
+function normalizeChatIndex(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < Number.MAX_SAFE_INTEGER ? value : undefined
 }

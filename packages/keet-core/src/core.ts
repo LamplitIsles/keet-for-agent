@@ -32,6 +32,10 @@ const DEFAULT_PAIRING_TIMEOUT_MS = 60_000
 const MAX_DM_REQUESTS = 32
 const MAX_AVATAR_BYTES = 512 * 1024
 const DM_REQUEST_PENDING = 3
+// The bridge acknowledges `chatIndex + 1`, so the retained position must
+// leave one safe integer available for that read length.
+const MAX_CHAT_INDEX = Number.MAX_SAFE_INTEGER - 1
+const MAX_CHAT_LENGTH = Number.MAX_SAFE_INTEGER
 
 type RawRecord = Record<string, unknown>
 
@@ -265,6 +269,23 @@ export class KeetIntegrationCore implements KeetCore {
     return messages.slice(-last)
   }
 
+  async setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void> {
+    const id = boundedId(groupId, "Managed Group ID")
+    if (!Number.isSafeInteger(length) || length < 0 || length > MAX_CHAT_LENGTH) {
+      throw publicError("unread anchor length must be a non-negative safe integer")
+    }
+    ensureSignal(signal)
+    const result = await this.callWithSignal("setUnreadAnchor", [id, length], signal)
+    validateVoidResult(result, "unread anchor")
+  }
+
+  async updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void> {
+    const id = boundedId(groupId, "Managed Group ID")
+    ensureSignal(signal)
+    const result = await this.callWithSignal("updateTypingIndicator", [id], signal)
+    validateVoidResult(result, "typing indicator")
+  }
+
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription {
     const id = boundedId(groupId, "Managed Group ID")
     if (typeof handler !== "function") throw publicError("message subscription handler is required")
@@ -463,7 +484,8 @@ export class KeetIntegrationCore implements KeetCore {
 
   private async callWithSignal(name: Parameters<KeetSidecar["call"]>[0], args: unknown[], signal?: AbortSignal): Promise<unknown> {
     ensureSignal(signal)
-    const operation = this.sidecar.call(name, args)
+    let operation: Promise<unknown>
+    try { operation = this.sidecar.call(name, args) } catch { throw publicError("Keet operation failed") }
     try {
       if (!signal) return await operation
       let abortHandler: (() => void) | undefined
@@ -610,6 +632,9 @@ function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefi
   const rawId = value.messageId ?? value.id ?? value.oplog ?? value.key ?? value
   const messageId = normalizeMessageId(rawId) ?? normalizeMessageId(value)
   if (!messageId) return undefined
+  const chatIndex = [value.chatIndex, value.clock, chat?.chatIndex, chat?.clock]
+    .map(normalizeChatIndex)
+    .find((candidate): candidate is number => candidate !== undefined)
   const member = isRecord(value.member) ? value.member : undefined
   const sender = isRecord(value.sender) ? value.sender : isRecord(value.author) ? value.author : isRecord(nestedMessage?.sender) ? nestedMessage.sender : member
   const senderId = firstString(value.senderId, value.memberId, sender?.memberId, sender?.id, member?.memberId, value.authorId, nestedMessage?.senderId, nestedMessage?.memberId)
@@ -652,6 +677,7 @@ function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefi
     senderLabel: senderLabel.slice(0, MAX_MEMBER_ID) || senderId.slice(0, MAX_MEMBER_ID),
     timestamp: Number.isFinite(timestamp) ? timestamp : 0,
     text: text.slice(0, MAX_TEXT),
+    ...(chatIndex !== undefined ? { chatIndex } : {}),
     ...(mentions && mentions.length > 0 ? { mentions } : {}),
     ...(replyTo ? { replyTo } : {}),
   }
@@ -676,6 +702,10 @@ function normalizeMessageId(value: unknown): KeetMessageId | undefined {
   const seq = firstNumber(value.seq, value.sequence, value.index)
   if (!deviceId || seq === undefined || !Number.isSafeInteger(seq) || seq < 0) return undefined
   return { deviceId: deviceId.slice(0, MAX_MEMBER_ID), seq }
+}
+
+function normalizeChatIndex(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_CHAT_INDEX ? value : undefined
 }
 
 function extractMessageId(value: unknown): KeetMessageId | undefined {
@@ -711,6 +741,13 @@ function firstNumber(...values: unknown[]): number | undefined { return values.f
 function isRecord(value: unknown): value is RawRecord { return typeof value === "object" && value !== null }
 function ensureSignal(signal?: AbortSignal): void { if (signal?.aborted) throw publicError("Keet operation cancelled") }
 function publicError(message: string): Error { return new Error(message.slice(0, 512)) }
+
+function validateVoidResult(value: unknown, operation: string): void {
+  if (value === undefined || value === null) return
+  if (!isRecord(value) || Array.isArray(value) || Object.keys(value).length > 0) {
+    throw publicError(`Keet returned an invalid ${operation} result`)
+  }
+}
 
 function validatePreparedAvatar(avatar: PreparedAvatar): void {
   if (!avatar || typeof avatar !== "object") throw publicError("avatar is invalid")

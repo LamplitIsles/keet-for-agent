@@ -4,7 +4,7 @@ import type { Context } from "@deepseek-ai/cordis"
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools"
 import { KeetIntegrationCore } from "@lamplitisles/keet-integration-core"
 import type { KeetCore, KeetCoreOptions, KeetMessage, KeetMessageId, KeetSubscription } from "./core-contract.js"
-import { CLASSIFICATION_STOP_TIMEOUT_MS, CONTEXT_BUFFER_LIMIT, DEFAULT_SETTINGS, DEDUPE_LIMIT, MAX_PROMPT_CHARS, MAX_RECENT_MESSAGES, type KeetSettings } from "./constants.js"
+import { CLASSIFICATION_STOP_TIMEOUT_MS, CONTEXT_BUFFER_LIMIT, DEFAULT_SETTINGS, DEDUPE_LIMIT, DM_TYPING_REFRESH_MS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_RECENT_MESSAGES, type KeetSettings } from "./constants.js"
 import { classifyTrigger, messageIdKey, normalizeKeetRecord, renderKeetContextPrompt, type AdmittedKeetMessage, type KeetContextRecord, type KeetIdentity } from "./keet-protocol.js"
 import { createKeetToolDefinitions, normalizeManagedDestinationName, type ManagedDestination } from "./keet-tools.js"
 import { createKeetRuntimeOptions, type KeetRuntimePaths } from "./runtime-options.js"
@@ -26,8 +26,13 @@ export interface KeetBridgeAgent extends Pick<Agent, "id" | "followup"> {
   ctx?: Context & {
     tools?: { register: (definition: ToolDefinition) => () => void }
     systemPrompt?: { section: (section: { name: string; order: number; text: string }) => () => void }
+    commands?: KeetCommandService
   }
   whenIdle: () => Promise<void>
+}
+/** Minimal Host command seam used by the bridge; the concrete DSH service owns command semantics. */
+export interface KeetCommandService {
+  execute: (agent: unknown, line: string, images: readonly unknown[], signal: AbortSignal) => Promise<unknown>
 }
 export interface KeetBridgeDependencies {
   getSettings: () => unknown
@@ -37,6 +42,7 @@ export interface KeetBridgeDependencies {
   resolveAgent: (sessionId: string) => Promise<{ agent: KeetBridgeAgent } | { error: unknown }>
   coreFactory?: (options: KeetCoreOptions) => Promise<KeetCore>
   core?: KeetCore
+  commands?: KeetCommandService
   onReadiness?: (readiness: KeetBridgeReadiness) => void
   onError?: (error: unknown) => void
 }
@@ -49,9 +55,18 @@ interface DestinationState {
   readonly refreshedReplyTargets: Set<string>
   subscription: KeetSubscription | undefined
   subscriptionTerminationDisposer: (() => void) | undefined
+  activeActivity: DmActivity | undefined
 }
-interface QueuedTrigger { destination: ManagedDestination; message: AdmittedKeetMessage; transcript: readonly KeetContextRecord[] }
+interface QueuedTrigger {
+  destination: ManagedDestination
+  message: AdmittedKeetMessage
+  transcript: readonly KeetContextRecord[]
+  kind: "agent" | "compact"
+}
+interface DmActivity { stop(): void }
 interface DetachedResources { subscriptions: KeetSubscription[]; core?: KeetCore }
+
+const COMPACT_UNAVAILABLE = "The /compact command is unavailable."
 
 async function waitWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -267,10 +282,14 @@ export class KeetBridge {
       }
     }
     if (!admitted) return
+    if (state.destination.kind === "dm" && record.text === "/compact") {
+      if (this.boundAgent) this.enqueue({ destination: state.destination, message: admitted, transcript: [], kind: "compact" })
+      return
+    }
     this.appendContext(state, admitted)
     if (!admitted.trigger || !this.boundAgent) return
     const transcript = this.drainContext(state)
-    this.enqueue({ destination: state.destination, message: admitted, transcript })
+    this.enqueue({ destination: state.destination, message: admitted, transcript, kind: "agent" })
   }
 
   private rememberOwnMessages(state: DestinationState, messages: readonly KeetMessage[]): void {
@@ -304,17 +323,84 @@ export class KeetBridge {
   private async processTrigger(trigger: QueuedTrigger): Promise<void> {
     const agent = this.boundAgent
     if (!agent || this.stopped) return
+    const activity = trigger.destination.kind === "dm" ? this.startDmActivity(trigger.destination.groupId, trigger.message.chatIndex) : undefined
+    if (trigger.kind === "compact") {
+      try { await this.processCompact(trigger, agent) } finally { activity?.stop() }
+      return
+    }
     const text = renderKeetContextPrompt(trigger.transcript, trigger.message, { kind: trigger.destination.kind, groupName: trigger.destination.groupName })
     try {
       const result = (agent.followup as unknown as (message: unknown) => unknown)(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }) as never)
       if (result && typeof (result as PromiseLike<unknown>).then === "function") await result
       await agent.whenIdle().catch(() => this.reportError())
     } catch { this.reportError() }
+    finally { activity?.stop() }
   }
 
   markSent(groupId: string, messageId?: KeetMessageId): void {
+    const state = this.states.get(groupId)
+    // A successful explicit send is the native activity boundary even when
+    // Core cannot provide a canonical message ID for receipt bookkeeping.
+    state?.activeActivity?.stop()
     if (!this.accepting || this.stopped || !messageId) return
-    this.states.get(groupId)?.ownMessageIds.add(messageIdKey(messageId))
+    state?.ownMessageIds.add(messageIdKey(messageId))
+  }
+
+  private startDmActivity(groupId: string, chatIndex: number | undefined): DmActivity | undefined {
+    const state = this.states.get(groupId)
+    const core = this.coreValue
+    if (!state || !core || state.destination.kind !== "dm") return undefined
+    state.activeActivity?.stop()
+    const controller = new AbortController()
+    let active = true
+    let timer: ReturnType<typeof setInterval> | undefined
+    const parentAbort = () => activity.stop()
+    const activity: DmActivity = {
+      stop: () => {
+        if (!active) return
+        active = false
+        if (timer) clearInterval(timer)
+        this.stopController.signal.removeEventListener("abort", parentAbort)
+        controller.abort()
+        if (state.activeActivity === activity) state.activeActivity = undefined
+      },
+    }
+    state.activeActivity = activity
+    this.stopController.signal.addEventListener("abort", parentAbort, { once: true })
+
+    const invoke = (operation: (() => Promise<void>) | undefined): void => {
+      if (!operation || !active) return
+      let result: Promise<void> | undefined
+      try { result = operation() } catch { if (active) this.reportError(); return }
+      void Promise.resolve(result).catch(() => { if (active && !controller.signal.aborted) this.reportError() })
+    }
+    if (chatIndex !== undefined && typeof core.setUnreadAnchor === "function") {
+      // Read admission is the consumed-message boundary. It remains owned by
+      // the bridge until shutdown, even when the turn's typing owner settles.
+      invoke(() => core.setUnreadAnchor!(groupId, chatIndex + 1, this.stopController.signal))
+    }
+    if (typeof core.updateTypingIndicator === "function") {
+      invoke(() => core.updateTypingIndicator!(groupId, controller.signal))
+      timer = setInterval(() => invoke(() => core.updateTypingIndicator!(groupId, controller.signal)), DM_TYPING_REFRESH_MS)
+    }
+    return activity
+  }
+
+  private async processCompact(trigger: QueuedTrigger, agent: KeetBridgeAgent): Promise<void> {
+    let response = COMPACT_UNAVAILABLE
+    const commands = agent.ctx?.commands ?? this.deps.commands
+    if (commands && typeof commands.execute === "function") {
+      try {
+        const execution = await commands.execute(agent, "/compact", [], this.stopController.signal)
+        const text = compactResultText(execution)
+        if (text) response = text
+      } catch { this.reportError() }
+    }
+    if (this.stopped || !this.coreValue) return
+    try {
+      const messageId = await this.coreValue.sendMessage(trigger.destination.groupId, response, undefined, this.stopController.signal)
+      if (!this.stopped) this.markSent(trigger.destination.groupId, messageId)
+    } catch { this.reportError() }
   }
 
   private async failStartup(detail: NonNullable<KeetBridgeReadiness["detail"]>): Promise<void> {
@@ -339,7 +425,7 @@ export class KeetBridge {
     for (const state of this.states.values()) { if (state.subscription) subscriptions.push(state.subscription); state.subscriptionTerminationDisposer?.(); state.subscriptionTerminationDisposer = undefined; state.subscription = undefined }
     const resources: DetachedResources = { subscriptions, ...(this.coreValue ? { core: this.coreValue } : {}) }
     this.coreValue = undefined; this.boundAgent = undefined; this.boundSessionId = undefined; this.accepting = false; this.queueGeneration += 1; this.stopController.abort(); this.disposeTools()
-    for (const state of this.states.values()) { state.contextBuffer.length = 0; state.seen.clear(); state.ownMessageIds.clear(); state.refreshedReplyTargets.clear() }
+    for (const state of this.states.values()) { state.activeActivity?.stop(); state.activeActivity = undefined; state.contextBuffer.length = 0; state.seen.clear(); state.ownMessageIds.clear(); state.refreshedReplyTargets.clear() }
     return resources
   }
   private cleanupResources(resources: DetachedResources): Promise<void> {
@@ -351,11 +437,18 @@ export class KeetBridge {
 }
 
 function makeDestinationState(destination: ManagedDestination): DestinationState {
-  return { destination, contextBuffer: [], seen: new Set(), ownMessageIds: new Set(), refreshedReplyTargets: new Set(), subscription: undefined, subscriptionTerminationDisposer: undefined }
+  return { destination, contextBuffer: [], seen: new Set(), ownMessageIds: new Set(), refreshedReplyTargets: new Set(), subscription: undefined, subscriptionTerminationDisposer: undefined, activeActivity: undefined }
 }
 function cloneRecord(record: KeetContextRecord): KeetContextRecord {
   return { ...record, messageId: { ...record.messageId }, ...(record.replyTo ? { replyTo: { ...record.replyTo } } : {}) }
 }
+
+function compactResultText(value: unknown): string | undefined {
+  const candidate = isRecord(value) && "result" in value ? value.result : value
+  if (!isRecord(candidate) || (candidate.kind !== "success" && candidate.kind !== "error") || typeof candidate.text !== "string" || !candidate.text.trim()) return undefined
+  return candidate.text.slice(0, MAX_MESSAGE_TEXT) || undefined
+}
+function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null }
 
 export function bridgeRpcHandler(bridge: KeetBridge) {
   return async (endpoint: string) => endpoint === "readiness"

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { execFileSync } from "node:child_process"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -58,6 +58,8 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
         },
       }
     },
+    setUnreadAnchor: async () => undefined,
+    updateTypingIndicator: async () => undefined,
     sendMessage: async (groupId, text, replyTo) => { sent.push({ groupId, text, ...(replyTo ? { replyTo } : {}) }); return { deviceId: "device-bot", seq: sent.length + 10 } },
     inspectInvitation: async () => ({ isRoomInvitation: true }),
     joinInvitation: async () => ({ groupId: settings.groupId }),
@@ -340,6 +342,64 @@ describe("Keet bridge", () => {
     expect(JSON.stringify(fixture.prompts[1])).not.toContain("sender_id")
     await bridge.stop()
     expect(core.closed).toBe(true)
+  })
+
+  it("owns DM read and typing activity only for active work and stops it on a same-DM send", async () => {
+    const handlers = new Map<string, (message: KeetMessage) => void>()
+    const core = fakeCore({ dm: true, onWatch: (handler, groupId) => { handlers.set(groupId, handler) } })
+    const activity: Array<{ name: string; groupId: string; length?: number; signal: AbortSignal }> = []
+    core.setUnreadAnchor = async (groupId, length, signal) => { activity.push({ name: "read", groupId, length, signal: signal! }) }
+    core.updateTypingIndicator = async (groupId, signal) => { activity.push({ name: "typing", groupId, signal: signal! }) }
+    let release!: () => void
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    const fixture = makeAgent(async () => pending)
+    const bridge = new KeetBridge(deps(core, fixture.agent, {}, { ...settings, dmMemberId: "peer" }))
+    vi.useFakeTimers()
+    try {
+      await bridge.start()
+      const dmDeliver = handlers.get(dmGroupId)!
+      dmDeliver(message(7, "private work", { groupId: dmGroupId, chatIndex: 41 }))
+      vi.advanceTimersByTime(0)
+      for (let index = 0; index < 6; index += 1) await Promise.resolve()
+      expect(activity.map(({ name, groupId, length }) => ({ name, groupId, length }))).toEqual([
+        { name: "read", groupId: dmGroupId, length: 42 },
+        { name: "typing", groupId: dmGroupId, length: undefined },
+      ])
+      vi.advanceTimersByTime(4_000)
+      expect(activity.map(({ name }) => name)).toEqual(["read", "typing", "typing"])
+      bridge.markSent(dmGroupId, { deviceId: "device-bot", seq: 99 })
+      vi.advanceTimersByTime(8_000)
+      expect(activity.map(({ name }) => name)).toEqual(["read", "typing", "typing"])
+      expect(activity[1]!.signal.aborted).toBe(true)
+      release()
+      await Promise.resolve()
+    } finally {
+      vi.useRealTimers()
+      await bridge.stop()
+    }
+  })
+
+  it("intercepts exact Managed DM /compact through the command service and sends one bounded result", async () => {
+    const handlers = new Map<string, (message: KeetMessage) => void>()
+    const core = fakeCore({ dm: true, onWatch: (handler, groupId) => { handlers.set(groupId, handler) } })
+    const fixture = makeAgent()
+    const calls: unknown[][] = []
+    fixture.agent.ctx = {
+      ...fixture.agent.ctx,
+      commands: { execute: async (...args: unknown[]) => { calls.push(args); return { commandId: "command-1", result: { kind: "success", text: "Compacted." } } } },
+    } as never
+    const bridge = new KeetBridge(deps(core, fixture.agent, {}, { ...settings, dmMemberId: "peer" }))
+    await bridge.start()
+    handlers.get(dmGroupId)!(message(8, "/compact", { groupId: dmGroupId, chatIndex: 8 }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(calls).toHaveLength(1)
+    expect(calls[0]![1]).toBe("/compact")
+    expect(calls[0]![2]).toEqual([])
+    expect(calls[0]![0]).toBe(fixture.agent)
+    expect(fixture.prompts).toHaveLength(0)
+    expect(bridge.contextBuffers.get(dmGroupId)).toEqual([])
+    expect(core.sent).toEqual([{ groupId: dmGroupId, text: "Compacted." }])
+    await bridge.stop()
   })
 
   it("starts through the real Integration Core and triggers exactly once for an external DM", async () => {

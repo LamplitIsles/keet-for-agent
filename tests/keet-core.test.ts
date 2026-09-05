@@ -91,6 +91,28 @@ describe("typed Keet Integration Core", () => {
     await core.close()
   })
 
+  it("preserves the top-level chat index and maps native DM activity calls", async () => {
+    const core = await KeetIntegrationCore.start(options(await dataPath("keet-core-activity-shape-")))
+    const history = await core.readRecentMessages("group-test", 50)
+    expect(history[0]).toMatchObject({ messageId: { deviceId: "device-alice", seq: 11 }, chatIndex: 17 })
+    const calls: Array<{ name: string; args: unknown[] }> = []
+    core.sidecar.call = async (name, args) => {
+      if (name === "setUnreadAnchor" || name === "updateTypingIndicator") calls.push({ name, args })
+      return {}
+    }
+    await core.setUnreadAnchor("group-dm", 18)
+    await core.updateTypingIndicator("group-dm")
+    expect(calls).toEqual([
+      { name: "setUnreadAnchor", args: ["group-dm", 18] },
+      { name: "updateTypingIndicator", args: ["group-dm"] },
+    ])
+    await expect(core.setUnreadAnchor("group-dm", -1)).rejects.toThrow("safe integer")
+    await expect(core.setUnreadAnchor("group-dm", 1.5)).rejects.toThrow("safe integer")
+    core.sidecar.call = async () => "unexpected"
+    await expect(core.updateTypingIndicator("group-dm")).rejects.toThrow("invalid typing indicator result")
+    await core.close()
+  })
+
   it("normalizes admitted room kinds and rejects a resolved DM with the wrong kind", async () => {
     const typed = await KeetIntegrationCore.start(options(await dataPath("keet-core-room-types-")))
     expect(await typed.listGroups()).toEqual([
