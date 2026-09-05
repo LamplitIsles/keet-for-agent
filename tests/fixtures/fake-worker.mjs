@@ -9,8 +9,15 @@ import any from "tiny-buffer-rpc/any.js"
 const dataPath = process.argv[2]
 const ipc = new net.Socket({ fd: 3, readable: true, writable: true })
 const groupId = "group-test"
+const dmGroupId = "group-dm"
+const dmMemberId = "member-peer"
 const selfId = "identity-self"
-const groups = [{ roomId: groupId, title: "Test group", description: "fixture" }]
+const dmMode = dataPath.includes("dm-flow") || dataPath.includes("dm-broadcast")
+const roomTypesMode = dataPath.includes("room-types")
+const broadcastGroupId = "group-broadcast"
+const dmBroadcast = dataPath.includes("dm-broadcast")
+let dmAccepted = dataPath.includes("dm-broadcast")
+const groups = [{ roomId: groupId, title: "Test group", description: "fixture" }, ...(roomTypesMode ? [{ roomId: broadcastGroupId, title: "Broadcast", description: "fixture broadcast" }] : []), ...(dmMode ? [{ roomId: dmGroupId, title: "Managed DM", description: "fixture DM" }] : [])]
 const members = [
   { memberId: selfId, displayName: "Fixture Bot" },
   { memberId: "member-alice", displayName: "Alice" },
@@ -57,13 +64,17 @@ const rpc = new TinyBufferRPC((message) => {
 rpc.register(0, { request: any, response: any, onrequest: () => true })
 rpc.register(1, { request: any, response: any, onrequest: () => ({ modules: { "keet-core": "4.21.5" }, abi: { production: 35 } }) })
 rpc.register(6, { request: any, response: any, onrequest: () => missingIdentity ? {} : ({ memberId: selfId, displayName: "Fixture Bot" }) })
-rpc.register(19, { request: any, response: any, onrequest: ([profile]) => { if (profile?.displayName) members[0].displayName = profile.displayName; return {} } })
+rpc.register(19, { request: any, response: any, onrequest: ([profile]) => { if (profile?.displayName) members[0].displayName = profile.displayName; if (profile?.avatar) members[0].avatar = profile.avatar; return {} } })
 rpc.register(22, { request: any, response: any, onrequest: ([value]) => ({ isRoomInvitation: value === invitationToken, title: "Test group" }) })
 rpc.register(25, { request: any, response: any, onrequest: ([options]) => { void options; return groupId } })
 rpc.register(28, { request: any, response: any, onrequest: () => ({ roomId: groupId }) })
+rpc.register(39, { request: any, response: any, onrequest: ([room]) => room === groupId ? ({ roomId: groupId, title: "Test group", description: "fixture", roomType: "Default" }) : room === broadcastGroupId && roomTypesMode ? ({ roomId: broadcastGroupId, title: "Broadcast", description: "fixture broadcast", roomType: "Broadcast" }) : room === dmGroupId && dmMode ? ({ roomId: dmGroupId, title: "Managed DM", description: "fixture DM", roomType: dmBroadcast ? "Broadcast" : "DirectMessage", dmMemberId }) : null })
 rpc.register(43, { request: any, response: any, onrequest: () => ({ rooms: groups }) })
 rpc.register(61, { request: any, response: any, onrequest: () => invitationToken })
-rpc.register(66, { request: any, response: any, onrequest: () => members })
+rpc.register(66, { request: any, response: any, onrequest: ([room]) => room === dmGroupId && dmMode ? [...members, { memberId: dmMemberId, displayName: "Peer" }] : members })
+rpc.register(151, { request: any, response: any, onrequest: ([memberId]) => dmMode && memberId === dmMemberId ? ({ roomId: dmGroupId, dmMemberId, recipient: dmMemberId }) : ({ roomId: null, dmMemberId: String(memberId ?? ""), recipient: String(memberId ?? "") }) })
+rpc.register(152, { request: any, response: any, onrequest: ([status]) => dmMode && status === 3 && !dmAccepted ? [{ id: { memberId: dmMemberId, roomId: dmGroupId }, roomId: dmGroupId, senderContactInfo: { memberId: dmMemberId, displayName: "Peer" }, status: { isPending: true }, message: "private request" }] : [] })
+rpc.register(154, { request: any, response: any, onrequest: ([request]) => { if (!dmMode || request?.memberId !== dmMemberId || request?.roomId !== dmGroupId) throw new Error("invalid DM request"); dmAccepted = true; return {} } })
 rpc.register(104, {
   request: any,
   response: any,

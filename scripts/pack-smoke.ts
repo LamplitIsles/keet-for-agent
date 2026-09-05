@@ -198,6 +198,12 @@ async function main(): Promise<void> {
     const filename = packed[0]?.filename;
     if (!filename) throw new Error("npm pack did not produce an artifact");
     const artifact = join(temp, filename);
+    const artifactFiles = (await run("tar", ["-tzf", artifact], { env })).stdout.split("\n").filter(Boolean);
+    const requiredFiles = ["package/dist/index.js", "package/dist/setup.js", "package/dist/client.js", "package/dist/index.d.ts", "package/dist/client.d.cts", "package/cordis.patch.yml", "package/README.md", "package/LICENSE", "package/THIRD_PARTY_NOTICES.md"];
+    for (const file of requiredFiles) if (!artifactFiles.includes(file)) throw new Error(`artifact missing ${file}`);
+    if (artifactFiles.some((file) => file.includes(".scratch") || /(?:runtime|identity|invitation|avatar-input|message-data)/i.test(file))) {
+      throw new Error("artifact contains private runtime or state material");
+    }
 
     const invocation = dshInvocation(entry);
     await run(invocation.command, [...invocation.prefix, "plugin", "--profile", "web", "add", artifact, "--ignore-scripts"], {
@@ -210,6 +216,7 @@ async function main(): Promise<void> {
     const metadata = JSON.parse(await readFile(join(installed, "package.json"), "utf8")) as {
       name?: string;
       version?: string;
+      dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
       dsh?: { bundle?: { patch?: string }; client?: { platform?: string; inject?: string[] } };
@@ -219,12 +226,21 @@ async function main(): Promise<void> {
     if (!metadata.dsh.client.inject?.includes("@deepseek-ai/dsh-client-ui-workspace")) throw new Error("workspace client injection missing");
     if (metadata.peerDependencies?.["@deepseek-ai/cordis"] !== "4.0.2") throw new Error("Cordis peer is not pinned to 4.0.2");
     if (metadata.peerDependencies?.["@deepseek-ai/dsh-tools"] !== "0.1.2-rc.1") throw new Error("dsh-tools peer is not pinned to 0.1.2-rc.1");
+    if (metadata.dependencies?.sharp !== "0.33.5") throw new Error("avatar image dependency is not pinned");
     for (const [name, version] of Object.entries(metadata.peerDependencies ?? {})) {
       if (name.startsWith("@deepseek-ai/dsh-") && version !== "0.1.2-rc.1") throw new Error(`non-rc DSH peer: ${name}@${version}`);
     }
     const patchText = await readFile(join(installed, "cordis.patch.yml"), "utf8");
     for (const required of ["dsh-keet", "@lamplitisles/dsh-keet", "connection", "settings", "tools", "systemPrompt", "workspaceRegistry", "sessionController"]) {
       if (!patchText.includes(required)) throw new Error(`Cordis patch is missing ${required}`);
+    }
+    const hostBundle = await readFile(join(installed, "dist", "index.js"), "utf8");
+    for (const required of ["keet_list_groups", "keet_list_members", "keet_read_recent_messages", "keet_send_message", "groupId returned by keet_list_groups", "DM sends do not support replyTo", "dmMemberId"]) {
+      if (!hostBundle.includes(required)) throw new Error(`packed Host bundle is missing ${required}`);
+    }
+    const setupBundle = await readFile(join(installed, "dist", "setup.js"), "utf8");
+    for (const required of ["dm-requests", "dm-accept", "--avatar"]) {
+      if (!setupBundle.includes(required)) throw new Error(`packed setup executable is missing ${required}`);
     }
 
     runtime = await startRuntime(entry, env, runtimeCwd);
@@ -290,10 +306,7 @@ async function main(): Promise<void> {
     }
 
     await writeFile(join(dshHome, "smoke-result.json"), JSON.stringify({ package: metadata.name, client: loaded.id, readiness: readinessEnvelope.result?.value?.state, settings: namespace.ns }));
-    const files = (await run("tar", ["-tzf", artifact], { env })).stdout.split("\n").filter(Boolean);
-    const requiredFiles = ["package/dist/index.js", "package/dist/setup.js", "package/dist/client.js", "package/dist/index.d.ts", "package/dist/client.d.cts", "package/cordis.patch.yml", "package/README.md", "package/LICENSE", "package/THIRD_PARTY_NOTICES.md"];
-    for (const file of requiredFiles) if (!files.includes(file)) throw new Error(`artifact missing ${file}`);
-    console.log(JSON.stringify({ artifact, dshHome, files: files.length, host: true, client: true, loader: true, css: true, readiness: readinessEnvelope.result?.value?.state }, null, 2));
+    console.log(JSON.stringify({ artifact, dshHome, files: artifactFiles.length, host: true, client: true, loader: true, css: true, readiness: readinessEnvelope.result?.value?.state }, null, 2));
   } finally {
     await stopRuntime(runtime);
     await rm(temp, { recursive: true, force: true });

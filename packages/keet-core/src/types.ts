@@ -48,7 +48,12 @@ export interface KeetMessageId {
 export interface KeetMember {
   readonly memberId: string
   readonly displayName: string
+  /** Bounded verification-only observation; avatar bytes never cross this boundary. */
+  readonly avatar?: { readonly present: true; readonly digest?: string }
 }
+
+/** Room types emitted by the pinned Keet worker. */
+export type KeetRoomType = "Default" | "Broadcast" | "DirectMessage"
 
 export interface KeetMessage {
   readonly messageId: KeetMessageId
@@ -65,6 +70,36 @@ export interface ManagedGroup {
   readonly groupId: string
   readonly title?: string
   readonly description?: string
+  /** Present when the worker supplied room metadata. */
+  readonly roomType?: KeetRoomType
+  /** Present only for a normalized direct-message room. */
+  readonly dmMemberId?: string
+}
+
+/** A pending human-sent DM request, with internal room data kept private. */
+export interface KeetPendingDmRequest {
+  readonly memberId: string
+  readonly displayName?: string
+}
+
+/** A resolved, already-established direct message. */
+export interface KeetManagedDm extends ManagedGroup {
+  readonly roomType: "DirectMessage"
+  readonly dmMemberId: string
+}
+
+export interface PreparedAvatarVariant {
+  readonly bytes: Uint8Array
+  readonly contentType: string
+  readonly width: number
+  readonly height: number
+  readonly hash: string
+}
+
+export interface PreparedAvatar {
+  readonly small: PreparedAvatarVariant
+  readonly medium: PreparedAvatarVariant
+  readonly large: PreparedAvatarVariant
 }
 
 /** Disposable interoperability helpers; never exposed by the DSH tools. */
@@ -103,6 +138,14 @@ export interface KeetCore {
   /** Test/onboarding helper; normal DSH operation never creates invitations. */
   createInvitation?(groupId: string, options?: Record<string, unknown>): Promise<Invitation>
   validateGroup(groupId: string): Promise<ManagedGroup>
+  /** Resolve an accepted direct message by the other participant's Member ID. */
+  resolveDm?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
+  getDmByMemberId?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
+  /** List bounded pending requests without exposing internal room identifiers. */
+  listPendingDmRequests?(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
+  getPendingDmRequests?(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
+  /** Accept exactly one already-pending request and wait for its DM room. */
+  acceptDmRequest?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listMembers(groupId: string): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
@@ -110,6 +153,8 @@ export interface KeetCore {
   inspectInvitation(invitation: string, signal?: AbortSignal): Promise<InvitationInfo>
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>
   updateDisplayName(displayName: string, signal?: AbortSignal): Promise<void>
+  /** Update the complete attested profile; omitted fields are preserved. */
+  updateIdentityProfile?(profile: { readonly displayName?: string; readonly avatar?: PreparedAvatar }, signal?: AbortSignal): Promise<void>
   close(): Promise<void>
 }
 

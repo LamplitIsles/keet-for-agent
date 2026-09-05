@@ -14,6 +14,11 @@ export type {
   KeetRuntimeManifest,
   KeetSubscription,
   ManagedGroup,
+  KeetRoomType,
+  KeetPendingDmRequest,
+  KeetManagedDm,
+  PreparedAvatar,
+  PreparedAvatarVariant,
   KeetCompatibilityOptions,
 } from "./types.js"
 export type { KeetCore } from "./types.js"

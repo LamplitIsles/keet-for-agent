@@ -3,84 +3,117 @@ import { realpathSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { KeetIntegrationCore } from "@lamplitisles/keet-integration-core"
-import type { KeetCore, KeetCoreOptions } from "./core-contract.js"
+import type { KeetCore, KeetCoreOptions, KeetManagedDm, KeetPendingDmRequest, PreparedAvatar } from "./core-contract.js"
+import { prepareAvatar, validatePreparedAvatar } from "./avatar.js"
 import { resolveKeetRuntimePaths } from "./local-paths.js"
 import { createKeetRuntimeOptions } from "./runtime-options.js"
 
 const MAX_INVITATION_BYTES = 8_192
 const MAX_NAME = 128
+const MAX_MEMBER_ID = 512
 
 export interface SetupArguments {
-  command: "join" | "profile"
+  command: "join" | "profile" | "dm-requests" | "dm-accept"
   workspaceDir: string
   displayName?: string
+  avatarPath?: string
+  memberId?: string
 }
 
+type SetupCore = {
+  close(): Promise<void>
+  joinInvitation?: KeetCore["joinInvitation"]
+  updateDisplayName?: KeetCore["updateDisplayName"]
+  updateIdentityProfile?: KeetCore["updateIdentityProfile"]
+  listPendingDmRequests?: KeetCore["listPendingDmRequests"]
+  getPendingDmRequests?: KeetCore["getPendingDmRequests"]
+  acceptDmRequest?: KeetCore["acceptDmRequest"]
+}
 export interface SetupDependencies {
-  coreFactory?: (options: KeetCoreOptions) => Promise<Pick<KeetCore, "joinInvitation" | "updateDisplayName" | "close">>
+  coreFactory?: (options: KeetCoreOptions) => Promise<SetupCore>
   resolveRuntimePaths?: (workspaceDir: string) => Promise<{ runtimeDir: string; identityDataDir: string }>
+  prepareAvatar?: (avatarPath: string) => Promise<PreparedAvatar>
 }
 
 export function isDirectExecution(moduleUrl: string, argvEntry: string): boolean {
-  try {
-    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argvEntry)
-  } catch {
-    return false
-  }
+  try { return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argvEntry) } catch { return false }
 }
 
-export async function runSetup(
-  argv: readonly string[],
-  stdin = process.stdin,
-  stdout = process.stdout,
-  stderr = process.stderr,
-  dependencies: SetupDependencies = {},
-): Promise<number> {
+export async function runSetup(argv: readonly string[], stdin = process.stdin, stdout = process.stdout, stderr = process.stderr, dependencies: SetupDependencies = {}): Promise<number> {
   try {
     const parsed = parseArgs(argv)
-    // Validate and consume the one stdin invitation before starting a worker.
-    // This keeps malformed input from creating or touching identity state.
     const invitation = parsed.command === "join" ? await readInvitation(stdin) : undefined
+    // Decode/resize before a worker is opened. A malformed or oversized local
+    // file therefore cannot claim a profile update or touch identity state.
+    const avatar = parsed.avatarPath ? await (dependencies.prepareAvatar?.(parsed.avatarPath) ?? prepareAvatar(parsed.avatarPath)) : undefined
+    if (avatar) validatePreparedAvatar(avatar)
     const paths = await (dependencies.resolveRuntimePaths?.(parsed.workspaceDir) ?? resolveKeetRuntimePaths(parsed.workspaceDir))
-    const options = createKeetRuntimeOptions(paths)
-    const core = await (dependencies.coreFactory?.(options) ?? KeetIntegrationCore.start(options))
+    const core = await (dependencies.coreFactory?.(createKeetRuntimeOptions(paths)) ?? KeetIntegrationCore.start(createKeetRuntimeOptions(paths)))
     try {
       if (parsed.command === "profile") {
-        await core.updateDisplayName(parsed.displayName!)
-        stdout.write(JSON.stringify({ ok: true, operation: "profile", displayName: parsed.displayName!.trim() }) + "\n")
+        if (core.updateIdentityProfile) await core.updateIdentityProfile({ ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}), ...(avatar ? { avatar } : {}) })
+        else if (parsed.displayName !== undefined && !avatar && core.updateDisplayName) await core.updateDisplayName(parsed.displayName)
+        else throw new Error("profile operation unavailable")
+        stdout.write(JSON.stringify({ ok: true, operation: "profile", ...(parsed.displayName !== undefined ? { displayName: parsed.displayName.trim() } : {}), ...(avatar ? { avatar: true } : {}) }) + "\n")
+      } else if (parsed.command === "dm-requests") {
+        const listRequests = core.listPendingDmRequests ?? core.getPendingDmRequests
+        if (!listRequests) throw new Error("DM request listing unavailable")
+        const requests = await listRequests.call(core)
+        stdout.write(JSON.stringify({ ok: true, operation: "dm-requests", requests: requests.slice(0, 32).map(publicPendingRequest) }) + "\n")
+      } else if (parsed.command === "dm-accept") {
+        if (!core.acceptDmRequest || !parsed.memberId) throw new Error("DM acceptance unavailable")
+        const result = await core.acceptDmRequest(parsed.memberId)
+        stdout.write(JSON.stringify({ ok: true, operation: "dm-accept", memberId: result.dmMemberId, groupId: result.groupId }) + "\n")
       } else {
+        if (!core.joinInvitation) throw new Error("join operation unavailable")
         const result = await core.joinInvitation(invitation!)
         stdout.write(JSON.stringify({ ok: true, operation: "join", groupId: result.groupId }) + "\n")
       }
       return 0
-    } finally {
-      await core.close()
-    }
-  } catch (error) {
-    void error
+    } finally { await core.close() }
+  } catch {
     stderr.write("dsh-keet-setup: operation failed; check DSH_HOME, the fixed runtime, workspace, and input.\n")
     return 1
   }
 }
 
+function publicPendingRequest(request: KeetPendingDmRequest): Record<string, string> {
+  return { memberId: request.memberId.slice(0, MAX_MEMBER_ID), ...(request.displayName ? { displayName: request.displayName.slice(0, MAX_MEMBER_ID) } : {}) }
+}
+
 export function parseArgs(argv: readonly string[]): SetupArguments {
   const [command, ...rest] = argv
-  if (command !== "join" && command !== "profile") throw new Error("command")
+  if (command !== "join" && command !== "profile" && command !== "dm-requests" && command !== "dm-accept") throw new Error("command")
   let workspaceDir = ""
   let displayName: string | undefined
+  let avatarPath: string | undefined
+  let memberId: string | undefined
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index]
     const value = rest[index + 1]
-    if (flag === "--workspace" && value) { workspaceDir = value; index += 1; continue }
-    if (flag === "--display-name" && value) { displayName = value; index += 1; continue }
-    // Invitation-like arguments are rejected instead of accidentally accepting
-    // a secret through argv. Unknown flags are also rejected closed.
+    if ((flag === "--workspace" || flag === "--display-name" || flag === "--avatar" || flag === "--member-id") && value) {
+      if (flag === "--workspace") workspaceDir = value
+      else if (flag === "--display-name") displayName = value
+      else if (flag === "--avatar") avatarPath = value
+      else memberId = value
+      index += 1
+      continue
+    }
     throw new Error("arguments")
   }
   if (!workspaceDir) throw new Error("workspace")
-  if (command === "profile" && (!displayName || !displayName.trim() || displayName.length > MAX_NAME)) throw new Error("display name")
-  if (command === "join" && displayName !== undefined) throw new Error("display name")
-  return { command, workspaceDir: path.resolve(workspaceDir), ...(displayName !== undefined ? { displayName } : {}) }
+  if (command === "profile") {
+    if (displayName !== undefined && (!displayName.trim() || displayName.length > MAX_NAME)) throw new Error("display name")
+    if (avatarPath !== undefined && (!avatarPath.trim() || avatarPath.length > 4_096)) throw new Error("avatar")
+    if (memberId !== undefined) throw new Error("profile arguments")
+    if (displayName === undefined && avatarPath === undefined) throw new Error("profile fields")
+  }
+  if (command === "join" && (displayName !== undefined || avatarPath !== undefined || memberId !== undefined)) throw new Error("join arguments")
+  if (command === "dm-requests" && (displayName !== undefined || avatarPath !== undefined || memberId !== undefined)) throw new Error("request arguments")
+  if (command === "dm-accept") {
+    if (!memberId || !memberId.trim() || memberId.length > MAX_MEMBER_ID || displayName !== undefined || avatarPath !== undefined) throw new Error("member id")
+  }
+  return { command, workspaceDir: path.resolve(workspaceDir), ...(displayName !== undefined ? { displayName } : {}), ...(avatarPath !== undefined ? { avatarPath } : {}), ...(memberId !== undefined ? { memberId: memberId.trim() } : {}) }
 }
 
 export async function readInvitation(stdin: NodeJS.ReadableStream): Promise<string> {
@@ -97,6 +130,4 @@ export async function readInvitation(stdin: NodeJS.ReadableStream): Promise<stri
   return input
 }
 
-if (process.argv[1] && isDirectExecution(import.meta.url, process.argv[1])) {
-  process.exitCode = await runSetup(process.argv.slice(2))
-}
+if (process.argv[1] && isDirectExecution(import.meta.url, process.argv[1])) process.exitCode = await runSetup(process.argv.slice(2))

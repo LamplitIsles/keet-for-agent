@@ -11,7 +11,21 @@ export interface KeetMessageId {
 export interface KeetMember {
   readonly memberId: string
   readonly displayName: string
+  readonly avatar?: { readonly present: true; readonly digest?: string }
 }
+
+export type KeetRoomType = "Default" | "Broadcast" | "DirectMessage"
+export interface ManagedGroup {
+  readonly groupId: string
+  readonly title?: string
+  readonly description?: string
+  readonly roomType?: KeetRoomType
+  readonly dmMemberId?: string
+}
+export interface KeetPendingDmRequest { readonly memberId: string; readonly displayName?: string }
+export interface KeetManagedDm extends ManagedGroup { readonly roomType: "DirectMessage"; readonly dmMemberId: string }
+export interface PreparedAvatarVariant { readonly bytes: Uint8Array; readonly contentType: string; readonly width: number; readonly height: number; readonly hash: string }
+export interface PreparedAvatar { readonly small: PreparedAvatarVariant; readonly medium: PreparedAvatarVariant; readonly large: PreparedAvatarVariant }
 
 export interface KeetMessage {
   readonly messageId: KeetMessageId
@@ -24,7 +38,6 @@ export interface KeetMessage {
   readonly replyTo?: KeetMessageId
 }
 
-export interface ManagedGroup { readonly groupId: string; readonly title?: string; readonly description?: string }
 export interface KeetReadiness { readonly state: "ready"; readonly appVersion: string; readonly coreVersion: string; readonly abi: number; readonly swarming: boolean; readonly identityId: string; readonly displayName?: string }
 export interface KeetSubscription {
   readonly closed: boolean
@@ -39,6 +52,11 @@ export interface KeetCore {
   status(): Promise<KeetReadiness>
   listGroups(): Promise<ManagedGroup[]>
   validateGroup(groupId: string): Promise<ManagedGroup>
+  resolveDm?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
+  getDmByMemberId?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
+  listPendingDmRequests?(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
+  getPendingDmRequests?(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
+  acceptDmRequest?(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listMembers(groupId: string): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
@@ -46,6 +64,7 @@ export interface KeetCore {
   inspectInvitation(invitation: string, signal?: AbortSignal): Promise<InvitationInfo>
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>
   updateDisplayName(displayName: string, signal?: AbortSignal): Promise<void>
+  updateIdentityProfile?(profile: { readonly displayName?: string; readonly avatar?: PreparedAvatar }, signal?: AbortSignal): Promise<void>
   close(): Promise<void>
 }
 

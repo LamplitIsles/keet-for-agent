@@ -5,6 +5,7 @@ import { Readable } from "node:stream"
 import { pathToFileURL } from "node:url"
 import { describe, expect, it } from "vitest"
 import { isDirectExecution, parseArgs, readInvitation, runSetup } from "../packages/dsh-keet/src/setup.js"
+import type { PreparedAvatar } from "../packages/dsh-keet/src/core-contract.js"
 
 function output() {
   let value = ""
@@ -28,12 +29,16 @@ describe("dsh-keet-setup", () => {
     }
   })
 
-  it("accepts only narrow join/profile arguments and never invitation argv", () => {
+  it("accepts only narrow setup arguments and never invitation argv", () => {
     expect(parseArgs(["join", "--workspace", "/workspace"])).toMatchObject({ command: "join", workspaceDir: "/workspace" })
     expect(parseArgs(["profile", "--workspace", "/workspace", "--display-name", "Keet Bot"])).toMatchObject({ command: "profile", workspaceDir: "/workspace", displayName: "Keet Bot" })
+    expect(parseArgs(["profile", "--workspace", "/workspace", "--avatar", "/tmp/avatar.png"])).toMatchObject({ command: "profile", avatarPath: "/tmp/avatar.png" })
+    expect(parseArgs(["dm-requests", "--workspace", "/workspace"])).toMatchObject({ command: "dm-requests" })
+    expect(parseArgs(["dm-accept", "--workspace", "/workspace", "--member-id", "peer"])).toMatchObject({ command: "dm-accept", memberId: "peer" })
     expect(() => parseArgs(["join", "--workspace", "/workspace", "keet://chat/secret"])).toThrow()
     expect(() => parseArgs(["join", "--runtime-dir", "/runtime"])).toThrow()
     expect(() => parseArgs(["profile", "--workspace", "/workspace", "--display-name", "   "])).toThrow()
+    expect(() => parseArgs(["profile", "--workspace", "/workspace"])).toThrow()
   })
 
   it("requires exactly one bounded room invitation on stdin", async () => {
@@ -87,5 +92,49 @@ describe("dsh-keet-setup", () => {
     expect(invalidStarted).toBe(0)
     expect(invalidOut.value()).toBe("")
     expect(invalidErr.value()).not.toContain("not an invitation")
+  })
+
+  it("lists and accepts pending DMs through redacted machine results", async () => {
+    const pendingOut = output()
+    const pendingCode = await runSetup(
+      ["dm-requests", "--workspace", "/workspace"], Readable.from([]) as never, pendingOut.stream, output().stream,
+      {
+        resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
+        coreFactory: async () => ({ listPendingDmRequests: async () => [{ memberId: "peer", displayName: "Peer" }], close: async () => undefined }),
+      },
+    )
+    expect(pendingCode).toBe(0)
+    expect(JSON.parse(pendingOut.value())).toEqual({ ok: true, operation: "dm-requests", requests: [{ memberId: "peer", displayName: "Peer" }] })
+    expect(pendingOut.value()).not.toContain("private-room")
+    const acceptedOut = output()
+    const acceptedCode = await runSetup(
+      ["dm-accept", "--workspace", "/workspace", "--member-id", "peer"], Readable.from([]) as never, acceptedOut.stream, output().stream,
+      {
+        resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
+        coreFactory: async () => ({ acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage", dmMemberId: "peer" }), close: async () => undefined }),
+      },
+    )
+    expect(acceptedCode).toBe(0)
+    expect(JSON.parse(acceptedOut.value())).toEqual({ ok: true, operation: "dm-accept", memberId: "peer", groupId: "dm-room" })
+  })
+
+  it("prepares avatar data before opening Core and supports avatar-only profile updates", async () => {
+    const stdout = output()
+    const prepared = {} as PreparedAvatar
+    let started = 0
+    let received: unknown
+    const code = await runSetup(
+      ["profile", "--workspace", "/workspace", "--avatar", "/tmp/avatar.png"], Readable.from([]) as never, stdout.stream, output().stream,
+      {
+        prepareAvatar: async () => prepared,
+        resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
+        coreFactory: async () => { started += 1; return { updateIdentityProfile: async (value) => { received = value }, close: async () => undefined } },
+      },
+    )
+    // The intentionally incomplete prepared value is rejected before the Core
+    // is opened, proving failure atomicity at the setup seam.
+    expect(code).toBe(1)
+    expect(started).toBe(0)
+    expect(received).toBeUndefined()
   })
 })

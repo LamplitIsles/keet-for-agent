@@ -14,7 +14,13 @@ import {
   type KeetReadiness,
   type KeetSubscription,
   type ManagedGroup,
+  type KeetManagedDm,
+  type KeetPendingDmRequest,
+  type PreparedAvatar,
+  type PreparedAvatarVariant,
+  type KeetRoomType,
 } from "./types.js"
+import { createHash } from "node:crypto"
 
 const MAX_TEXT = 16_000
 const MAX_MEMBER_ID = 512
@@ -23,12 +29,15 @@ const MAX_MESSAGES = 50
 const MAX_GROUPS = 512
 const MAX_POLL = 32
 const DEFAULT_PAIRING_TIMEOUT_MS = 60_000
+const MAX_DM_REQUESTS = 32
+const MAX_AVATAR_BYTES = 512 * 1024
+const DM_REQUEST_PENDING = 3
 
 type RawRecord = Record<string, unknown>
 
 /**
  * Typed Integration Core over the official fd-3 sidecar. No DSH concepts live
- * here; adapters consume only normalized records and fixed-group operations.
+ * here; adapters consume only normalized records and bounded destination operations.
  */
 export class KeetIntegrationCore implements KeetCore {
   readonly sidecar: KeetSidecar
@@ -73,10 +82,121 @@ export class KeetIntegrationCore implements KeetCore {
   async listGroups(): Promise<ManagedGroup[]> {
     const raw = await this.safeCall("getRecentRooms", [])
     const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.rooms) ? raw.rooms : []
-    return values.slice(0, MAX_GROUPS).flatMap((value) => {
+    const initial = values.slice(0, MAX_GROUPS).flatMap((value) => {
       const group = normalizeGroup(value)
       return group ? [group] : []
     })
+    // getRecentRooms intentionally returns a compact recency record. Resolve
+    // room metadata through the pinned getRoomInfo call when the compact
+    // record did not carry its type. Test workers may already include the
+    // metadata, so their fixture shape remains accepted.
+    return await Promise.all(initial.map(async (group) => {
+      if (group.roomType) return group
+      try {
+        const rawInfo = await this.callWithSignal("getRoomInfo", [group.groupId])
+        const info = normalizeGroup(rawInfo)
+        if (info && info.groupId === group.groupId) return {
+          ...group,
+          ...info,
+          ...(info.title === undefined && group.title !== undefined ? { title: group.title } : {}),
+          ...(info.description === undefined && group.description !== undefined ? { description: group.description } : {}),
+        }
+      } catch {
+        // A compact room record can omit metadata. It remains visible until a
+        // destination admission path requires an explicit room type.
+      }
+      return group
+    }))
+  }
+
+  async resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm> {
+    const id = boundedMemberId(memberId, "DM Member ID")
+    ensureSignal(signal)
+    const raw = await this.callWithSignal("getDmByMemberId", [id], signal)
+    const resolved = normalizeDmResolution(raw, id)
+    if (!resolved) throw publicError("configured Managed DM is not resolved")
+    if (hasUnsupportedRoomType(raw)) throw publicError("resolved Managed DM has an unsupported room type")
+    // The pinned worker's member lookup includes pending contact requests as
+    // well as accepted contacts. Pending status is authoritative for this
+    // boundary: a request is not a usable Managed DM until explicitly accepted.
+    const pendingRaw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
+    const pendingValues = Array.isArray(pendingRaw) ? pendingRaw : isRecord(pendingRaw) && Array.isArray(pendingRaw.requests) ? pendingRaw.requests : []
+    if (pendingValues.some((value) => normalizePendingDmRequest(value)?.memberId === id)) throw publicError("configured Managed DM is not resolved")
+    let room = normalizeGroup(raw)
+    if (!room || room.groupId !== resolved.groupId || room.roomType === undefined) {
+      try {
+        const info = await this.callWithSignal("getRoomInfo", [resolved.groupId], signal)
+        if (hasUnsupportedRoomType(info)) throw publicError("resolved Managed DM has an unsupported room type")
+        const normalized = normalizeGroup(info)
+        if (normalized && normalized.groupId === resolved.groupId) room = { ...room, ...normalized }
+      } catch (error) {
+        if (error instanceof Error && error.message === "resolved Managed DM has an unsupported room type") throw error
+        // A DM lookup is still useful on workers that omit room metadata; the
+        // lookup itself is authoritative for the direct-message relation.
+      }
+    }
+    const roomType = room?.roomType ?? "DirectMessage"
+    if (roomType !== "DirectMessage") throw publicError("resolved Managed DM has an unsupported room type")
+    const peer = room?.dmMemberId ?? resolved.memberId
+    if (peer !== id) throw publicError("resolved Managed DM belongs to another Member ID")
+    return {
+      groupId: resolved.groupId,
+      roomType: "DirectMessage",
+      dmMemberId: id,
+      ...(room?.title !== undefined ? { title: room.title } : {}),
+      ...(room?.description !== undefined ? { description: room.description } : {}),
+    }
+  }
+
+  async getDmByMemberId(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm> {
+    return this.resolveDm(memberId, signal)
+  }
+
+  async listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]> {
+    ensureSignal(signal)
+    const raw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
+    const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.requests) ? raw.requests : []
+    const seen = new Set<string>()
+    const result: KeetPendingDmRequest[] = []
+    for (const value of values.slice(0, MAX_DM_REQUESTS)) {
+      const request = normalizePendingDmRequest(value)
+      if (!request || seen.has(request.memberId)) continue
+      seen.add(request.memberId)
+      result.push({ memberId: request.memberId, ...(request.displayName ? { displayName: request.displayName } : {}) })
+    }
+    return result
+  }
+
+  async getPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]> {
+    return this.listPendingDmRequests(signal)
+  }
+
+  async acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm> {
+    const id = boundedMemberId(memberId, "DM Member ID")
+    ensureSignal(signal)
+    try {
+      const already = await this.resolveDm(id, signal)
+      if (already.groupId) throw publicError("DM request is already resolved")
+    } catch (error) {
+      if (!(error instanceof Error) || !/not resolved|operation failed/i.test(error.message)) throw error
+    }
+    const raw = await this.callWithSignal("getDmRequestsByStatus", [DM_REQUEST_PENDING, { reverse: true, limit: MAX_DM_REQUESTS }], signal)
+    const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.requests) ? raw.requests : []
+    const matches = values.map(normalizePendingDmRequestWithRoom).filter((request) => request?.memberId === id)
+    if (matches.length === 0) throw publicError("DM request was not found or is stale")
+    if (matches.length !== 1 || !matches[0]!.roomId) throw publicError("DM request is ambiguous")
+    await this.callWithSignal("acceptDmRequest", [{ memberId: id, roomId: matches[0]!.roomId }], signal)
+    const deadline = Date.now() + this.#pairingTimeoutMs
+    for (let attempt = 0; attempt < MAX_POLL && Date.now() < deadline; attempt += 1) {
+      ensureSignal(signal)
+      try {
+        return await this.resolveDm(id, signal)
+      } catch (error) {
+        if (error instanceof Error && /unsupported room type|belongs to another Member ID/.test(error.message)) throw error
+        await delay(Math.min(100 * (attempt + 1), 1_000), signal)
+      }
+    }
+    throw publicError("accepted DM did not become resolvable before the timeout")
   }
 
   /**
@@ -241,6 +361,8 @@ export class KeetIntegrationCore implements KeetCore {
     ensureSignal(signal)
     let target: KeetMessageId | undefined
     if (replyTo !== undefined) {
+      const room = (await this.listGroups()).find((candidate) => candidate.groupId === id)
+      if (room?.roomType === "DirectMessage") throw publicError("reply targets are not supported for a Managed DM")
       target = normalizeMessageId(replyTo)
       if (!target) throw publicError("reply target is not a valid Keet message ID")
       const history = await this.readRecentMessages(id, MAX_MESSAGES, signal)
@@ -290,9 +412,28 @@ export class KeetIntegrationCore implements KeetCore {
 
   async updateDisplayName(displayName: string, signal?: AbortSignal): Promise<void> {
     if (typeof displayName !== "string" || !displayName.trim() || displayName.length > 128) throw publicError("display name must be non-empty and at most 128 characters")
+    await this.updateIdentityProfile({ displayName: displayName.trim() }, signal)
+  }
+
+  async updateIdentityProfile(profile: { readonly displayName?: string; readonly avatar?: PreparedAvatar }, signal?: AbortSignal): Promise<void> {
+    if (!profile || typeof profile !== "object") throw publicError("profile update is invalid")
+    let displayName: string | undefined
+    if (profile.displayName !== undefined) {
+      if (typeof profile.displayName !== "string" || !profile.displayName.trim() || profile.displayName.length > 128) throw publicError("display name must be non-empty and at most 128 characters")
+      displayName = profile.displayName.trim()
+    }
+    if (profile.avatar === undefined && displayName === undefined) throw publicError("profile update requires a display name or avatar")
+    if (profile.avatar !== undefined) validatePreparedAvatar(profile.avatar)
+    if (displayName === undefined) {
+      const identity = await this.loadIdentity()
+      displayName = identity.label?.trim()
+      if (!displayName) throw publicError("avatar update requires a current display name")
+    }
     ensureSignal(signal)
-    await this.callWithSignal("updateIdentityProfile", [{ displayName: displayName.trim() }], signal)
-    this.#selfLabel = displayName.trim()
+    const payload: Record<string, unknown> = { displayName }
+    if (profile.avatar !== undefined) payload.avatar = encodePreparedAvatar(profile.avatar)
+    await this.callWithSignal("updateIdentityProfile", [payload], signal)
+    this.#selfLabel = displayName
   }
 
   async close(): Promise<void> {
@@ -368,13 +509,75 @@ export function validateAdmission(options: KeetCoreOptions): void {
 
 function normalizeGroup(value: unknown): ManagedGroup | undefined {
   if (!isRecord(value)) return undefined
-  const groupId = firstString(value.groupId, value.roomId, value.id)
+  const config = isRecord(value.config) ? value.config : undefined
+  const settings = isRecord(value.settings) ? value.settings : config && isRecord(config.settings) ? config.settings : undefined
+  const groupId = firstString(value.groupId, value.roomId, value.id, config?.groupId, config?.roomId)
   if (!groupId) return undefined
+  const rawRoomType = value.roomType ?? value.type ?? value.kind ?? config?.roomType ?? config?.type ?? settings?.roomType ?? settings?.type
+  const roomType = normalizeRoomType(rawRoomType)
+  if (rawRoomType !== undefined && !roomType) return undefined
+  const dmMemberId = firstString(value.dmMemberId, value.recipient, config?.dmMemberId, config?.recipient)
   return {
     groupId: groupId.slice(0, MAX_GROUP_ID),
-    ...(typeof value.title === "string" ? { title: value.title.slice(0, 512) } : {}),
-    ...(typeof value.description === "string" ? { description: value.description.slice(0, 512) } : {}),
+    ...(typeof value.title === "string" ? { title: value.title.slice(0, 512) } : typeof config?.title === "string" ? { title: config.title.slice(0, 512) } : {}),
+    ...(typeof value.description === "string" ? { description: value.description.slice(0, 512) } : typeof config?.description === "string" ? { description: config.description.slice(0, 512) } : {}),
+    ...(roomType ? { roomType } : {}),
+    ...(dmMemberId ? { dmMemberId: dmMemberId.slice(0, MAX_MEMBER_ID) } : {}),
   }
+}
+
+function normalizeRoomType(value: unknown): KeetRoomType | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === "number") {
+    if (value === 0) return "Default"
+    if (value === 1) return "Broadcast"
+    if (value === 2) return "DirectMessage"
+    return undefined
+  }
+  if (typeof value !== "string" || !value.trim()) return undefined
+  value = value.trim()
+  switch (value) {
+    case "0": case "default": case "Default": case "group": case "regular": return "Default"
+    case "1": case "broadcast": case "Broadcast": return "Broadcast"
+    case "2": case "direct": case "direct-message": case "directMessage": case "DirectMessage": case "dm": return "DirectMessage"
+    default: return undefined
+  }
+}
+
+function hasUnsupportedRoomType(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const config = isRecord(value.config) ? value.config : undefined
+  const settings = isRecord(value.settings) ? value.settings : config && isRecord(config.settings) ? config.settings : undefined
+  const raw = value.roomType ?? value.type ?? value.kind ?? config?.roomType ?? config?.type ?? settings?.roomType ?? settings?.type
+  return raw !== undefined && normalizeRoomType(raw) === undefined
+}
+
+function normalizeDmResolution(value: unknown, memberId: string): { groupId: string; memberId: string } | undefined {
+  if (!isRecord(value)) return undefined
+  const groupId = firstString(value.groupId, value.roomId, value.id)
+  if (!groupId || groupId.length > MAX_GROUP_ID) return undefined
+  const resolvedMember = firstString(value.dmMemberId, value.memberId, value.recipient) ?? memberId
+  if (resolvedMember !== memberId) return undefined
+  return { groupId: groupId.slice(0, MAX_GROUP_ID), memberId: resolvedMember.slice(0, MAX_MEMBER_ID) }
+}
+
+interface RawPendingDmRequest extends KeetPendingDmRequest { readonly roomId?: string }
+
+function normalizePendingDmRequest(value: unknown): KeetPendingDmRequest | undefined {
+  const normalized = normalizePendingDmRequestWithRoom(value)
+  if (!normalized) return undefined
+  return { memberId: normalized.memberId, ...(normalized.displayName ? { displayName: normalized.displayName } : {}) }
+}
+
+function normalizePendingDmRequestWithRoom(value: unknown): RawPendingDmRequest | undefined {
+  if (!isRecord(value)) return undefined
+  const sender = isRecord(value.senderContactInfo) ? value.senderContactInfo : isRecord(value.sender) ? value.sender : isRecord(value.contact) ? value.contact : undefined
+  const id = isRecord(value.id) ? value.id : undefined
+  const memberId = firstString(value.memberId, id?.memberId, sender?.memberId)
+  if (!memberId || memberId.length > MAX_MEMBER_ID) return undefined
+  const roomId = firstString(value.roomId, id?.roomId)
+  const displayName = firstString(value.displayName, sender?.displayName, value.name)
+  return { memberId: memberId.slice(0, MAX_MEMBER_ID), ...(displayName ? { displayName: displayName.slice(0, MAX_MEMBER_ID) } : {}), ...(roomId && roomId.length <= MAX_GROUP_ID ? { roomId: roomId.slice(0, MAX_GROUP_ID) } : {}) }
 }
 
 function normalizeMember(value: unknown): KeetMember | undefined {
@@ -385,7 +588,31 @@ function normalizeMember(value: unknown): KeetMember | undefined {
   const profile = isRecord(value.profile) ? value.profile : undefined
   const nestedProfile = nestedMember && isRecord(nestedMember.profile) ? nestedMember.profile : undefined
   const displayName = firstString(value.displayName, value.name, profile?.displayName, nestedMember?.displayName, nestedMember?.name, nestedProfile?.displayName) ?? memberId
-  return { memberId: memberId.slice(0, MAX_MEMBER_ID), displayName: displayName.slice(0, MAX_MEMBER_ID) || memberId.slice(0, MAX_MEMBER_ID) }
+  const avatar = normalizeAvatarObservation(value.avatar ?? profile?.avatar ?? nestedMember?.avatar ?? nestedProfile?.avatar)
+  return {
+    memberId: memberId.slice(0, MAX_MEMBER_ID),
+    displayName: displayName.slice(0, MAX_MEMBER_ID) || memberId.slice(0, MAX_MEMBER_ID),
+    ...(avatar ? { avatar } : {}),
+  }
+}
+
+function normalizeAvatarObservation(value: unknown): KeetMember["avatar"] | undefined {
+  if (!isRecord(value)) return undefined
+  const variants = [value.small, value.medium, value.large].filter(isRecord)
+  if (!variants.length) return undefined
+  const candidate = variants[0]!
+  const rawHash = candidate.hash ?? candidate.digest
+  if (typeof rawHash === "string" && rawHash.trim()) return { present: true, digest: rawHash.trim().slice(0, 128) }
+  if (Buffer.isBuffer(rawHash) || rawHash instanceof Uint8Array) return { present: true, digest: Buffer.from(rawHash).toString("hex").slice(0, 128) }
+  const pointer = isRecord(candidate.pointer) ? candidate.pointer : undefined
+  const bytes = pointer?.inlined
+  if (Buffer.isBuffer(bytes) || bytes instanceof Uint8Array) {
+    return { present: true, digest: createHash("sha256").update(bytes).digest("hex") }
+  }
+  if (typeof bytes === "string") {
+    try { return { present: true, digest: createHash("sha256").update(Buffer.from(bytes, "base64")).digest("hex") } } catch { /* presence is still safe */ }
+  }
+  return { present: true }
 }
 
 function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefined {
@@ -483,6 +710,10 @@ function boundedId(value: string, label: string): string {
   if (typeof value !== "string" || !value.trim() || value.length > MAX_GROUP_ID) throw publicError(`${label} must be non-empty`)
   return value.trim()
 }
+function boundedMemberId(value: string, label: string): string {
+  if (typeof value !== "string" || !value.trim() || value.length > MAX_MEMBER_ID) throw publicError(`${label} must be non-empty`)
+  return value.trim()
+}
 function validateInvitation(value: string): string {
   if (typeof value !== "string" || value.length > 8_192 || !/^keet:\/\/chat\/[A-Za-z0-9._~%!$&'()*+,;=:@/?-]+$/.test(value.trim())) throw publicError("input must be one Keet room invitation URL")
   return value.trim()
@@ -496,6 +727,34 @@ function firstNumber(...values: unknown[]): number | undefined { return values.f
 function isRecord(value: unknown): value is RawRecord { return typeof value === "object" && value !== null }
 function ensureSignal(signal?: AbortSignal): void { if (signal?.aborted) throw publicError("Keet operation cancelled") }
 function publicError(message: string): Error { return new Error(message.slice(0, 512)) }
+
+function validatePreparedAvatar(avatar: PreparedAvatar): void {
+  if (!avatar || typeof avatar !== "object") throw publicError("avatar is invalid")
+  for (const name of ["small", "medium", "large"] as const) {
+    const variant = avatar[name] as PreparedAvatarVariant | undefined
+    if (!variant || typeof variant !== "object") throw publicError("avatar variant is missing")
+    const bytes = variant.bytes
+    if (!(Buffer.isBuffer(bytes) || bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > MAX_AVATAR_BYTES) throw publicError("avatar variant is too large or invalid")
+    const expectedSize = name === "small" ? 64 : name === "medium" ? 128 : 256
+    if (variant.width !== expectedSize || variant.height !== expectedSize) throw publicError("avatar dimensions are invalid")
+    if (typeof variant.contentType !== "string" || !/^image\/(?:png|jpeg|webp)$/.test(variant.contentType)) throw publicError("avatar format is unsupported")
+    if (typeof variant.hash !== "string" || !/^[a-f0-9]{64}$/i.test(variant.hash)) throw publicError("avatar hash is invalid")
+    if (createHash("sha256").update(bytes).digest("hex") !== variant.hash.toLowerCase()) throw publicError("avatar hash does not match its bytes")
+  }
+}
+
+function encodePreparedAvatar(avatar: PreparedAvatar): Record<string, unknown> {
+  const encode = (variant: PreparedAvatarVariant) => ({
+    hash: Buffer.from(variant.hash, "hex"),
+    metadata: {
+      mimetype: variant.contentType,
+      dimensions: { width: variant.width, height: variant.height },
+      name: "avatar.png",
+    },
+    pointer: { inlined: Buffer.from(variant.bytes) },
+  })
+  return { small: encode(avatar.small), medium: encode(avatar.medium), large: encode(avatar.large) }
+}
 async function delay(ms: number, signal?: AbortSignal): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout>

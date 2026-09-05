@@ -94,6 +94,16 @@ describe("native Keet settings card", () => {
     renderer.unmount()
   })
 
+  it("edits and saves the optional Managed DM peer alongside the group", async () => {
+    const fixture = scopeFixture()
+    const renderer = await openCard(props(fixture))
+    expect(field(renderer, "dmMemberId").props.value).toBe("")
+    await act(async () => { field(renderer, "dmMemberId").props.onChange({ target: { value: "peer-member-id" } }) })
+    await act(async () => { renderer.root.findByProps({ children: "Save" }).props.onClick() })
+    expect(fixture.calls.at(-1)).toEqual({ field: "dmMemberId", value: "peer-member-id" })
+    renderer.unmount()
+  })
+
   it("keeps a rejected draft and never writes from a read-only scope", async () => {
     const fixture = scopeFixture()
     fixture.setReject()

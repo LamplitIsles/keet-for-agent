@@ -3,15 +3,17 @@ import type { ToolDefinition } from "@deepseek-ai/dsh-tools"
 import { KeetBridge, bridgeRpcHandler, type KeetBridgeAgent, type KeetBridgeDependencies } from "../packages/dsh-keet/src/bridge.js"
 import type { KeetCore, KeetMessage, KeetMessageId } from "../packages/dsh-keet/src/core-contract.js"
 
-const settings = { groupId: "group-fixed", workspaceId: "workspace" }
+const settings: { groupId: string; workspaceId: string; dmMemberId?: string } = { groupId: "group-fixed", workspaceId: "workspace" }
+const dmGroupId = "group-dm"
 
 function message(seq: number, text: string, extra: Partial<KeetMessage> = {}): KeetMessage {
   return { messageId: { deviceId: "device-human", seq }, groupId: settings.groupId, senderId: "human", senderLabel: "Alice", timestamp: seq, text, ...extra }
 }
 
-function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failGroup?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembership?: boolean } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
+function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; fail?: boolean; failGroup?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingMembership?: boolean; dm?: boolean; wrongDmPeer?: boolean } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
   const sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }> = []
   let closed = false
+  const dmMethods: Pick<KeetCore, "resolveDm"> = options.dm ? { resolveDm: async () => ({ groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: options.wrongDmPeer ? "other" : "peer", title: "Managed DM" }) } : {}
   const core: KeetCore & { sent: typeof sent; closed: boolean } = {
     sent,
     get closed() { return closed },
@@ -19,12 +21,13 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void)
       if (options.fail) throw new Error("private provider output")
       return { state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: options.missingIdentity ? "" : "bot", displayName: "Keet Bot" }
     },
-    listGroups: async () => [{ groupId: settings.groupId }],
-    validateGroup: async (groupId) => { if (options.failGroup) throw new Error("group unavailable"); return { groupId } },
-    listMembers: async () => [...(options.missingMembership ? [] : [{ memberId: "bot", displayName: "Keet Bot" }]), { memberId: "human", displayName: "Alice" }],
-    readRecentMessages: async () => [{ ...message(1, "old self reply"), senderId: "bot", senderLabel: "Keet Bot", messageId: { deviceId: "device-bot", seq: 1 } }],
+    listGroups: async () => [{ groupId: settings.groupId, roomType: "Default", title: "Test group" }, ...(options.dm ? [{ groupId: dmGroupId, roomType: "DirectMessage" as const, title: "Managed DM", dmMemberId: "peer" }] : [])],
+    validateGroup: async (groupId) => { if (options.failGroup) throw new Error("group unavailable"); return { groupId, roomType: "Default", title: "Test group" } },
+    ...dmMethods,
+    listMembers: async (groupId) => [...(options.missingMembership ? [] : [{ memberId: "bot", displayName: "Keet Bot" }]), ...(groupId === dmGroupId ? [{ memberId: "peer", displayName: "Peer" }] : [{ memberId: "human", displayName: "Alice" }])],
+    readRecentMessages: async (groupId) => [{ ...message(1, "old self reply", { groupId }), senderId: "bot", senderLabel: "Keet Bot", messageId: { deviceId: "device-bot", seq: 1 } }],
     watchMessages: (_group, handler) => {
-      options.onWatch?.(handler)
+      options.onWatch?.(handler, _group)
       let ended = false
       const listeners = new Set<(reason: "closed" | "connection-failed") => void>()
       const terminate = () => {
@@ -53,10 +56,10 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void)
   return core
 }
 
-function deps(core: KeetCore | undefined, agent?: KeetBridgeAgent, inspections: Record<string, any> = {}): KeetBridgeDependencies {
+function deps(core: KeetCore | undefined, agent?: KeetBridgeAgent, inspections: Record<string, any> = {}, configured = settings): KeetBridgeDependencies {
   return {
-    getSettings: () => settings,
-    workspaceRegistry: { get: () => ({ id: settings.workspaceId, path: "/workspace", sessionIds: Object.keys(inspections).length ? Object.keys(inspections) : ["session"] }), archivedSessionIds: new Set(["archived"]) },
+    getSettings: () => configured,
+    workspaceRegistry: { get: () => ({ id: configured.workspaceId, path: "/workspace", sessionIds: Object.keys(inspections).length ? Object.keys(inspections) : ["session"] }), archivedSessionIds: new Set(["archived"]) },
     resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
     inspectSession: async (id) => inspections[id] ?? { meta: { id }, events: [{ type: "user/message", time: 1, data: { source: { kind: "user" }, content: [{ type: "text", text: "hello" }] } }] },
     resolveAgent: async () => agent ? { agent } : { error: new Error("agent unavailable") },
@@ -100,7 +103,7 @@ describe("Keet bridge", () => {
     await bridge.stop()
   })
 
-  it("locks the latest eligible existing session and registers only fixed-group tools", async () => {
+  it("locks the latest eligible existing session and registers only configured destination tools", async () => {
     const core = fakeCore()
     const fixture = makeAgent()
     const bridge = new KeetBridge(deps(core, fixture.agent, {
@@ -111,7 +114,7 @@ describe("Keet bridge", () => {
     }))
     await bridge.start()
     expect(bridge.readiness).toMatchObject({ state: "ready", sessionId: "newer", groupId: settings.groupId })
-    expect(fixture.tools.map((tool) => tool.name)).toEqual(["keet_list_members", "keet_read_recent_messages", "keet_send_message"])
+    expect(fixture.tools.map((tool) => tool.name)).toEqual(["keet_list_groups", "keet_list_members", "keet_read_recent_messages", "keet_send_message"])
     expect(fixture.disposed).toContain("dsh-keet:managed-group-policy")
     const handler = await bridgeRpcHandler(bridge)("readiness")
     expect(handler).toMatchObject({ ok: true, value: { state: "ready" } })
@@ -254,6 +257,46 @@ describe("Keet bridge", () => {
     await bridge.stop()
   })
 
+  it("keeps the configured DM isolated, triggers every new external text once, and hides message provenance", async () => {
+    const handlers = new Map<string, (message: KeetMessage) => void>()
+    const core = fakeCore({ dm: true, onWatch: (handler, groupId) => { handlers.set(groupId, handler) } })
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent, {}, { ...settings, dmMemberId: "peer" }))
+    await bridge.start()
+    expect(bridge.readiness).toMatchObject({ state: "ready", dmMemberId: "peer", destinations: [{ groupId: settings.groupId, kind: "group" }, { groupId: dmGroupId, kind: "dm", peerMemberId: "peer" }] })
+    expect(fixture.tools.map((tool) => tool.name)).toEqual(["keet_list_groups", "keet_list_members", "keet_read_recent_messages", "keet_send_message"])
+
+    const dmDeliver = handlers.get(dmGroupId)!
+    const groupDeliver = handlers.get(settings.groupId)!
+    dmDeliver(message(2, "self", { groupId: dmGroupId, senderId: "bot", senderLabel: "Keet Bot" }))
+    dmDeliver(message(3, "private one", { groupId: dmGroupId }))
+    dmDeliver(message(3, "private one", { groupId: dmGroupId }))
+    groupDeliver(message(4, "group context"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fixture.prompts).toHaveLength(1)
+    const dmPrompt = JSON.stringify(fixture.prompts[0])
+    expect(dmPrompt).toContain("private one")
+    expect(dmPrompt).toContain("Keet Managed DM")
+    expect(dmPrompt).not.toContain("device-human")
+    expect(dmPrompt).not.toContain("seq=3")
+    expect(dmPrompt).not.toContain("group context")
+
+    groupDeliver(message(5, "group mention", { mentions: ["bot"] }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fixture.prompts).toHaveLength(2)
+    expect(JSON.stringify(fixture.prompts[1])).toContain("group context")
+    await bridge.stop()
+    expect(core.closed).toBe(true)
+  })
+
+  it("fails the whole bridge when the configured DM resolves to another peer", async () => {
+    const core = fakeCore({ dm: true, wrongDmPeer: true })
+    const bridge = new KeetBridge(deps(core, makeAgent().agent, {}, { ...settings, dmMemberId: "peer" }))
+    await bridge.start()
+    expect(bridge.readiness).toMatchObject({ state: "failed", detail: "core-start-failed", dmMemberId: "peer" })
+    expect(core.closed).toBe(true)
+  })
+
   it("remains explicitly unbound without an eligible session and fails closed on terminal Core errors", async () => {
     const unboundCore = fakeCore()
     const unbound = new KeetBridge(deps(unboundCore, undefined, { blank: { meta: { id: "blank" }, events: [] } }))
@@ -352,7 +395,7 @@ describe("Keet bridge", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(bridge.readiness).toMatchObject({ state: "failed", detail: "connection-failed" })
     expect(bridge.agent).toBeUndefined()
-    await expect(send.execute({ text: "must not send" }, undefined as never)).rejects.toThrow("bridge is not ready")
+    await expect(send.execute({ groupId: settings.groupId, text: "must not send" }, undefined as never)).rejects.toThrow("bridge is not ready")
     expect(core.sent).toHaveLength(0)
   })
 

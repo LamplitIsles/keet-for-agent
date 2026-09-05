@@ -6,6 +6,7 @@ export function decodeSettings(value: unknown): Partial<KeetSettings> {
   return {
     ...(typeof input.groupId === "string" ? { groupId: input.groupId } : {}),
     ...(typeof input.workspaceId === "string" ? { workspaceId: input.workspaceId } : {}),
+    ...(typeof input.dmMemberId === "string" ? { dmMemberId: input.dmMemberId } : {}),
   }
 }
 
@@ -14,6 +15,7 @@ export function normalizeSettings(value: unknown): KeetSettings {
   return {
     groupId: decoded.groupId ?? DEFAULT_SETTINGS.groupId,
     workspaceId: decoded.workspaceId ?? DEFAULT_SETTINGS.workspaceId,
+    dmMemberId: decoded.dmMemberId?.trim() ?? DEFAULT_SETTINGS.dmMemberId,
   }
 }
 
@@ -23,6 +25,8 @@ export function validateSettings(value: Partial<KeetSettings>): SettingsValidati
   const issues: SettingsValidation["issues"] = {}
   for (const key of ["groupId", "workspaceId"] as const) {
     if (!value[key]?.trim()) issues[key] = "required"
+    else if (value[key]!.length > 512) issues[key] = "invalid"
   }
+  if (value.dmMemberId !== undefined && value.dmMemberId.trim().length > 512) issues.dmMemberId = "invalid"
   return { valid: Object.keys(issues).length === 0, issues }
 }
