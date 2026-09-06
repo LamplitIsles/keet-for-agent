@@ -119,11 +119,16 @@ Agent turn or model-history entry; unavailable or failed command/delivery
 paths do not retry or fall back. The Host composition must inject the
 `commands` service (and its compaction backend), DSH's `attachments` service
 for image admission, and the DSH `fs` service for workspace-contained sends.
-A newly received DM image is streamed through Core,
-admitted atomically through `attachments`, and passed to one Agent turn as
-ordered durable image blocks plus its caption. Failed batches create no session
-image event or turn; they retain one bounded, non-triggering failure record for
-the next successful same-DM turn and attempt one generic notice without retry.
+A newly received DM image is streamed through Core using one finite
+`readFileStream` request: Core sends one argument tuple, half-closes its request
+side, and consumes the response to completion. The complete ordered batch has
+a fixed 60-second admission deadline; expiry or read failure destroys the
+active stream, creates no session image event or turn, retains one bounded,
+non-triggering failure record for the next successful same-DM turn, and attempts
+one generic notice without retry. Later destination messages continue after
+that bounded failure. Successful batches are admitted atomically through
+`attachments` and passed to one Agent turn as ordered durable image blocks plus
+their caption.
 Initial snapshots, self-authored/group/historical images, and
 `keet_read_recent_messages` never fetch image bytes.
 
@@ -187,9 +192,10 @@ inline limit. Avatar-only updates preserve the current display name. Official
 clients apply the circular presentation mask; this repository does not claim a
 desktop visual smoke.
 
-The image path uses the pinned native `saveFileBlob`, `sendFile`, and
-`readFileStream` RPCs. Obsolete `addFile` and `addFileBlob` calls remain
-unsupported and are not wrapped by compatibility fallbacks. Runtime files,
+The image path uses the pinned native `saveFileBlob`, `sendFile`, and finite
+`readFileStream` RPCs. Native external file pointers use the Official
+`externalBlob.id` plus `blob` descriptor. Obsolete `addFile` and `addFileBlob`
+calls remain unsupported and are not wrapped by compatibility fallbacks. Runtime files,
 identity data, downloaded images, and transient previews remain outside source
 and package artifacts. No official-runtime image interoperability smoke was
 authorized for this change, so official-client image compatibility is

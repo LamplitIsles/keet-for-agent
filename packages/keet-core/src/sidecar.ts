@@ -168,6 +168,23 @@ export class KeetSidecar {
     return stream
   }
 
+  /**
+   * Open a response stream for one request tuple and half-close its request
+   * side immediately.  Chat subscriptions intentionally stay open through
+   * `subscribe`; file reads use this finite request/response lifecycle so the
+   * worker can begin producing bytes after it observes STREAM_END.
+   */
+  requestStream(name: RpcStreamMethodName, args: unknown[]): Duplex {
+    const stream = this.subscribe(name, args)
+    try {
+      stream.end()
+    } catch (error) {
+      try { stream.destroy() } catch { /* already destroyed */ }
+      throw error
+    }
+    return stream
+  }
+
   close(): Promise<void> {
     if (!this.#closing) {
       this.#closing = (async () => {

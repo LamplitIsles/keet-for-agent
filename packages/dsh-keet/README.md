@@ -48,14 +48,16 @@ the grammar is forward-compatible display normalization, not an authenticity
 assertion. The Agent's final text is not sent automatically.
 
 New external Managed DM messages may contain one or more PNG, JPEG, WebP, or
-GIF images with an optional caption. The bridge streams every image in order,
-admits the complete batch through DSH's durable `attachments` service, and
-submits one Agent turn with the caption and ordered durable image blocks. A
-download, validation, or storage failure creates no image reference, session
-event, or Agent turn; when possible one bounded DM failure notice is sent and a
-non-triggering failure record remains for the next successful turn in that
-DM. Group/self/snapshot/historical images do no image work, and
-`keet_read_recent_messages` remains plain-text-only.
+GIF images with an optional caption. The bridge sends one tuple through a
+finite `readFileStream` request, half-closes the request side, admits the
+complete batch through DSH's durable `attachments` service, and submits one
+Agent turn with the caption and ordered durable image blocks. The complete
+batch is bounded by 60 seconds; expiry destroys the active stream. A download,
+validation, or storage failure creates no image reference, session event, or
+Agent turn; when possible one bounded DM failure notice is sent and a
+non-triggering failure record remains for the next successful turn in that DM,
+while later messages continue. Group/self/snapshot/historical images do no
+image work, and `keet_read_recent_messages` remains plain-text-only.
 
 At the start of active Managed DM work, the bridge marks the triggering chat
 index plus one as read and publishes native typing activity. Typing refreshes
@@ -98,7 +100,8 @@ Call `keet_list_groups` first. The remaining tools require an exact returned
   remain inside that workspace; URLs, unsupported/corrupt/oversized content,
   Managed Groups, unknown names, and ambiguous names are rejected before
   delivery. Source bytes are preserved for native Keet delivery and a bounded
-  preview is used only for presentation. An optional caption follows as one
+  preview is used only for presentation. Native records use the Official
+  `externalBlob.id` plus `blob` descriptor. An optional caption follows as one
   adjacent ordinary DM text send. Complete success returns only `{ sent: true }`;
   if the image succeeds but the caption fails, the bounded error says the image
   was delivered and must not be retried. Nothing is sent automatically after a

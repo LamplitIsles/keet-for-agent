@@ -86,6 +86,8 @@ export interface JoinResult { readonly groupId: string }
 export interface KeetUsernameResult { readonly status: "searchable" | "pending"; readonly submitted: boolean }
 
 export interface KeetCore {
+  /** Core-owned image admission deadline; not a user-facing setting. */
+  readonly imageAdmissionTimeoutMs?: number
   status(): Promise<KeetReadiness>
   listGroups(): Promise<ManagedGroup[]>
   resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
@@ -121,6 +123,8 @@ export interface KeetCoreOptions {
   startupTimeoutMs?: number
   shutdownTimeoutMs?: number
   pairingTimeoutMs?: number
+  /** Test seam; production runtime options leave this unset. */
+  imageAdmissionTimeoutMs?: number
   nativeAddonPaths?: readonly string[]
   platform?: string
   arch?: string

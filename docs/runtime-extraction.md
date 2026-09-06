@@ -150,20 +150,23 @@ inactive.
 ## Managed DM image boundary
 
 The bridge accepts live external PNG, JPEG, WebP, and GIF images in Managed
-DMs. It streams every image in one message through the pinned
-`readFileStream` RPC, then validates and saves the complete ordered batch with
-DSH's durable attachment service before starting one Agent turn. The turn
-contains the optional caption and durable image blocks; failed admission
-creates no image session event or turn, sends at most one bounded failure
-notice, and retains a non-triggering failure record for the next successful
-turn in that DM. Startup snapshots, self-authored messages, Managed Groups,
+DMs. It sends exactly one argument tuple through the pinned `readFileStream`
+RPC, immediately half-closes that request side, and consumes the finite
+response stream. It then validates and saves the complete ordered batch with
+DSH's durable attachment service before starting one Agent turn. The complete
+batch has a fixed 60-second deadline; timeout or another failed read destroys
+the active stream. Failed admission creates no image session event or turn,
+sends at most one bounded failure notice, and retains a non-triggering failure
+record for the next successful turn in that DM, so later messages are not
+blocked. Startup snapshots, self-authored messages, Managed Groups,
 historical reads, and `keet_read_recent_messages` never download image bytes.
 
 The explicit `keet_send_image` tool is DM-only. It reads one image through the
 bound DSH `ctx.fs` Active Conversation workspace filesystem, requires a path contained by that
 workspace, detects the format from validated bytes, preserves the source for
-the native `saveFileBlob`/`sendFile` lifecycle, and creates only a bounded
-preview. An optional caption is sent as adjacent ordinary text. URLs, outside
+the native `saveFileBlob`/`sendFile` lifecycle (the Official pointer is
+`externalBlob.id` plus `blob`), and creates only a bounded preview. An optional
+caption is sent as adjacent ordinary text. URLs, outside
 workspace paths, unsupported or corrupt images, and oversized content fail
 before delivery; a caption failure after image delivery is reported as a
 bounded no-retry partial result. Images are never sent automatically after an

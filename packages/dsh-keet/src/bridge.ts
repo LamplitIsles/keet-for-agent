@@ -93,6 +93,7 @@ const COMPACT_UNAVAILABLE = "The /compact command is unavailable."
 const MAX_DELIVERED_REACTION_STATES = MAX_RECENT_MESSAGES * 16
 const IMAGE_FAILURE_NOTICE = "I couldn't receive that image. Please resend it."
 const IMAGE_FAILURE_CONTEXT = "[Image could not be received]"
+const DEFAULT_IMAGE_ADMISSION_TIMEOUT_MS = 60_000
 
 async function waitWithin(promise: Promise<unknown>, timeoutMs: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -430,7 +431,7 @@ export class KeetBridge {
 
   /** Complete inbound DM image admission before touching context or waking the agent. */
   private async admitIncomingImages(state: DestinationState, message: KeetMessage, record: KeetContextRecord): Promise<readonly KeetImageAttachmentRef[] | undefined> {
-    const signal = this.stopController.signal
+    const shutdownSignal = this.stopController.signal
     const core = this.coreValue
     const store = this.deps.attachments ?? capabilityOf<KeetAttachmentStore>(this.boundAgent?.ctx, "attachments")
     const images = message.images
@@ -438,7 +439,16 @@ export class KeetBridge {
       await this.recordImageFailure(state, record)
       return undefined
     }
-    try {
+    const saveImages = store.saveImages
+    if (shutdownSignal.aborted) return undefined
+
+    const admissionController = new AbortController()
+    const admissionSignal = admissionController.signal
+    const onShutdown = () => admissionController.abort()
+    shutdownSignal.addEventListener("abort", onShutdown, { once: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeoutMs = imageAdmissionTimeoutOf(core)
+    const batch = (async (): Promise<readonly KeetImageAttachmentRef[]> => {
       const inputs: Array<{ data: Uint8Array; mediaType: (typeof images)[number]["mediaType"]; name?: string }> = []
       let total = 0
       const limits = store.imageLimits
@@ -447,22 +457,37 @@ export class KeetBridge {
       const maxImages = boundedImageLimit(limits?.maxImagesPerMessage, 16)
       if (images.length > maxImages) throw new Error("image batch exceeds bounds")
       for (const image of images) {
-        if (signal.aborted) return undefined
-        const bytes = await core.readImage(state.destination.groupId, image, signal)
+        if (admissionSignal.aborted) throw new Error("image admission cancelled")
+        const bytes = await core.readImage(state.destination.groupId, image, admissionSignal)
+        if (admissionSignal.aborted) throw new Error("image admission cancelled")
         if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1) throw new Error("invalid image bytes")
         total += bytes.byteLength
         if (bytes.byteLength > maxBytes || total > maxMessageBytes) throw new Error("image batch exceeds bounds")
         inputs.push({ data: bytes, mediaType: image.mediaType, ...(image.name ? { name: image.name } : {}) })
       }
-      if (signal.aborted) return undefined
-      const refs = await store.saveImages(inputs)
-      if (signal.aborted) return undefined
+      if (admissionSignal.aborted) throw new Error("image admission cancelled")
+      const refs = await saveImages(inputs)
+      if (admissionSignal.aborted) throw new Error("image admission cancelled")
       if (!Array.isArray(refs) || refs.length !== inputs.length || refs.some((ref) => !validAttachmentRef(ref))) throw new Error("invalid attachment admission")
       return Object.freeze(refs.map((ref) => Object.freeze({ ...ref })))
+    })()
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        admissionController.abort()
+        reject(new Error("image admission timed out"))
+      }, timeoutMs)
+    })
+    try {
+      return await Promise.race([batch, timeout])
     } catch {
-      if (signal.aborted || this.stopped) return undefined
+      if (shutdownSignal.aborted || this.stopped) return undefined
       await this.recordImageFailure(state, record)
       return undefined
+    } finally {
+      if (timer) clearTimeout(timer)
+      shutdownSignal.removeEventListener("abort", onShutdown)
+      admissionController.abort()
+      void batch.catch(() => undefined)
     }
   }
 
@@ -749,6 +774,12 @@ function validAttachmentRef(value: unknown): value is KeetImageAttachmentRef {
     && Number.isSafeInteger(value.width) && value.width > 0 && value.width <= 20_000
     && Number.isSafeInteger(value.height) && value.height > 0 && value.height <= 20_000
     && value.width * value.height <= 100_000_000
+}
+function imageAdmissionTimeoutOf(core: KeetCore): number {
+  const value = (core as KeetCore & { readonly imageAdmissionTimeoutMs?: unknown }).imageAdmissionTimeoutMs
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(1, Math.min(Math.floor(value), DEFAULT_IMAGE_ADMISSION_TIMEOUT_MS))
+    : DEFAULT_IMAGE_ADMISSION_TIMEOUT_MS
 }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null }
 function capabilityOf<T>(context: unknown, name: string): T | undefined {

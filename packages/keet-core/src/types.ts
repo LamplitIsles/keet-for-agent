@@ -185,6 +185,8 @@ export interface KeetSubscription {
 }
 
 export interface KeetCore {
+  /** Core-owned image admission deadline; not a user-facing setting. */
+  readonly imageAdmissionTimeoutMs?: number
   status(): Promise<KeetReadiness>
   listGroups(): Promise<ManagedGroup[]>
   /** Test/onboarding helper; normal DSH operation never creates rooms. */
@@ -241,6 +243,8 @@ export interface KeetCoreOptions {
   startupTimeoutMs?: number
   shutdownTimeoutMs?: number
   pairingTimeoutMs?: number
+  /** Test seam for the bounded inbound image admission deadline. */
+  imageAdmissionTimeoutMs?: number
   nativeAddonPaths?: readonly string[]
   runtimeManifest?: KeetRuntimeManifest
   platform?: string

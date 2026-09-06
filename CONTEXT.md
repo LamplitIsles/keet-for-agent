@@ -136,6 +136,8 @@ _Avoid_: Historical image read, group image trigger, one turn per image
 
 **Inbound DM Image Failure**:
 A Managed DM image message that cannot be completely downloaded and admitted.
+The bounded admission deadline also covers an unavailable or stalled native
+file stream; expiry destroys that stream and uses the same one-notice path.
 It produces one bounded sender notice and one non-triggering Destination
 Context Buffer record for the next successful DM turn; no failed image bytes
 enter the Active Conversation.

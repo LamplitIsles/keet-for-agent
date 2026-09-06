@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { PassThrough } from "node:stream"
+import { Duplex, PassThrough } from "node:stream"
 import { mkdtemp, readFile, rm, stat as statPath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -29,7 +29,7 @@ const serializeDestinationSend = async <T>(_groupId: string, operation: () => Pr
 
 function imageFile(name: string, bytes = PNG_1X1.byteLength): KeetImageFile {
   return {
-    file: { metadata: { mimetype: "image/png", size: bytes, name }, pointer: { externalBlob: { key: name, blob: Buffer.from(name) } } },
+    file: { metadata: { mimetype: "image/png", size: bytes, name }, pointer: { externalBlob: { id: name, blob: Buffer.from(name) } } },
     mediaType: "image/png",
     name,
     bytes,
@@ -48,6 +48,7 @@ function makeImageCore(options: {
   readImage?: (image: KeetImageFile) => Promise<Uint8Array>
   sendMessage?: (groupId: string, text: string) => Promise<{ deviceId: string; seq: number }>
   sendImage?: (groupId: string, image: PreparedKeetImage) => Promise<void>
+  imageAdmissionTimeoutMs?: number
 } = {}) {
   const groups = options.groups ?? [{ groupId: "dm-room", roomType: "DirectMessage", title: "Peer DM", dmMemberId: "peer" }]
   const sent: Array<{ groupId: string; text: string }> = []
@@ -77,6 +78,7 @@ function makeImageCore(options: {
     updateDisplayName: async () => undefined,
     updateIdentityProfile: async () => undefined,
     close: async () => undefined,
+    ...(options.imageAdmissionTimeoutMs !== undefined ? { imageAdmissionTimeoutMs: options.imageAdmissionTimeoutMs } : {}),
   }
   return { core, sent }
 }
@@ -141,18 +143,31 @@ async function flush(): Promise<void> {
 describe("Keet native image transfer", () => {
   it("normalizes external file records, streams bytes, and uses only saveFileBlob/sendFile", async () => {
     const calls: Array<{ name: string; args: unknown[] }> = []
+    let requestEnded = false
     const sidecar = new KeetSidecar({ executablePath: "/inert/bare", bundlePath: "/inert/bundle", dataPath: "/inert/data", platform: "linux", arch: "x64" })
     sidecar.call = (async (name, args) => {
       calls.push({ name, args })
-      if (name === "getChatMessages") return [{ roomId: "room", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderName: "Peer", timestamp: 1, text: "caption", type: "image", files: [{ metadata: { mimetype: "image/png", name: "one" }, pointer: { externalBlob: { key: "opaque-key", blob: Buffer.alloc(32) } } }] }]
-      if (name === "saveFileBlob") return { metadata: args[2], pointer: { externalBlob: { key: "saved", blob: Buffer.from("blob-id") } } }
+      if (name === "getChatMessages") return [{ roomId: "room", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderName: "Peer", timestamp: 1, text: "caption", type: "image", files: [{ metadata: { mimetype: "image/png", name: "one" }, pointer: { externalBlob: { id: "opaque-id", blob: Buffer.alloc(32) } } }] }]
+      if (name === "saveFileBlob") return { metadata: args[2], pointer: { externalBlob: { id: "saved", blob: Buffer.from("blob-id") } } }
       if (name === "sendFile") return undefined
       return {}
     }) as typeof sidecar.call
     sidecar.subscribe = ((name, args) => {
       calls.push({ name, args })
-      const stream = new PassThrough({ objectMode: true })
-      if (name === "readFileStream") queueMicrotask(() => { stream.write(PNG_1X1.subarray(0, 9)); stream.write(PNG_1X1.subarray(9)); stream.end() })
+      if (name !== "readFileStream") return new PassThrough({ objectMode: true })
+      let stream!: Duplex
+      stream = new Duplex({
+        objectMode: true,
+        read() {},
+        write: (_chunk, _encoding, callback) => { callback() },
+        final: (callback) => {
+          requestEnded = true
+          stream.push(PNG_1X1.subarray(0, 9))
+          stream.push(PNG_1X1.subarray(9))
+          stream.push(null)
+          callback()
+        },
+      })
       return stream
     }) as typeof sidecar.subscribe
     const core = new KeetIntegrationCore(sidecar)
@@ -161,6 +176,8 @@ describe("Keet native image transfer", () => {
     expect(history[0]?.images?.[0]?.bytes).toBeUndefined()
     const bytes = await core.readImage("room", history[0]!.images![0]!)
     expect(Buffer.from(bytes)).toEqual(PNG_1X1)
+    expect(requestEnded).toBe(true)
+    expect(calls.find(({ name }) => name === "readFileStream")?.args).toMatchObject(["room", expect.any(Object), { includeProgress: false }])
     await core.sendImage("room", { bytes: PNG_1X1, mediaType: "image/png", width: 1, height: 1 })
     expect(calls.map(({ name }) => name)).toEqual(["getChatMessages", "readFileStream", "saveFileBlob", "sendFile"])
     expect(calls.find(({ name }) => name === "sendFile")?.args[0]).toBe("room")
@@ -172,7 +189,7 @@ describe("Keet native image transfer", () => {
     const sidecar = new KeetSidecar({ executablePath: "/inert/bare", bundlePath: "/inert/bundle", dataPath: "/inert/data", platform: "linux", arch: "x64" })
     sidecar.call = (async (name) => name === "getChatMessages" ? [
       { roomId: "room", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", text: "", type: "text" },
-      { roomId: "room", messageId: { deviceId: "peer", seq: 2 }, senderId: "peer", text: "caption", type: "image", files: [{ metadata: { mimetype: "image/png", dimensions: { width: "bad", height: 1 } }, pointer: { externalBlob: {} } }] },
+      { roomId: "room", messageId: { deviceId: "peer", seq: 2 }, senderId: "peer", text: "caption", type: "image", files: [{ metadata: { mimetype: "image/png", dimensions: { width: 1, height: 1 } }, pointer: { externalBlob: { key: "legacy-only", blob: Buffer.alloc(32) } } }] },
     ] : []) as typeof sidecar.call
     const core = new KeetIntegrationCore(sidecar)
     await expect(core.readRecentMessages("room", 50)).resolves.toEqual([])
@@ -182,17 +199,32 @@ describe("Keet native image transfer", () => {
   it("cancels a streaming read and destroys the stream", async () => {
     const sidecar = new KeetSidecar({ executablePath: "/inert/bare", bundlePath: "/inert/bundle", dataPath: "/inert/data", platform: "linux", arch: "x64" })
     let destroyed = false
-    sidecar.subscribe = (() => {
+    sidecar.requestStream = (() => {
       const stream = new PassThrough({ objectMode: true })
       const destroy = stream.destroy.bind(stream)
       stream.destroy = ((error?: Error) => { destroyed = true; return destroy(error) }) as typeof stream.destroy
       return stream
-    }) as typeof sidecar.subscribe
+    }) as typeof sidecar.requestStream
     const core = new KeetIntegrationCore(sidecar)
     const controller = new AbortController()
     const pending = core.readImage("room", imageFile("pending"), controller.signal)
     controller.abort()
     await expect(pending).rejects.toThrow("cancelled")
+    expect(destroyed).toBe(true)
+    await core.close()
+  })
+
+  it("times out a streaming read and destroys the stream", async () => {
+    const sidecar = new KeetSidecar({ executablePath: "/inert/bare", bundlePath: "/inert/bundle", dataPath: "/inert/data", platform: "linux", arch: "x64" })
+    let destroyed = false
+    sidecar.requestStream = (() => {
+      const stream = new PassThrough({ objectMode: true })
+      const destroy = stream.destroy.bind(stream)
+      stream.destroy = ((error?: Error) => { destroyed = true; return destroy(error) }) as typeof stream.destroy
+      return stream
+    }) as typeof sidecar.requestStream
+    const core = new KeetIntegrationCore(sidecar, { imageAdmissionTimeoutMs: 10 })
+    await expect(core.readImage("room", imageFile("timed-out"))).rejects.toThrow("timed out")
     expect(destroyed).toBe(true)
     await core.close()
   })
@@ -238,6 +270,32 @@ describe("Keet DM image bridge", () => {
     await flush()
     expect(fixture.prompts).toHaveLength(1)
     expect((fixture.prompts[0] as any).content.find((part: any) => part.type === "text")?.text).toContain("Image could not be received")
+    await bridge.stop()
+  })
+
+  it("expires a stalled image batch and continues with the next DM trigger", async () => {
+    let deliver!: (message: KeetMessage) => void
+    let reads = 0
+    const { core, sent } = makeImageCore({
+      imageAdmissionTimeoutMs: 10,
+      onWatch: (handler) => { deliver = handler },
+      readImage: async () => {
+        reads += 1
+        if (reads === 1) return await new Promise<Uint8Array>(() => undefined)
+        return PNG_1X1
+      },
+    })
+    const attachments: KeetAttachmentStore = { saveImages: async () => [{ attachmentId: "after-timeout", mediaType: "image/png", bytes: PNG_1X1.byteLength, width: 1, height: 1 }] }
+    const fixture = makeAgent(attachments)
+    const bridge = new KeetBridge(bridgeDeps(core, fixture.agent))
+    await bridge.start()
+    deliver(imageMessage("dm-room", 1, "expired", [imageFile("expired")]))
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(sent).toEqual([{ groupId: "dm-room", text: "I couldn't receive that image. Please resend it." }])
+    deliver(imageMessage("dm-room", 2, "after", [imageFile("after")]))
+    await flush()
+    expect(fixture.prompts).toHaveLength(1)
+    expect((fixture.prompts[0] as any).content.find((part: any) => part.type === "text")?.text).toContain("after")
     await bridge.stop()
   })
 

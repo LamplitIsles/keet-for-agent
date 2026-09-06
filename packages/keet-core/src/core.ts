@@ -1,4 +1,5 @@
 import { KeetSidecar } from "./sidecar.js"
+import type { Duplex } from "node:stream"
 import {
   KEET_NATIVE_ADDON_COUNT,
   validateKeetCompatibility,
@@ -61,6 +62,7 @@ const MAX_IMAGE_MESSAGE_BYTES = 32 * 1024 * 1024
 const MAX_IMAGE_PIXELS = 100_000_000
 const MAX_IMAGE_DIMENSION = 20_000
 const IMAGE_MEDIA_TYPES = new Set<KeetImageMediaType>(["image/png", "image/jpeg", "image/webp", "image/gif"])
+const DEFAULT_IMAGE_ADMISSION_TIMEOUT_MS = 60_000
 
 type RawRecord = Record<string, unknown>
 
@@ -71,14 +73,18 @@ type RawRecord = Record<string, unknown>
 export class KeetIntegrationCore implements KeetCore {
   readonly sidecar: KeetSidecar
   readonly #pairingTimeoutMs: number
+  /** Bounded Core-owned deadline used by the bridge for one inbound image batch. */
+  readonly imageAdmissionTimeoutMs: number
   #selfId: string | undefined
   #selfLabel: string | undefined
   #selfUsername: string | undefined
   #closed = false
 
-  constructor(options: KeetCoreOptions | KeetSidecar) {
+  constructor(options: KeetCoreOptions | KeetSidecar, timing: { readonly imageAdmissionTimeoutMs?: number } = {}) {
     this.sidecar = options instanceof KeetSidecar ? options : new KeetSidecar(options)
     this.#pairingTimeoutMs = options instanceof KeetSidecar ? DEFAULT_PAIRING_TIMEOUT_MS : Math.max(1, Math.min(options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS, DEFAULT_PAIRING_TIMEOUT_MS))
+    const configuredImageTimeout = options instanceof KeetSidecar ? timing.imageAdmissionTimeoutMs : options.imageAdmissionTimeoutMs ?? timing.imageAdmissionTimeoutMs
+    this.imageAdmissionTimeoutMs = boundedTimeout(configuredImageTimeout, DEFAULT_IMAGE_ADMISSION_TIMEOUT_MS)
   }
 
   static async start(options: KeetCoreOptions): Promise<KeetIntegrationCore> {
@@ -320,13 +326,33 @@ export class KeetIntegrationCore implements KeetCore {
     const id = boundedId(groupId, "Managed Group ID")
     const descriptor = validateImageFileForRead(image)
     ensureSignal(signal)
-    let stream: AsyncIterable<unknown> & { destroy?: (error?: Error) => void; on?: (...args: unknown[]) => unknown }
+    let stream: Duplex
+    const readController = new AbortController()
+    let timedOut = false
+    let parentAbort: (() => void) | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const readSignal = readController.signal
+    const abortStream = () => {
+      try { stream?.destroy?.(publicError(timedOut ? "Keet image read timed out" : "Keet operation cancelled")) } catch { /* stream is already closed */ }
+    }
     try {
-      stream = this.sidecar.subscribe("readFileStream", [id, descriptor.file, { includeProgress: false }]) as typeof stream
+      if (signal) {
+        parentAbort = () => readController.abort()
+        signal.addEventListener("abort", parentAbort, { once: true })
+      }
+      timer = setTimeout(() => {
+        timedOut = true
+        readController.abort()
+      }, this.imageAdmissionTimeoutMs)
+      readSignal.addEventListener("abort", abortStream, { once: true })
+      stream = this.sidecar.requestStream("readFileStream", [id, descriptor.file, { includeProgress: false }]) as typeof stream
+      if (readSignal.aborted) abortStream()
     } catch {
+      if (timer) clearTimeout(timer)
+      readSignal.removeEventListener("abort", abortStream)
+      if (parentAbort) signal?.removeEventListener("abort", parentAbort)
       throw publicError("Keet image read is unavailable")
     }
-    let abortHandler: (() => void) | undefined
     const closeStream = (error?: Error) => {
       try { stream.destroy?.(error) } catch { /* stream is already closed */ }
     }
@@ -334,17 +360,45 @@ export class KeetIntegrationCore implements KeetCore {
       const chunks: Uint8Array[] = []
       let total = 0
       if (signal) {
-        abortHandler = () => closeStream(publicError("Keet operation cancelled"))
-        signal.addEventListener("abort", abortHandler, { once: true })
+        if (signal.aborted) throw publicError("Keet operation cancelled")
       }
-      for await (const value of stream) {
-        ensureSignal(signal)
-        const chunk = imageChunk(value)
-        if (!chunk || chunk.byteLength < 1) throw publicError("Keet image stream was invalid")
-        total += chunk.byteLength
-        if (total > MAX_IMAGE_BYTES || total > MAX_IMAGE_MESSAGE_BYTES) throw publicError("Keet image exceeds the supported size")
-        chunks.push(chunk)
-      }
+      await new Promise<void>((resolve, reject) => {
+        let settled = false
+        const cleanup = () => {
+          stream.removeListener("data", onData)
+          stream.removeListener("end", onEnd)
+          stream.removeListener("close", onClose)
+          stream.removeListener("error", onError)
+        }
+        const finish = (error?: Error) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          if (error) reject(error)
+          else resolve()
+        }
+        const onData = (value: unknown) => {
+          try {
+            if (signal?.aborted) throw publicError("Keet operation cancelled")
+            if (timedOut) throw publicError("Keet image read timed out")
+            const chunk = imageChunk(value)
+            if (!chunk || chunk.byteLength < 1) throw publicError("Keet image stream was invalid")
+            total += chunk.byteLength
+            if (total > MAX_IMAGE_BYTES || total > MAX_IMAGE_MESSAGE_BYTES) throw publicError("Keet image exceeds the supported size")
+            chunks.push(chunk)
+          } catch (error) {
+            finish(error instanceof Error ? error : publicError("Keet image read failed"))
+          }
+        }
+        const onEnd = () => finish()
+        const onClose = () => finish(publicError("Keet image stream closed"))
+        const onError = (error: unknown) => finish(error instanceof Error ? error : publicError("Keet image read failed"))
+        stream.on("data", onData)
+        stream.once("end", onEnd)
+        stream.once("close", onClose)
+        stream.once("error", onError)
+        if (signal?.aborted || timedOut) abortStream()
+      })
       if (total < 1) throw publicError("Keet image stream was empty")
       if (descriptor.bytes !== undefined && descriptor.bytes !== total) throw publicError("Keet image size did not match its descriptor")
       const result = new Uint8Array(total)
@@ -354,9 +408,12 @@ export class KeetIntegrationCore implements KeetCore {
     } catch (error) {
       closeStream(error instanceof Error ? error : undefined)
       if (signal?.aborted || error instanceof Error && error.message === "Keet operation cancelled") throw publicError("Keet operation cancelled")
+      if (timedOut || error instanceof Error && error.message === "Keet image read timed out") throw publicError("Keet image read timed out")
       throw error instanceof Error && /^Keet image/.test(error.message) ? error : publicError("Keet image read failed")
     } finally {
-      if (abortHandler) signal?.removeEventListener("abort", abortHandler)
+      if (timer) clearTimeout(timer)
+      readSignal.removeEventListener("abort", abortStream)
+      if (parentAbort) signal?.removeEventListener("abort", parentAbort)
       closeStream()
     }
   }
@@ -1034,13 +1091,12 @@ function validateImageFileForRead(image: KeetImageFile): KeetImageFile {
 }
 
 function hasExternalBlobPointer(value: unknown): value is RawRecord {
-  // The blob identifier is opaque and may be a Buffer, string, or worker
-  // object.  Presence is the only transport fact Core relies on; its bytes
-  // are obtained exclusively through readFileStream.
+  // The blob descriptor is opaque. Presence is the only transport fact Core
+  // relies on; its bytes are obtained exclusively through readFileStream.
   return isRecord(value)
-    && Object.prototype.hasOwnProperty.call(value, "key")
-    && value.key !== null
-    && value.key !== undefined
+    && Object.prototype.hasOwnProperty.call(value, "id")
+    && value.id !== null
+    && value.id !== undefined
     && Object.prototype.hasOwnProperty.call(value, "blob")
     && value.blob !== null
     && value.blob !== undefined
@@ -1118,6 +1174,9 @@ function boundedId(value: string, label: string): string {
 function boundedMemberId(value: string, label: string): string {
   if (typeof value !== "string" || !value.trim() || value.length > MAX_MEMBER_ID) throw publicError(`${label} must be non-empty`)
   return value.trim()
+}
+function boundedTimeout(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.min(Math.floor(value), fallback)) : fallback
 }
 function validateInvitation(value: string): string {
   if (typeof value !== "string" || value.length > 8_192 || !/^keet:\/\/chat\/[A-Za-z0-9._~%!$&'()*+,;=:@/?-]+$/.test(value.trim())) throw publicError("input must be one Keet room invitation URL")

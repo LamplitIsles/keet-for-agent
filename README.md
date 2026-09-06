@@ -200,20 +200,25 @@ remain ordinary bridge input.
 ### DM images
 
 New external Managed DM messages may contain one or more PNG, JPEG, WebP, or
-GIF images and an optional caption. The bridge downloads every image in order,
-admits the complete batch through DSH's durable `attachments` service, and
-starts one Agent turn containing the caption and durable image blocks. A
-download, validation, or storage failure starts no turn and publishes no image
-reference; when possible it sends one short failure notice and retains one
-non-triggering failure record for the next successful turn in that DM. Group
-images, self-authored images, startup snapshots, and historical reads do no
-image work. `keet_read_recent_messages` remains strictly plain-text-only.
+GIF images and an optional caption. The bridge downloads every image in order
+through a finite `readFileStream` request (the request side is half-closed
+after its one tuple), admits the complete batch through DSH's durable
+`attachments` service, and starts one Agent turn containing the caption and
+durable image blocks. The complete batch has a fixed 60-second deadline;
+expiry or another download, validation, or storage failure destroys the active
+stream, starts no turn, and publishes no image reference. When possible the
+bridge sends one short failure notice and retains one non-triggering failure
+record for the next successful turn in that DM, so later messages continue.
+Group images, self-authored images, startup snapshots, and historical reads do
+no image work. `keet_read_recent_messages` remains strictly plain-text-only.
 
 The explicit `keet_send_image` tool sends one supported image to an exact
 Managed DM by reading a workspace-contained path through the bound DSH `ctx.fs`
 Active Conversation filesystem. It rejects URLs, outside-workspace paths, corrupt or
 unsupported content, and oversized images. Source bytes are preserved for the
-native Keet file send; a bounded preview is generated only for presentation.
+native Keet file send; the pinned worker's `externalBlob.id` plus `blob`
+descriptor is used for the native file record, and a bounded preview is
+generated only for presentation.
 An optional caption is sent as one adjacent ordinary DM text message. A fully
 successful call returns `{ sent: true }`; if the image is delivered but its
 caption fails, the tool reports a bounded error that says not to retry. Images

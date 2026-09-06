@@ -12,6 +12,7 @@ import type { RpcMethodName } from "../packages/keet-core/src/rpc-methods.js"
 import { classifyTrigger } from "../packages/dsh-keet/src/keet-protocol.js"
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-worker.mjs", import.meta.url))
+const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")
 const nodeExecutable = [
   process.env.KEET_TEST_NODE,
   ...((process.env.PATH ?? "").split(path.delimiter).map((directory) => path.join(directory, "node"))),
@@ -710,6 +711,12 @@ describe("Keet Integration Core fd-3 process contracts", () => {
       ]))
       await expect(core.readRecentMessages("group-test", 0)).rejects.toThrow("1 to 50")
       await expect(core.addReaction("group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽")).resolves.toBeUndefined()
+      const receivedImage = await core.readImage("group-test", {
+        file: { pointer: { externalBlob: { id: "fixture-image", blob: Buffer.from("streamed-image") } } },
+        mediaType: "image/png",
+      })
+      expect(Buffer.from(receivedImage)).toEqual(Buffer.from("streamed-image"))
+      await expect(core.sendImage("group-test", { bytes: PNG_1X1, mediaType: "image/png", width: 1, height: 1 })).resolves.toBeUndefined()
       expect((await core.readRecentMessages("group-test", 50)).some((message) => message.reactions?.length)).toBe(false)
       const rendered = JSON.stringify(logs)
       expect(rendered).not.toContain(data)

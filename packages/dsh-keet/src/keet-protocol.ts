@@ -328,6 +328,6 @@ function validExternalImageFile(value: unknown): boolean {
   if (!pointer || typeof pointer !== "object") return false
   const externalBlob = (pointer as { externalBlob?: unknown }).externalBlob
   if (!externalBlob || typeof externalBlob !== "object") return false
-  const record = externalBlob as { key?: unknown; blob?: unknown }
-  return record.key !== undefined && record.key !== null && record.blob !== undefined && record.blob !== null
+  const record = externalBlob as { id?: unknown; blob?: unknown }
+  return record.id !== undefined && record.id !== null && record.blob !== undefined && record.blob !== null
 }
