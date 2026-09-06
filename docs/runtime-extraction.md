@@ -89,7 +89,12 @@ only source-derived integration code and discovers this fixed runtime path.
 
 Choose the same DSH workspace in the plugin settings first. The Host and setup
 CLI create `<workspace>/.dsh/dsh-keet/identity` automatically with private
-directory permissions. One sidecar process owns it; concurrent use is rejected.
+directory permissions. One sidecar process owns it through an exclusive
+nonblocking kernel lock on the persistent mode-0600 `.keet-sidecar.lock` file;
+concurrent use is rejected immediately. Ownership follows the open descriptor,
+so the kernel releases it after an abnormal process death. The file is not a
+stale PID record and must never be deleted manually. Stop the running bridge
+before invoking setup, then restart it after the operation.
 Run the human-only setup command from the root README:
 
 ```sh
@@ -186,7 +191,7 @@ single-sidecar Core smoke, provide fresh runtime inputs and opt in:
 KEET_OFFICIAL_RUNTIME_SMOKE=1 \
 KEET_EXECUTABLE_PATH=/path/to/runtime/bare \
 KEET_BUNDLE_PATH=/path/to/runtime/core-worker.bundle \
-bun run real-worker-smoke
+pnpm real-worker-smoke
 ```
 
 The two-sidecar onboarding smoke additionally requires

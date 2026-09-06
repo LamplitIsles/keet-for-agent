@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { spawn, type ChildProcess } from "node:child_process"
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { PassThrough } from "node:stream"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -13,6 +14,7 @@ import { classifyTrigger } from "../packages/dsh-keet/src/keet-protocol.js"
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-worker.mjs", import.meta.url))
 const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")
+const lockHolderFixture = fileURLToPath(new URL("./fixtures/sidecar-lock-holder.mjs", import.meta.url))
 const nodeExecutable = [
   process.env.KEET_TEST_NODE,
   ...((process.env.PATH ?? "").split(path.delimiter).map((directory) => path.join(directory, "node"))),
@@ -22,8 +24,16 @@ const nodeExecutable = [
 ].find((candidate): candidate is string => typeof candidate === "string" && existsSync(candidate))!
 const temporaryDirectories: string[] = []
 const mockCores: KeetIntegrationCore[] = []
+const lockProcesses: ChildProcess[] = []
 
 afterEach(async () => {
+  const children = lockProcesses.splice(0)
+  for (const child of children) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+  }
+  await Promise.all(children.map(async (child) => {
+    if (child.exitCode === null && child.signalCode === null) await new Promise<void>((resolve) => child.once("exit", () => resolve()))
+  }))
   await Promise.all(mockCores.splice(0).map((core) => core.close().catch(() => undefined)))
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
@@ -45,6 +55,49 @@ function processOptions(data: string, logger?: (entry: KeetSidecarLog) => void, 
     ...overrides,
   }
   return logger ? { ...value, logger } : value
+}
+
+function spawnLockProcess(mode: "hold" | "attempt", data: string): ChildProcess {
+  const child = spawn(nodeExecutable, ["--import", "tsx/esm", lockHolderFixture, mode, data], {
+    cwd: path.resolve(path.dirname(lockHolderFixture), "..", ".."),
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  lockProcesses.push(child)
+  return child
+}
+
+async function waitForProcessLine(child: ChildProcess, expected: string): Promise<void> {
+  let output = ""
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for lock process output: ${output}`)), 5_000)
+    const finish = (error?: Error) => {
+      clearTimeout(timer)
+      child.stdout?.off("data", onData)
+      child.off("exit", onExit)
+      if (error) reject(error)
+      else resolve()
+    }
+    const onData = (chunk: Buffer | string) => {
+      output += chunk.toString()
+      if (output.split(/\r?\n/).includes(expected)) finish()
+    }
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => finish(new Error(`lock process exited before ${expected} (${code ?? "?"}/${signal ?? "?"}): ${output}`))
+    child.stdout?.on("data", onData)
+    child.once("exit", onExit)
+    child.once("error", (error) => finish(error))
+  })
+}
+
+async function collectProcess(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
+  let stdout = ""
+  let stderr = ""
+  child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString() })
+  child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString() })
+  const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve, reject) => {
+    child.once("error", reject)
+    child.once("exit", (exitCode, exitSignal) => resolve([exitCode, exitSignal]))
+  })
+  return { code, signal, stdout, stderr }
 }
 
 type MockCall = { name: RpcMethodName; args: unknown[] }
@@ -786,6 +839,62 @@ describe("Keet Integration Core fd-3 process contracts", () => {
       expect(subscription.terminationReason).toBe("closed")
     } finally {
       await core.close()
+    }
+  })
+
+  it("uses the persistent kernel lock for live contention and abnormal-death recovery", async () => {
+    const data = await dataPath("keet-core-lock-")
+    const lockPath = path.join(data, ".keet-sidecar.lock")
+    await writeFile(lockPath, JSON.stringify({ pid: 999_999 }))
+    const staleRecovery = spawnLockProcess("attempt", data)
+    const staleResult = await collectProcess(staleRecovery)
+    expect(staleResult.code).toBe(0)
+    expect(staleResult.stdout).toContain("ready")
+    expect(existsSync(lockPath)).toBe(true)
+
+    const holder = spawnLockProcess("hold", data)
+    await waitForProcessLine(holder, "ready")
+
+    const contender = spawnLockProcess("attempt", data)
+    const contention = await collectProcess(contender)
+    expect(contention.code).toBe(1)
+    expect(contention.signal).toBeNull()
+    expect(contention.stdout).toBe("")
+    expect(contention.stderr).toContain("already owned")
+
+    holder.kill("SIGTERM")
+    const normalClose = await collectProcess(holder)
+    expect(normalClose.code).toBe(0)
+    expect(existsSync(lockPath)).toBe(true)
+
+    const normalReacquire = spawnLockProcess("hold", data)
+    await waitForProcessLine(normalReacquire, "ready")
+    normalReacquire.kill("SIGKILL")
+    const crash = await collectProcess(normalReacquire)
+    expect(crash.signal).toBe("SIGKILL")
+    expect(existsSync(lockPath)).toBe(true)
+    await expect(stat(lockPath)).resolves.toMatchObject({ mode: expect.any(Number) })
+    expect((await stat(lockPath)).mode & 0o777).toBe(0o600)
+
+    const crashReacquire = spawnLockProcess("attempt", data)
+    const recovered = await collectProcess(crashReacquire)
+    expect(recovered.code).toBe(0)
+    expect(recovered.signal).toBeNull()
+    expect(recovered.stdout).toContain("ready")
+  })
+
+  it("releases identity ownership when logging throws", async () => {
+    const data = await dataPath("keet-core-logger-lock-")
+    const first = new KeetSidecar(processOptions(data, () => { throw new Error("logger failed") }))
+    await expect(first.start()).resolves.toBeUndefined()
+    await expect(first.close()).resolves.toBeUndefined()
+
+    const second = new KeetSidecar(processOptions(data))
+    await expect(second.start()).resolves.toBeUndefined()
+    try {
+      await expect(second.status()).resolves.toMatchObject({ state: "ready" })
+    } finally {
+      await second.close()
     }
   })
 })

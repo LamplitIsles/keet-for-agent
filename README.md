@@ -8,15 +8,15 @@ the operator and is never included in this repository or package artifact.
 
 ## Install locally
 
-This repository is a Bun workspace. Build and inspect the package, then add
+This repository is a pnpm workspace targeting Node.js. Build and inspect the package, then add
 the exact local tarball to a disposable DSH profile:
 
 ```sh
-bun install --frozen-lockfile
-bun run check
-bun test
-bun run build
-bun run pack-smoke
+pnpm install --frozen-lockfile
+pnpm check
+pnpm test
+pnpm build
+pnpm pack-smoke
 ```
 
 For a local/link or tarball installation, use the DSH CLI's normal plugin
@@ -28,7 +28,7 @@ npm pack ./packages/dsh-keet --pack-destination .local
 dsh plugin --profile web add .local/lamplitisles-dsh-keet-0.1.0.tgz
 ```
 
-`bun run pack-smoke` performs this operation in a fresh temporary DSH home,
+`pnpm pack-smoke` performs this operation in a fresh temporary DSH home,
 activates the real DSH Loader, and checks the Host, client, patch, CSS,
 readiness, and settings registrations. It does not contact Keet.
 
@@ -43,7 +43,11 @@ are admitted. The Integration Core fails closed for other tuples.
 
 Keep runtime files outside the repository. The plugin creates the writable
 identity directory at `<workspace>/.dsh/dsh-keet/identity`; one bridge process
-owns that directory at a time.
+owns that directory at a time. Core holds that ownership with an exclusive
+kernel lock on the persistent mode-0600 `.keet-sidecar.lock` file. The lock
+belongs to the open descriptor, so the kernel releases it after an abnormal
+process death; a live owner still rejects another opener immediately. The file
+is not a stale PID record and must never be deleted manually.
 
 Stop the running bridge before using any `dsh-keet-setup` operation against
 that workspace. If DSH runs as the user service shown below, this Bash wrapper
@@ -270,15 +274,15 @@ invitations, identity data, arbitrary files, media, or formatting options;
 The ordinary checks use only fake workers and test-owned temporary directories:
 
 ```sh
-bun install --frozen-lockfile
-bun run check
-bun test
-bun run build
-bun run pack-smoke
+pnpm install --frozen-lockfile
+pnpm check
+pnpm test
+pnpm build
+pnpm pack-smoke
 ```
 
 The official-runtime checks are explicit opt-ins and must use fresh temporary
-identity directories. `bun run real-worker-smoke` is skipped unless
+identity directories. `pnpm real-worker-smoke` is skipped unless
 `KEET_OFFICIAL_RUNTIME_SMOKE=1` is set. The two-sidecar onboarding smoke is
 similarly skipped unless `KEET_OFFICIAL_ONBOARDING_SMOKE=1` is set; see the
 operator guide for its required runtime variables. Never use a real user's

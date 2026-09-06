@@ -11,7 +11,7 @@ import type { ToolDefinition } from "@deepseek-ai/dsh-tools"
 
 // The repository's existing avatar tests exercise the real sharp binary in a
 // Node subprocess. These tool tests mock only the tiny decode/preview surface
-// so the Bun test process remains independent of optional native libraries.
+// so the test process remains independent of optional native libraries.
 vi.mock("sharp", () => {
   const pipeline = () => ({
     metadata: async () => ({ format: "png", width: 1, height: 1 }),

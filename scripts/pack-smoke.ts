@@ -1,6 +1,7 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -59,7 +60,7 @@ function dshInvocation(entry: string): DshInvocation {
   const candidate = resolve(dirname(entry), "..", "@deepseek-ai", "dsh", "lib", "bin.js");
   if (existsSync(candidate)) {
     let node = process.execPath;
-    try { node = execFileSync("which", ["node"], { encoding: "utf8" }).trim() || node; } catch { /* Bun fallback */ }
+    try { node = execFileSync("which", ["node"], { encoding: "utf8" }).trim() || node; } catch { /* use the current Node executable */ }
     return { command: node, prefix: ["--expose-internals", candidate] };
   }
   return { command: entry, prefix: [] };
@@ -181,7 +182,7 @@ async function main(): Promise<void> {
   const root = rootDirectory();
   const packageRoot = join(root, "packages", "dsh-keet");
   if (!existsSync(join(packageRoot, "dist", "index.js")) || !existsSync(join(packageRoot, "dist", "client.js"))) {
-    throw new Error("pack-smoke requires a fresh `bun run build`");
+    throw new Error("pack-smoke requires a fresh `pnpm build`");
   }
   const entry = dshExecutable();
   const expectedPackageVersion = await packageVersion(packageRoot);
@@ -227,6 +228,7 @@ async function main(): Promise<void> {
     if (metadata.peerDependencies?.["@deepseek-ai/cordis"] !== "4.0.2") throw new Error("Cordis peer is not pinned to 4.0.2");
     if (metadata.peerDependencies?.["@deepseek-ai/dsh-tools"] !== "0.1.2-rc.1") throw new Error("dsh-tools peer is not pinned to 0.1.2-rc.1");
     if (metadata.dependencies?.sharp !== "0.33.5") throw new Error("avatar image dependency is not pinned");
+    if (metadata.dependencies?.["fs-native-extensions"] !== "1.5.1") throw new Error("identity lock dependency is not pinned");
     for (const [name, version] of Object.entries(metadata.peerDependencies ?? {})) {
       if (name.startsWith("@deepseek-ai/dsh-") && version !== "0.1.2-rc.1") throw new Error(`non-rc DSH peer: ${name}@${version}`);
     }
@@ -234,6 +236,20 @@ async function main(): Promise<void> {
     if (metadata.peerDependencies?.["@deepseek-ai/dsh-attachment"] !== "0.1.2-rc.1" || metadata.peerDependencies?.["@deepseek-ai/dsh-fs"] !== "0.1.2-rc.1") {
       throw new Error("packed package is missing pinned attachment/fs peers");
     }
+    const installedRequire = createRequire(join(installed, "dist", "index.js"));
+    const nativePackageEntry = installedRequire.resolve("fs-native-extensions");
+    const nativePackageRoot = dirname(nativePackageEntry);
+    if (!existsSync(join(nativePackageRoot, "prebuilds", "linux-x64", "fs-native-extensions.node"))) throw new Error("installed identity lock dependency is missing the Linux x64 prebuild");
+    const node = execFileSync("which", ["node"], { encoding: "utf8" }).trim() || "node";
+    await run(node, ["-e", [
+      "const { createRequire } = require('node:module');",
+      "const { openSync, closeSync } = require('node:fs');",
+      "const [entry, lockPath] = process.argv.slice(1);",
+      "const native = createRequire(entry)('fs-native-extensions');",
+      "if (typeof native.tryLock !== 'function' || typeof native.unlock !== 'function') throw new Error('installed identity lock dependency did not load');",
+      "const fd = openSync(lockPath, 'a+', 0o600);",
+      "try { if (!native.tryLock(fd)) throw new Error('installed identity lock dependency did not grant a lock'); native.unlock(fd); } finally { closeSync(fd); }",
+    ].join(" "), nativePackageEntry, join(temp, "pack-smoke-native.lock")], { env });
     runtime = await startRuntime(entry, env, runtimeCwd);
     const hostModule = await import(pathToFileURL(join(installed, "dist", "index.js")).href) as PackedHostModule;
     if (!Array.isArray(hostModule.inject) || !hostModule.inject.includes("attachments") || !hostModule.inject.includes("fs")) {

@@ -5,12 +5,12 @@ complete `DirectMessage` room in one existing DeepSeek Harness conversation. It
 targets DSH `0.1.2-rc.1` and the
 official Keet compatibility tuple documented in the workspace runtime guide.
 
-Build the package with Bun and install the resulting directory or tarball in a
+Build the package with pnpm and Node.js and install the resulting directory or tarball in a
 test-owned DSH profile:
 
 ```sh
-bun install --frozen-lockfile
-bun run build
+pnpm install --frozen-lockfile
+pnpm build
 npm pack ./packages/dsh-keet --pack-destination .local
 dsh plugin --profile web add .local/lamplitisles-dsh-keet-0.1.0.tgz
 ```
@@ -127,9 +127,14 @@ dsh-keet-setup profile --workspace /path/to/workspace --avatar /path/to/avatar.p
 dsh-keet-setup username --workspace /path/to/workspace --username agent_name1
 ```
 
-Each setup operation needs exclusive ownership of the workspace identity.
-Stop the running DSH bridge first and ensure it starts again afterward; for a
-systemd user service, run the operation in a Bash subshell with an exit trap:
+Each setup operation needs exclusive ownership of the workspace identity. Core
+holds that ownership with an exclusive kernel lock on the persistent
+mode-0600 `.keet-sidecar.lock` file. Ownership follows the open descriptor and is
+released by the kernel after an abnormal process death; a live owner still
+fails another opener immediately. The file is not a stale PID record and must
+never be deleted manually. Stop the running DSH bridge first and ensure it
+starts again afterward; for a systemd user service, run the operation in a
+Bash subshell with an exit trap:
 
 ```sh
 bash -lc '

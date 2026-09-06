@@ -36,6 +36,7 @@ const dshExternals = [
   "@deepseek-ai/schemastery",
   "react",
   "react/jsx-runtime",
+  "fs-native-extensions",
   "sharp",
 ];
 

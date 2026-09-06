@@ -1,6 +1,6 @@
 # Keet for Agent handoff
 
-The implementation is a Bun workspace with one public adapter and one private
+The implementation is a pnpm workspace with one public adapter and one private
 reusable Integration Core:
 
 ```text
@@ -137,9 +137,15 @@ Initial snapshots, self-authored/group/historical images, and
 Only Linux x86-64 with Keet 4.21.0, `@holepunchto/keet-core` 4.21.5, and ABI
 35 is admitted. Runtime files are operator-supplied, read-only assets at
 `$DSH_HOME/runtimes/keet/4.21.0-linux-x64`. Identity data is persistent
-writable state under `<workspace>/.dsh/dsh-keet/identity`. Keep both outside
-package artifacts and never use live state in tests. Sidecar diagnostics and
-wrapped errors are bounded and redacted.
+writable state under `<workspace>/.dsh/dsh-keet/identity`. Core owns that
+directory through the persistent mode-0600 `.keet-sidecar.lock` file, held
+open for the sidecar lifetime with Holepunch's nonblocking kernel lock. A
+live owner causes immediate startup failure; the kernel releases ownership
+after normal close or abnormal process death. The file's presence is never
+interpreted as ownership, and operators must not delete it manually. Keep
+runtime files and identity state outside package artifacts and never use live
+state in tests. Sidecar diagnostics and wrapped errors are bounded and
+redacted.
 
 The pinned worker exposes username RPCs 195–202. This implementation uses
 `checkUsername` (202), `registerUsername` (198) or `updateUsername` (199), then
@@ -167,18 +173,18 @@ Do not push this branch. Release-audit scope is defined in `AGENTS.md`.
 ## Gates
 
 ```sh
-bun install --frozen-lockfile
-bun run check
-bun test
-bun run build
-bun run pack-smoke
+pnpm install --frozen-lockfile
+pnpm check
+pnpm test
+pnpm build
+pnpm pack-smoke
 ```
 
 Official-runtime checks are explicit opt-ins only:
 
 ```sh
-KEET_OFFICIAL_RUNTIME_SMOKE=1 bun run real-worker-smoke
-KEET_OFFICIAL_ONBOARDING_SMOKE=1 bun run official-onboarding-smoke
+KEET_OFFICIAL_RUNTIME_SMOKE=1 pnpm real-worker-smoke
+KEET_OFFICIAL_ONBOARDING_SMOKE=1 pnpm official-onboarding-smoke
 ```
 
 Without those environment variables they must report a skip. Fake-worker and

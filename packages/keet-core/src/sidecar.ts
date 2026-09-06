@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { access, mkdir, open, readFile, rm, stat } from 'node:fs/promises'
+import { access, mkdir, open, readFile, stat, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type { Duplex } from 'node:stream'
+import { tryLock, unlock } from 'fs-native-extensions'
 import TinyBufferRPC from 'tiny-buffer-rpc'
 import any from 'tiny-buffer-rpc/any.js'
 import {
@@ -78,7 +79,7 @@ export class KeetSidecar {
   #methods = new Map<RpcMethodName, RpcMethod>()
   #coreVersion: string | null = null
   #abi: number | null = null
-  #lockPath: string | null = null
+  #lock: FileHandle | null = null
   #closing: Promise<void> | null = null
   #closed = false
   #terminalReason: KeetSidecarTerminalReason | null = null
@@ -281,24 +282,22 @@ export class KeetSidecar {
 
   async #acquireLock(): Promise<void> {
     const lockPath = path.join(this.#options.dataPath, LOCK_NAME)
-    let created = false
+    let lock: FileHandle | null = null
     try {
-      const lock = await open(lockPath, 'wx', 0o600)
-      created = true
-      await lock.writeFile(JSON.stringify({ pid: process.pid }))
-      await lock.close()
-      this.#lockPath = lockPath
-    } catch (error) {
-      if (created) await rm(lockPath, { force: true }).catch(() => undefined)
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      let owner = 'another process'
-      try {
-        const record = JSON.parse(await readFile(lockPath, 'utf8')) as { pid?: unknown }
-        if (typeof record.pid === 'number') owner = `process ${record.pid}`
-      } catch {
-        // A malformed lock still fails closed.
+      lock = await open(lockPath, 'a+', 0o600)
+      if (!tryLock(lock.fd)) {
+        await lock.close()
+        lock = null
+        throw new Error('Keet data directory is already owned by another process')
       }
-      throw new Error(`Keet data directory is already owned by ${owner}`)
+      await lock.chmod(0o600)
+      this.#lock = lock
+    } catch (error) {
+      // The stable lock file is persistent state. Never remove it when
+      // acquisition or startup fails; kernel ownership lives on the open
+      // descriptor and is released by unlock/close or process death.
+      if (lock && lock !== this.#lock) await lock.close().catch(() => undefined)
+      throw error
     }
   }
 
@@ -430,13 +429,22 @@ export class KeetSidecar {
   }
 
   async #releaseLock(): Promise<void> {
-    const lockPath = this.#lockPath
-    this.#lockPath = null
-    if (lockPath) await rm(lockPath, { force: true })
+    const lock = this.#lock
+    this.#lock = null
+    if (!lock) return
+    try {
+      unlock(lock.fd)
+    } finally {
+      await lock.close()
+    }
   }
 
   #log(entry: KeetSidecarLog): void {
-    this.#options.logger?.(entry)
+    try {
+      this.#options.logger?.(entry)
+    } catch {
+      // Logging is observational and must never prevent lock cleanup.
+    }
   }
 
   #handleTerminal(reason: KeetSidecarTerminalReason): void {
