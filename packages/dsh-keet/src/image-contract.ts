@@ -17,6 +17,11 @@ export interface KeetSaveImageAttachment {
   readonly name?: string
 }
 
+/** Clamp one host-provided image limit to the transport's hard fallback. */
+export function boundedImageLimit(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? Math.min(value, fallback) : fallback
+}
+
 export interface KeetAttachmentStore {
   readonly imageLimits?: {
     readonly maxImageBytes?: number
@@ -40,18 +45,12 @@ export interface KeetFileSystemTarget {
  * Active Conversation workspace filesystem capability. The primary methods
  * mirror DSH's `ctx.fs` service: paths resolve to opaque targets, containment
  * is checked by the backend, and bounded bytes are read through that target.
- * The optional `readFile`/path helpers exist only for small test-owned fakes;
- * production composition uses the target-based methods above.
  */
 export interface KeetWorkspaceFileSystem {
-  readonly root?: string
-  resolve?(path: string, options?: { readonly cwd?: string; readonly signal?: AbortSignal }): Promise<KeetFileSystemTarget>
-  contains?(parent: KeetFileSystemTarget, child: KeetFileSystemTarget): boolean
-  stat?(target: KeetFileSystemTarget, signal?: AbortSignal): Promise<{ readonly type: "file" | "directory" | "other"; readonly size?: number } | undefined>
-  readBytes?(target: KeetFileSystemTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
-  resolvePath?(path: string, signal?: AbortSignal): string | Promise<string>
-  realpath?(path: string, signal?: AbortSignal): string | Promise<string>
-  readFile?(path: string, signal?: AbortSignal): Uint8Array | Promise<Uint8Array>
+  resolve(path: string, options?: { readonly cwd?: string; readonly signal?: AbortSignal }): Promise<KeetFileSystemTarget>
+  contains(parent: KeetFileSystemTarget, child: KeetFileSystemTarget): boolean
+  stat(target: KeetFileSystemTarget, signal?: AbortSignal): Promise<{ readonly type: "file" | "directory" | "other"; readonly size?: number } | undefined>
+  readBytes(target: KeetFileSystemTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
 }
 
 export interface KeetImageAttachmentBlock {

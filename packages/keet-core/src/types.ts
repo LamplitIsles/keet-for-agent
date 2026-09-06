@@ -200,9 +200,9 @@ export interface KeetCore {
   listMembers(groupId: string): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
   /** Download and bound one live external-blob image record. */
-  readImage?(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
+  readImage(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
   /** Save and publish one native image record; no chat text is emitted. */
-  sendImage?(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void>
+  sendImage(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
   /** Mark a Managed DM read through the native chat-index boundary. */
   setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void>

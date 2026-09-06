@@ -276,7 +276,7 @@ export function boundedMembers(members: readonly KeetMember[]): KeetDisplayMembe
 }
 
 export function isKeetCore(value: unknown): value is KeetCore {
-  return Boolean(value && typeof value === "object" && typeof (value as KeetCore).listMembers === "function" && typeof (value as KeetCore).readRecentMessages === "function" && typeof (value as KeetCore).sendMessage === "function" && typeof (value as KeetCore).addReaction === "function")
+  return Boolean(value && typeof value === "object" && typeof (value as KeetCore).listMembers === "function" && typeof (value as KeetCore).readRecentMessages === "function" && typeof (value as KeetCore).readImage === "function" && typeof (value as KeetCore).sendImage === "function" && typeof (value as KeetCore).sendMessage === "function" && typeof (value as KeetCore).addReaction === "function")
 }
 
 function escapeAttr(value: string): string { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/[\r\n\u2028\u2029]+/g, " ").slice(0, MAX_PROVENANCE_CHARS) }

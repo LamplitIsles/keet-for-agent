@@ -29,20 +29,12 @@ type HostContext = Context & {
   }
   commands: NonNullable<KeetBridgeDependencies["commands"]>
   attachments?: KeetBridgeDependencies["attachments"]
-  workspaceFilesystem?: KeetBridgeDependencies["workspaceFilesystem"]
-  filesystem?: KeetBridgeDependencies["filesystem"]
-  fileSystem?: KeetBridgeDependencies["filesystem"]
-  workspaceFs?: KeetBridgeDependencies["workspaceFs"]
   fs?: KeetBridgeDependencies["fs"]
 }
 
 export function apply(ctx: HostContext): void {
   const settings = ctx.settings.register(SETTINGS_NAMESPACE, KeetSettingsSchema, { applies: "restart" })
   const attachments = capabilityOf<KeetBridgeDependencies["attachments"]>(ctx, "attachments")
-  const workspaceFilesystem = capabilityOf<KeetBridgeDependencies["workspaceFilesystem"]>(ctx, "workspaceFilesystem")
-  const filesystem = capabilityOf<KeetBridgeDependencies["filesystem"]>(ctx, "filesystem")
-  const fileSystem = capabilityOf<KeetBridgeDependencies["filesystem"]>(ctx, "fileSystem")
-  const workspaceFs = capabilityOf<KeetBridgeDependencies["workspaceFs"]>(ctx, "workspaceFs")
   const fs = capabilityOf<KeetBridgeDependencies["fs"]>(ctx, "fs")
   const bridgeDeps: KeetBridgeDependencies = {
     getSettings: () => settings.get(),
@@ -53,10 +45,6 @@ export function apply(ctx: HostContext): void {
     coreFactory: async (options) => await KeetIntegrationCore.start(options),
     commands: ctx.commands,
     ...(attachments ? { attachments } : {}),
-    ...(workspaceFilesystem ? { workspaceFilesystem } : {}),
-    ...(filesystem ? { filesystem } : {}),
-    ...(fileSystem ? { filesystem: fileSystem } : {}),
-    ...(workspaceFs ? { workspaceFs } : {}),
     ...(fs ? { fs } : {}),
     onError: () => { if (process.env.NODE_ENV !== "test") console.error("[dsh-keet] bridge operation failed") },
   }

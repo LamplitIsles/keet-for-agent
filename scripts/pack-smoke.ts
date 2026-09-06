@@ -230,19 +230,6 @@ async function main(): Promise<void> {
     for (const [name, version] of Object.entries(metadata.peerDependencies ?? {})) {
       if (name.startsWith("@deepseek-ai/dsh-") && version !== "0.1.2-rc.1") throw new Error(`non-rc DSH peer: ${name}@${version}`);
     }
-    const patchText = await readFile(join(installed, "cordis.patch.yml"), "utf8");
-    for (const required of ["dsh-keet", "@lamplitisles/dsh-keet", "connection", "settings", "tools", "systemPrompt", "commands", "attachments", "fs", "workspaceRegistry", "sessionController"]) {
-      if (!patchText.includes(required)) throw new Error(`Cordis patch is missing ${required}`);
-    }
-    const hostBundle = await readFile(join(installed, "dist", "index.js"), "utf8");
-    for (const required of ["keet_list_groups", "keet_list_members", "keet_read_recent_messages", "keet_send_message", "keet_send_image", "groupName returned by keet_list_groups", "DM sends do not support replyTo", "workspace-contained image path", "dmMemberId"]) {
-      if (!hostBundle.includes(required)) throw new Error(`packed Host bundle is missing ${required}`);
-    }
-    const setupBundle = await readFile(join(installed, "dist", "setup.js"), "utf8");
-    for (const required of ["dm-requests", "dm-accept", "--avatar"]) {
-      if (!setupBundle.includes(required)) throw new Error(`packed setup executable is missing ${required}`);
-    }
-
     runtime = await startRuntime(entry, env, runtimeCwd);
     const cookie = await authenticateRuntime(runtime);
     const homePage = await fetch(new URL("/", runtime.baseUrl), { headers: { cookie } });

@@ -18,6 +18,8 @@ function fakeCore(overrides: Partial<KeetCore> = {}): KeetCore {
     listGroups: async () => [{ groupId, roomType: "Default" }, { groupId: dmId, roomType: "DirectMessage", dmMemberId: "member-peer" }],
     listMembers: async (id) => id === dmId ? [{ memberId: "bot", displayName: "Bot" }, { memberId: "member-peer", displayName: "Peer" }] : [{ memberId: "z", displayName: "Zed" }, { memberId: "a", displayName: "Alice" }],
     readRecentMessages: async (id) => [{ messageId: target, groupId: id, senderId: "a", senderLabel: "Alice", timestamp: 1, text: "hello", replyTo: { deviceId: "device-self", seq: 3 } }],
+    readImage: async () => new Uint8Array([1]),
+    sendImage: async () => undefined,
     watchMessages: () => ({ closed: false, close: async () => undefined }),
     setUnreadAnchor: async () => undefined,
     updateTypingIndicator: async () => undefined,
@@ -36,8 +38,9 @@ function fakeCore(overrides: Partial<KeetCore> = {}): KeetCore {
 }
 
 const exec = (signal = new AbortController().signal) => ({ signal }) as never
-const definitions = (core: KeetCore = fakeCore(), ready = true) => createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => ready })
-const definitionsFor = (configured: ManagedDestination[], core: KeetCore = fakeCore()) => createKeetToolDefinitions({ getCore: () => core, destinations: configured, isReady: () => true })
+const serializeDestinationSend = async <T>(_groupId: string, operation: () => Promise<T>): Promise<T> => await operation()
+const definitions = (core: KeetCore = fakeCore(), ready = true) => createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => ready, serializeDestinationSend })
+const definitionsFor = (configured: ManagedDestination[], core: KeetCore = fakeCore()) => createKeetToolDefinitions({ getCore: () => core, destinations: configured, isReady: () => true, serializeDestinationSend })
 
 describe("Managed Destination Keet tools", () => {
   it("registers the four closed tools and requires an explicit returned groupName", () => {
@@ -132,7 +135,7 @@ describe("Managed Destination Keet tools", () => {
       sendMessage: async (...args) => { reactionCalls.push(["text", ...args]); return target },
       addReaction: async (...args) => { reactionCalls.push(["reaction", ...args]) },
     })
-    const reactionSend = createKeetToolDefinitions({ getCore: () => reactionCore, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId: dmId, messageId: target }) })[3]!
+    const reactionSend = createKeetToolDefinitions({ getCore: () => reactionCore, destinations, isReady: () => true, serializeDestinationSend, getActiveReactionTarget: () => ({ groupId: dmId, messageId: target }) })[3]!
     await expect(reactionSend.execute({ groupName: dmName, text: "private decorated", reaction: "💬" }, exec())).resolves.toEqual({ sent: true, reacted: true })
     expect(reactionCalls.map(([kind]) => kind)).toEqual(["text", "reaction"])
     expect(reactionCalls[0]).toEqual(["text", dmId, "private decorated", undefined, expect.anything()])
@@ -169,7 +172,7 @@ describe("Managed Destination Keet tools", () => {
       sendMessage: async (...args) => { calls.push(["text", ...args]); return target },
       addReaction: async (...args) => { calls.push(["reaction", ...args]) },
     })
-    const tools = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId, messageId: target }) })
+    const tools = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, serializeDestinationSend, getActiveReactionTarget: () => ({ groupId, messageId: target }) })
     const send = tools.find((tool) => tool.name === KEET_SEND_MESSAGE)!
     expect(JSON.stringify(send.parameters)).not.toContain("messageId")
     await expect(send.execute({ groupName: ` ${groupName} `, text: "written reply", reaction: "👍🏽" }, exec())).resolves.toEqual({ sent: true, reacted: true })
@@ -184,11 +187,11 @@ describe("Managed Destination Keet tools", () => {
     let sent = 0
     let reacted = 0
     const core = fakeCore({ sendMessage: async () => { sent += 1; return target }, addReaction: async () => { reacted += 1 } })
-    const sendUnavailable = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, getActiveReactionTarget: () => undefined }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    const sendUnavailable = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, serializeDestinationSend, getActiveReactionTarget: () => undefined }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
     await expect(sendUnavailable.execute({ groupName, text: "must not send", reaction: "👍" }, exec())).rejects.toThrow("unavailable outside")
-    const sendDifferent = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId: "other", messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    const sendDifferent = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, serializeDestinationSend, getActiveReactionTarget: () => ({ groupId: "other", messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
     await expect(sendDifferent.execute({ groupName, text: "must not send", reaction: "👍" }, exec())).rejects.toThrow("different")
-    const sendDuplicate = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "first", kind: "group", groupName }, { groupId: "second", kind: "dm", groupName }], isReady: () => true, getActiveReactionTarget: () => ({ groupId: "first", messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    const sendDuplicate = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "first", kind: "group", groupName }, { groupId: "second", kind: "dm", groupName }], isReady: () => true, serializeDestinationSend, getActiveReactionTarget: () => ({ groupId: "first", messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
     await expect(sendDuplicate.execute({ groupName, text: "must not send", reaction: "👍" }, exec())).rejects.toThrow("no message was sent")
     await expect(sendUnavailable.execute({ groupName, text: "must not send", reaction: "not emoji" }, exec())).rejects.toThrow("exactly one Unicode emoji")
     const controller = new AbortController(); controller.abort()
@@ -203,7 +206,7 @@ describe("Managed Destination Keet tools", () => {
       sendMessage: async () => { calls.push("text"); return target },
       addReaction: async () => { calls.push("reaction"); throw new Error("provider rejected reaction") },
     })
-    const tools = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId, messageId: target }) })
+    const tools = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, serializeDestinationSend, getActiveReactionTarget: () => ({ groupId, messageId: target }) })
     const send = tools.find((tool) => tool.name === KEET_SEND_MESSAGE)!
     await expect(send.execute({ groupName, text: "text survives", reaction: "👍" }, exec())).resolves.toEqual({ sent: true, reacted: false })
     expect(calls).toEqual(["text", "reaction"])
@@ -215,7 +218,7 @@ describe("Managed Destination Keet tools", () => {
       sendMessage: async () => { failedCalls.push("text"); throw new Error("provider text failure") },
       addReaction: async () => { failedCalls.push("reaction") },
     })
-    const failedSend = createKeetToolDefinitions({ getCore: () => failedCore, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId, messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    const failedSend = createKeetToolDefinitions({ getCore: () => failedCore, destinations, isReady: () => true, serializeDestinationSend, getActiveReactionTarget: () => ({ groupId, messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
     await expect(failedSend.execute({ groupName, text: "text fails", reaction: "👍" }, exec())).rejects.toThrow("not sent")
     expect(failedCalls).toEqual(["text"])
   })
@@ -226,7 +229,7 @@ describe("Managed Destination Keet tools", () => {
     let resolveText!: (messageId: KeetMessageId) => void
     const textResult = new Promise<KeetMessageId>((resolve) => { resolveText = resolve })
     const textCore = fakeCore({ sendMessage: async () => { textSends += 1; return textResult } })
-    const textSend = createKeetToolDefinitions({ getCore: () => textCore, destinations, isReady: () => ready })[3]!
+    const textSend = createKeetToolDefinitions({ getCore: () => textCore, destinations, isReady: () => ready, serializeDestinationSend })[3]!
     const textExecution = textSend.execute({ groupName, text: "confirmed text" }, exec())
     resolveText(target)
     ready = false
@@ -242,7 +245,7 @@ describe("Managed Destination Keet tools", () => {
       sendMessage: async () => { textSends += 1; return reactionTextResult },
       addReaction: async () => { reactionAttempts += 1 },
     })
-    const reactionSend = createKeetToolDefinitions({ getCore: () => reactionCore, destinations, isReady: () => ready, getActiveReactionTarget: () => ({ groupId, messageId: target }) })[3]!
+    const reactionSend = createKeetToolDefinitions({ getCore: () => reactionCore, destinations, isReady: () => ready, serializeDestinationSend, getActiveReactionTarget: () => ({ groupId, messageId: target }) })[3]!
     const reactionExecution = reactionSend.execute({ groupName, text: "confirmed text with reaction", reaction: "👍" }, exec())
     resolveReactionText(target)
     ready = false

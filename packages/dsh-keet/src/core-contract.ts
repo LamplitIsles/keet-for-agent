@@ -92,8 +92,8 @@ export interface KeetCore {
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listMembers(groupId: string): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
-  readImage?(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
-  sendImage?(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void>
+  readImage(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
+  sendImage(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
   /** Mark a Managed DM read through the native chat-index boundary. */
   setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void>

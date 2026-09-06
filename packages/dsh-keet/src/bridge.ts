@@ -10,7 +10,7 @@ import { createKeetToolDefinitions, normalizeManagedDestinationName, type Active
 import { createKeetRuntimeOptions, type KeetRuntimePaths } from "./runtime-options.js"
 import { normalizeSettings, validateSettings } from "./settings-client.js"
 import { selectMostRecentEligibleSession, type SessionInspectionLike, type WorkspaceLike } from "./session-selection.js"
-import type { KeetAttachmentStore, KeetImageAttachmentRef, KeetWorkspaceFileSystem } from "./image-contract.js"
+import { boundedImageLimit, type KeetAttachmentStore, type KeetImageAttachmentRef, type KeetWorkspaceFileSystem } from "./image-contract.js"
 
 export type KeetBridgeReadinessState = "disabled" | "missing-settings" | "connecting" | "ready" | "unbound" | "failed"
 export interface KeetBridgeReadiness {
@@ -29,10 +29,6 @@ export interface KeetBridgeAgent extends Pick<Agent, "id" | "followup"> {
     /** DSH's durable image service, when the host composition enables it. */
     attachments?: KeetAttachmentStore
     /** Host workspace filesystem capability used by explicit image sends. */
-    filesystem?: KeetWorkspaceFileSystem
-    fileSystem?: KeetWorkspaceFileSystem
-    workspaceFilesystem?: KeetWorkspaceFileSystem
-    workspaceFs?: KeetWorkspaceFileSystem
     fs?: KeetWorkspaceFileSystem
   }
   whenIdle: () => Promise<void>
@@ -51,10 +47,6 @@ export interface KeetBridgeDependencies {
   core?: KeetCore
   commands?: KeetCommandService
   attachments?: KeetAttachmentStore
-  workspaceFilesystem?: KeetWorkspaceFileSystem
-  /** Alias accepted by host adapters that name the capability `filesystem`. */
-  filesystem?: KeetWorkspaceFileSystem
-  workspaceFs?: KeetWorkspaceFileSystem
   fs?: KeetWorkspaceFileSystem
   onReadiness?: (readiness: KeetBridgeReadiness) => void
   onError?: (error: unknown) => void
@@ -122,6 +114,7 @@ export class KeetBridge {
   private destinationsValue: readonly ManagedDestination[] = []
   private readonly states = new Map<string, DestinationState>()
   private readonly toolDisposers: Array<() => void> = []
+  private readonly destinationSendTails = new Map<string, Promise<void>>()
   private started = false
   private stopped = false
   private accepting = false
@@ -287,9 +280,7 @@ export class KeetBridge {
       created.push(policy)
       created.push(...this.registerAgentLifecycle(agent))
       const agentAttachments = capabilityOf<KeetAttachmentStore>(agent.ctx, "attachments")
-      const workspaceFilesystem = [this.deps.workspaceFilesystem, this.deps.filesystem, this.deps.workspaceFs, this.deps.fs,
-        capabilityOf<KeetWorkspaceFileSystem>(agent.ctx, "workspaceFilesystem"), capabilityOf<KeetWorkspaceFileSystem>(agent.ctx, "filesystem"), capabilityOf<KeetWorkspaceFileSystem>(agent.ctx, "fileSystem"), capabilityOf<KeetWorkspaceFileSystem>(agent.ctx, "workspaceFs"), capabilityOf<KeetWorkspaceFileSystem>(agent.ctx, "fs")]
-        .find((candidate): candidate is KeetWorkspaceFileSystem => Boolean(candidate && ((typeof candidate.resolve === "function" && typeof candidate.contains === "function" && typeof candidate.readBytes === "function") || typeof candidate.readFile === "function")))
+      const fs = this.deps.fs ?? capabilityOf<KeetWorkspaceFileSystem>(agent.ctx, "fs")
       const attachments = this.deps.attachments ?? agentAttachments
       for (const definition of createKeetToolDefinitions({
         getCore: () => this.coreValue,
@@ -297,8 +288,9 @@ export class KeetBridge {
         isReady: () => this.accepting && !this.stopped && this.coreValue !== undefined,
         onDestinationMessageSent: (groupId, messageId) => this.markSent(groupId, messageId),
         getActiveReactionTarget: () => this.activeReactionTarget,
+        serializeDestinationSend: (groupId, operation) => this.serializeDestinationSend(groupId, operation),
         ...(attachments ? { attachments } : {}),
-        ...(workspaceFilesystem ? { workspaceFilesystem } : {}),
+        ...(fs ? { fs } : {}),
         ...(this.workspaceRoot ? { workspaceRoot: this.workspaceRoot } : {}),
       })) {
         const dispose = registry.register(definition)
@@ -442,7 +434,7 @@ export class KeetBridge {
     const core = this.coreValue
     const store = this.deps.attachments ?? capabilityOf<KeetAttachmentStore>(this.boundAgent?.ctx, "attachments")
     const images = message.images
-    if (!core || !images?.length || typeof core.readImage !== "function" || !store?.saveImages) {
+    if (!core || !images?.length || !store?.saveImages) {
       await this.recordImageFailure(state, record)
       return undefined
     }
@@ -452,7 +444,7 @@ export class KeetBridge {
       const limits = store.imageLimits
       const maxBytes = boundedImageLimit(limits?.maxImageBytes, 16 * 1024 * 1024)
       const maxMessageBytes = boundedImageLimit(limits?.maxMessageImageBytes, 32 * 1024 * 1024)
-      const maxImages = boundedImageCount(limits?.maxImagesPerMessage, 16)
+      const maxImages = boundedImageLimit(limits?.maxImagesPerMessage, 16)
       if (images.length > maxImages) throw new Error("image batch exceeds bounds")
       for (const image of images) {
         if (signal.aborted) return undefined
@@ -480,8 +472,11 @@ export class KeetBridge {
     this.appendContext(state, { ...record, text, imageFailure: true } as KeetContextRecord)
     if (this.stopped || this.stopController.signal.aborted || !this.coreValue) return
     try {
-      const messageId = await this.coreValue.sendMessage(state.destination.groupId, IMAGE_FAILURE_NOTICE, undefined, this.stopController.signal)
-      if (!this.stopped) this.markSent(state.destination.groupId, messageId)
+      await this.serializeDestinationSend(state.destination.groupId, async () => {
+        if (this.stopped || this.stopController.signal.aborted || !this.coreValue) return
+        const messageId = await this.coreValue.sendMessage(state.destination.groupId, IMAGE_FAILURE_NOTICE, undefined, this.stopController.signal)
+        if (!this.stopped) this.markSent(state.destination.groupId, messageId)
+      })
     } catch { this.reportError() }
   }
 
@@ -660,8 +655,11 @@ export class KeetBridge {
     }
     if (this.stopped || !this.coreValue) return
     try {
-      const messageId = await this.coreValue.sendMessage(trigger.destination.groupId, response, undefined, this.stopController.signal)
-      if (!this.stopped) this.markSent(trigger.destination.groupId, messageId)
+      await this.serializeDestinationSend(trigger.destination.groupId, async () => {
+        if (this.stopped || !this.coreValue || this.stopController.signal.aborted) return
+        const messageId = await this.coreValue.sendMessage(trigger.destination.groupId, response, undefined, this.stopController.signal)
+        if (!this.stopped) this.markSent(trigger.destination.groupId, messageId)
+      })
     } catch { this.reportError() }
   }
 
@@ -687,6 +685,7 @@ export class KeetBridge {
     for (const state of this.states.values()) { if (state.subscription) subscriptions.push(state.subscription); state.subscriptionTerminationDisposer?.(); state.subscriptionTerminationDisposer = undefined; state.subscription = undefined }
     const resources: DetachedResources = { subscriptions, ...(this.coreValue ? { core: this.coreValue } : {}) }
     this.coreValue = undefined; this.boundAgent = undefined; this.boundSessionId = undefined; this.accepting = false; this.queueGeneration += 1; this.stopController.abort(); this.disposeTools()
+    this.destinationSendTails.clear()
     this.pendingKeetTurns.clear()
     this.activeReactionTargetValue = undefined
     for (const state of this.states.values()) { state.activeActivity?.stop(); state.activeActivity = undefined; state.contextBuffer.length = 0; state.seen.clear(); state.ownMessageIds.clear(); state.refreshedReplyTargets.clear(); state.deliveredReactionStates.clear() }
@@ -701,6 +700,18 @@ export class KeetBridge {
     return Object.freeze(this.destinationsValue.map(({ groupName, kind }) => Object.freeze({ groupName, kind })))
   }
   private reportError(): void { try { this.deps.onError?.(new Error("dsh-keet bridge operation failed")) } catch { /* diagnostics never affect lifecycle */ } }
+
+  /** Serialize every native send for one destination, including paired image captions. */
+  private serializeDestinationSend<T>(groupId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.destinationSendTails.get(groupId) ?? Promise.resolve()
+    const current = previous.then(operation)
+    const tail = current.then(() => undefined, () => undefined)
+    this.destinationSendTails.set(groupId, tail)
+    void tail.then(() => {
+      if (this.destinationSendTails.get(groupId) === tail) this.destinationSendTails.delete(groupId)
+    })
+    return current
+  }
 }
 
 function makeDestinationState(destination: ManagedDestination): DestinationState {
@@ -738,12 +749,6 @@ function validAttachmentRef(value: unknown): value is KeetImageAttachmentRef {
     && Number.isSafeInteger(value.width) && value.width > 0 && value.width <= 20_000
     && Number.isSafeInteger(value.height) && value.height > 0 && value.height <= 20_000
     && value.width * value.height <= 100_000_000
-}
-function boundedImageLimit(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? Math.min(value, fallback) : fallback
-}
-function boundedImageCount(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? Math.min(value, fallback) : fallback
 }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null }
 function capabilityOf<T>(context: unknown, name: string): T | undefined {
