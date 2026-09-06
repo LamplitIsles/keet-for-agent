@@ -262,8 +262,11 @@ destination tools:
   stable message IDs but omit reply targets; DM results omit sender/message/
   reply IDs;
 - `keet_send_message`: one non-empty text message up to 16,000 characters.
-  Regular groups may use an exact `{ deviceId, seq }` reply target; Managed
-  Broadcast and DM sends are ordinary text and reject `replyTo`. An optional
+  Regular groups may use an exact `{ deviceId, seq }` reply target and native
+  `mentions` containing exact current member display names. Names are resolved
+  immediately against the roster; absent or ambiguous names fail before a
+  message is sent, and Member IDs never reach the Agent. Managed Broadcast and
+  DM sends are ordinary text and reject `replyTo` and native mentions. An optional
   `reaction` is one bounded Unicode emoji applied only to the exact message
   that triggered the active ordinary Keet turn for a regular group or DM;
   reactions are unavailable for Managed Broadcasts. Text is sent first and a

@@ -115,6 +115,16 @@ describe("Managed Destination Keet tools", () => {
     await expect(read.execute({ groupName, last: 0 }, exec())).rejects.toThrow("1 to 50")
   })
 
+  it("resolves exact roster display names to native mentions without exposing member IDs", async () => {
+    const calls: unknown[][] = []
+    const core = fakeCore({ sendMessage: async (...args) => { calls.push(args as unknown[]); return target } })
+    const send = definitions(core)[3]!
+    await expect(send.execute({ groupName, text: "Welcome, Alice!", mentions: ["Alice", "Alice"] }, exec())).resolves.toEqual({ sent: true })
+    expect(calls).toEqual([[groupId, "Welcome, Alice!", undefined, expect.anything(), ["a"]]])
+    await expect(send.execute({ groupName, text: "no identity leak", mentions: ["Missing"] }, exec())).rejects.toThrow("current unique member")
+    await expect(send.execute({ groupName: dmName, text: "no native DM mention", mentions: ["Peer"] }, exec())).rejects.toThrow("only for regular Managed Groups")
+  })
+
   it("hides DM message IDs, routes ordinary sends, and rejects DM replies", async () => {
     const calls: unknown[][] = []
     const core = fakeCore({ readRecentMessages: async (...args) => { calls.push(args as unknown[]); return [{ messageId: target, groupId: dmId, senderId: "member-peer", senderLabel: "Peer", timestamp: 1, text: "private", replyTo: target }] }, sendMessage: async (...args) => { calls.push(args as unknown[]); return target } })

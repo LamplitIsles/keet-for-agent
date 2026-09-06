@@ -545,7 +545,7 @@ export class KeetIntegrationCore implements KeetCore {
     return subscription
   }
 
-  async sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal): Promise<KeetMessageId | undefined> {
+  async sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal, mentions?: readonly string[]): Promise<KeetMessageId | undefined> {
     const id = boundedId(groupId, "Managed Group ID")
     if (typeof text !== "string" || !text.trim() || text.length > MAX_TEXT) throw publicError("message text must be non-empty and at most 16,000 characters")
     ensureSignal(signal)
@@ -558,7 +558,16 @@ export class KeetIntegrationCore implements KeetCore {
       const history = await this.readRecentMessages(id, MAX_MESSAGES, signal)
       if (!history.some((message) => sameMessageId(message.messageId, target!))) throw publicError("reply target was not found in the configured Managed Group")
     }
-    const options = target ? { replyTo: target } : {}
+    const mentionMembers = normalizeOutboundMentions(mentions)
+    if (mentionMembers.length) {
+      const members = await this.listMembers(id)
+      const present = new Set(members.map((member) => member.memberId))
+      if (mentionMembers.some((memberId) => !present.has(memberId))) throw publicError("mentioned member is not in the Managed Group")
+    }
+    const options = {
+      ...(target ? { replyTo: target } : {}),
+      ...(mentionMembers.length ? { mentions: mentionMembers.map((memberId) => ({ type: "mention", memberId })) } : {}),
+    }
     const result = await this.callWithSignal("addChatMessage", [id, text, options], signal)
     return extractMessageId(result)
   }
@@ -1066,6 +1075,20 @@ function normalizeMentions(values: readonly unknown[]): string[] {
     if (mentions.length >= 128) break
   }
   return mentions
+}
+
+function normalizeOutboundMentions(values: readonly string[] | undefined): string[] {
+  if (values === undefined) return []
+  if (!Array.isArray(values) || values.length > 128) throw publicError("mentions must contain at most 128 member IDs")
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    if (typeof value !== "string" || !value.trim() || value.length > MAX_MEMBER_ID) throw publicError("mention member ID is invalid")
+    if (seen.has(value)) continue
+    seen.add(value)
+    result.push(value)
+  }
+  return result
 }
 
 function normalizeMessageId(value: unknown): KeetMessageId | undefined {

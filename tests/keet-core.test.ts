@@ -541,6 +541,14 @@ describe("typed Keet Integration Core unit behavior", () => {
     await expect(dm.core.sendMessage("group-dm", "reply", target)).rejects.toThrow("not supported for a Managed DM")
   })
 
+  it("sends verified native mention records without accepting stale member IDs", async () => {
+    const harness = makeMockCore()
+    await expect(harness.core.sendMessage("group-test", "welcome", undefined, undefined, ["member-alice", "member-alice"])).resolves.toEqual({ deviceId: "device-self", seq: 10 })
+    expect(harness.state.calls.at(-1)).toEqual({ name: "addChatMessage", args: ["group-test", "welcome", { mentions: [{ type: "mention", memberId: "member-alice" }] }] })
+    await expect(harness.core.sendMessage("group-test", "stale", undefined, undefined, ["member-gone"])).rejects.toThrow("mentioned member is not in")
+    expect(harness.state.calls.at(-1)?.name).not.toBe("addChatMessage")
+  })
+
   it("maps invitation inspection, creation, joining, and cancellation without provider details", async () => {
     const joined = makeMockCore({ handlers: {
       getLinkInfo: ([token]) => token === "fixture-token" ? { isRoomInvitation: true, title: "Joined" } : { isRoomInvitation: false },

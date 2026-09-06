@@ -104,7 +104,7 @@ export interface KeetCore {
   updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void>
   /** Native reaction mutation against one exact canonical message. */
   addReaction(groupId: string, messageId: KeetMessageId, reaction: string, signal?: AbortSignal): Promise<void>
-  sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal): Promise<KeetMessageId | undefined>
+  sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal, mentions?: readonly string[]): Promise<KeetMessageId | undefined>
   inspectInvitation(invitation: string, signal?: AbortSignal): Promise<InvitationInfo>
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>
   updateDisplayName(displayName: string, signal?: AbortSignal): Promise<void>

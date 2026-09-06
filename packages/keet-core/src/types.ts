@@ -214,7 +214,8 @@ export interface KeetCore {
   updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void>
   /** Add one native Unicode emoji reaction to an exact message. */
   addReaction(groupId: string, messageId: KeetMessageId, reaction: string, signal?: AbortSignal): Promise<void>
-  sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal): Promise<KeetMessageId | undefined>
+  /** Native mentions are Core-owned routing values and never model-visible. */
+  sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal, mentions?: readonly string[]): Promise<KeetMessageId | undefined>
   inspectInvitation(invitation: string, signal?: AbortSignal): Promise<InvitationInfo>
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>
   updateDisplayName(displayName: string, signal?: AbortSignal): Promise<void>

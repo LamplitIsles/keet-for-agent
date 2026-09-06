@@ -81,7 +81,9 @@ provenance, and the current text of valid edited records; Managed Broadcast
 history preserves canonical message IDs but omits reply provenance. Live edited
 updates remain suppressed. Roster results contain only display names and
 send results contain only bounded delivery booleans; Broadcast roster lookup is
-rejected. `keet_send_message` always requires non-empty text and may optionally
+rejected. `keet_send_message` always requires non-empty text, may natively
+mention exact current display names in a regular Group (resolved internally to
+unique current Member IDs; missing/ambiguous names fail before send), and may optionally
 attach one native Unicode emoji to the current Keet trigger for a regular Group
 or DM; the bridge supplies that Message ID internally. Managed Broadcast sends
 are plain text only and reject reply anchors and reactions. Text is sent first,

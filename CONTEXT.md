@@ -119,6 +119,14 @@ independently starting a turn. Managed DM ordinary external text uses a
 separate every-message trigger and is not a Reply Trigger.
 _Avoid_: Every group message, mention only
 
+**Native Mention**:
+A regular Managed Group outbound message whose `mentions` are exact current
+member display names. The Bridge resolves each name to one current Member ID at
+send time and passes Keet's native `{ type: "mention", memberId }` record to
+the Core. Missing or duplicate display names fail closed; Member IDs never
+cross into Agent-visible prompts, tools, or results.
+_Avoid_: literal `@name` text as a substitute, Member ID tool arguments
+
 **DM Activity Signal**:
 
 Bridge-owned, best-effort native read-anchor and typing metadata for one active

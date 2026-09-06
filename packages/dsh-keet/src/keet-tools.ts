@@ -1,6 +1,6 @@
 import { defineTool, type ToolDefinition, type ToolRunContext } from "@deepseek-ai/dsh-tools"
 import { validateKeetReaction } from "@lamplitisles/keet-integration-core"
-import type { KeetCore, KeetMessage, KeetMessageId } from "./core-contract.js"
+import type { KeetCore, KeetMember, KeetMessage, KeetMessageId } from "./core-contract.js"
 import { MAX_GROUP_MEMBERS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES } from "./constants.js"
 import { boundedMembers, messageIdKey, renderKeetMessage } from "./keet-protocol.js"
 import path from "node:path"
@@ -220,7 +220,7 @@ function activeTargetOf(deps: KeetToolDependencies): ActiveReactionTarget | unde
 
 async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: AbortSignal): Promise<KeetSendMessageResult> {
   if (signal.aborted) throw cancelled(signal)
-  const record = args && typeof args === "object" ? args as { groupName?: unknown; text?: unknown; replyTo?: unknown; reaction?: unknown } : {}
+  const record = args && typeof args === "object" ? args as { groupName?: unknown; text?: unknown; replyTo?: unknown; reaction?: unknown; mentions?: unknown } : {}
   const destination = destinationOf(deps, record.groupName, "send")
   if (!validBody(record.text)) throw safeError("text must be non-empty and at most 16,000 characters.")
   const text = record.text
@@ -229,6 +229,7 @@ async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: Ab
   if (record.replyTo !== undefined && !validMessageId(record.replyTo)) throw safeError("replyTo must be a canonical Keet message ID.")
   const reactionRequested = record.reaction !== undefined
   if (destination.kind === "broadcast" && reactionRequested) throw safeError("Managed Broadcast sends do not support reactions.")
+  if (record.mentions !== undefined && destination.kind !== "group") throw safeError("native mentions are supported only for regular Managed Groups.")
   let reaction: string | undefined
   let target: ActiveReactionTarget | undefined
   if (reactionRequested) {
@@ -241,12 +242,15 @@ async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: Ab
     if (!validMessageId(target.messageId)) throw safeError("reaction target is unavailable outside an active Keet turn.")
   }
   const core = ensureReady(deps)
+  const mentions = record.mentions === undefined ? undefined : await resolveMentionMembers(core, destination.groupId, record.mentions, signal)
   let messageId: KeetMessageId | undefined
   try {
     await deps.serializeDestinationSend(destination.groupId, async () => {
       if (signal.aborted) throw cancelled(signal)
       if (!deps.isReady()) throw new Error("Keet bridge lost readiness; no message was sent.")
-      messageId = await core.sendMessage(destination.groupId, text, destination.kind === "group" ? record.replyTo as KeetMessageId | undefined : undefined, signal)
+      messageId = mentions === undefined
+        ? await core.sendMessage(destination.groupId, text, destination.kind === "group" ? record.replyTo as KeetMessageId | undefined : undefined, signal)
+        : await core.sendMessage(destination.groupId, text, destination.kind === "group" ? record.replyTo as KeetMessageId | undefined : undefined, signal, mentions)
       try { deps.onDestinationMessageSent?.(destination.groupId, messageId) } catch { /* receipt bookkeeping never changes delivery */ }
     })
   } catch (error) {
@@ -271,6 +275,25 @@ async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: Ab
   } catch {
     return { sent: true, reacted: false }
   }
+}
+
+async function resolveMentionMembers(core: KeetCore, groupId: string, value: unknown, signal: AbortSignal): Promise<readonly string[] | undefined> {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_GROUP_MEMBERS || value.some((name) => typeof name !== "string" || !name.trim() || name.length > MAX_PROVENANCE_CHARS)) {
+    throw safeError("mentions must contain 1 to 128 exact member display names.")
+  }
+  const requested = [...new Set(value.map((name) => (name as string).trim()))]
+  let members: readonly KeetMember[]
+  try { members = await core.listMembers(groupId) }
+  catch (error) { throw operationError(error, "Keet member roster is unavailable.") }
+  if (signal.aborted) throw cancelled(signal)
+  const ids: string[] = []
+  for (const name of requested) {
+    const matches = members.filter((member) => member.displayName === name)
+    if (matches.length !== 1) throw safeError("each mention must name one current unique member.")
+    ids.push(matches[0]!.memberId)
+  }
+  return ids
 }
 
 const IMAGE_MAX_BYTES = 16 * 1024 * 1024
@@ -477,8 +500,8 @@ export function createKeetToolDefinitions(deps: KeetToolDependencies): readonly 
   })
   const send = defineTool({
     name: KEET_SEND_MESSAGE,
-    description: "Send one non-empty plain-text message to the selected Managed Group, Managed Broadcast, or Managed DM by exact groupName. Regular groups may use an exact replyTo; Managed Broadcast and Managed DM sends are ordinary text without reply anchors. Optional reactions apply only to regular-group or DM turns and are unavailable for Managed Broadcasts.",
-    parameters: { groupName: { type: "string", required: true, description: "An exact groupName returned by keet_list_groups." }, text: { type: "string", required: true, description: "Non-empty plain text, at most 16,000 characters." }, replyTo: { type: "object", description: "Optional exact message ID from regular-group history; not valid for a Managed Broadcast or Managed DM.", additionalProperties: false, properties: { deviceId: { type: "string", required: true }, seq: { type: "integer", required: true } } }, reaction: { type: "string", description: "Optional one bounded Unicode emoji for the current Keet trigger; picker shortcodes are not accepted." } },
+    description: "Send one non-empty plain-text message to the selected Managed Group, Managed Broadcast, or Managed DM by exact groupName. Regular groups may use exact replyTo and native mentions of exact current member display names. Managed Broadcast and Managed DM sends are ordinary text without reply anchors or native mentions. Optional reactions apply only to regular-group or DM turns and are unavailable for Managed Broadcasts.",
+    parameters: { groupName: { type: "string", required: true, description: "An exact groupName returned by keet_list_groups." }, text: { type: "string", required: true, description: "Non-empty plain text, at most 16,000 characters." }, mentions: { type: "array", description: "Optional exact current member display names to mention natively in a regular Managed Group. Duplicate or ambiguous names are rejected.", items: { type: "string" } }, replyTo: { type: "object", description: "Optional exact message ID from regular-group history; not valid for a Managed Broadcast or Managed DM.", additionalProperties: false, properties: { deviceId: { type: "string", required: true }, seq: { type: "integer", required: true } } }, reaction: { type: "string", description: "Optional one bounded Unicode emoji for the current Keet trigger; picker shortcodes are not accepted." } },
     output: { schema: { type: "object", additionalProperties: false, properties: { sent: { type: "boolean", const: true, required: true }, reacted: { type: "boolean", description: "Present only when a reaction was requested; false means text was sent but the decoration was not confirmed." } } }, render: (_args, value) => renderText(value.sent ? value.reacted === undefined ? "Keet message sent." : value.reacted ? "Keet message sent with reaction." : "Keet message sent; reaction was not added." : "Keet message was not sent.") },
     async execute(args, exec) { return sendMessage(scopedDeps, args, signalOf(exec)) },
   })
