@@ -203,6 +203,7 @@ describe("Keet bridge", () => {
       { groupName: "One", kind: "group" },
       { groupName: "Two", kind: "group" },
       { groupName: "Accepted", kind: "dm" },
+      { groupName: "Broadcast", kind: "broadcast" },
     ] })
     expect([...handlers.keys()]).toEqual(["group-one", "group-two", "dm-accepted"])
     const list = fixture.tools.find((tool) => tool.name === "keet_list_groups")!
@@ -210,6 +211,7 @@ describe("Keet bridge", () => {
       { groupName: "One", kind: "group" },
       { groupName: "Two", kind: "group" },
       { groupName: "Accepted", kind: "dm" },
+      { groupName: "Broadcast", kind: "broadcast" },
     ] })
     const send = fixture.tools.find((tool) => tool.name === "keet_send_message")!
     await expect(send.execute({ groupName: "Two", text: "routed" }, undefined as never)).resolves.toEqual({ sent: true })
@@ -225,9 +227,40 @@ describe("Keet bridge", () => {
     const fixture = makeAgent()
     const bridge = new KeetBridge(deps(core, fixture.agent))
     await bridge.start()
-    expect(bridge.readiness).toMatchObject({ state: "ready", destinations: [] })
+    expect(bridge.readiness).toMatchObject({ state: "ready", destinations: [{ groupName: "Broadcast", kind: "broadcast" }] })
     const list = fixture.tools.find((tool) => tool.name === "keet_list_groups")!
-    await expect(list.execute({}, undefined as never)).resolves.toEqual({ groups: [] })
+    await expect(list.execute({}, undefined as never)).resolves.toEqual({ groups: [{ groupName: "Broadcast", kind: "broadcast" }] })
+    await bridge.stop()
+  })
+
+  it("routes Managed Broadcast reads and plain-text posts without state or subscriptions", async () => {
+    const handlers = new Map<string, (message: KeetMessage) => void>()
+    let memberReads = 0
+    const core = fakeCore({
+      groups: [{ groupId: "broadcast", roomType: "Broadcast", title: "Announcements" }],
+      onWatch: (handler, groupId) => { handlers.set(groupId, handler) },
+      onListMembers: () => { memberReads += 1 },
+    })
+    core.readRecentMessages = async (groupId) => [{ ...message(1, "announcement", { groupId, messageId: { deviceId: "device-moderator", seq: 1 } }), senderId: "moderator", senderLabel: "Moderator" }]
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+
+    expect(bridge.destinations).toEqual([{ groupName: "Announcements", kind: "broadcast" }])
+    expect(bridge.contextBuffers.size).toBe(0)
+    expect(handlers).toEqual(new Map())
+    const read = fixture.tools.find((tool) => tool.name === "keet_read_recent_messages")!
+    await expect(read.execute({ groupName: "Announcements", last: 1 }, undefined as never)).resolves.toMatchObject({ messages: [{ text: "announcement" }] })
+    const members = fixture.tools.find((tool) => tool.name === "keet_list_members")!
+    await expect(members.execute({ groupName: "Announcements" }, undefined as never)).rejects.toThrow("rosters are unavailable")
+    expect(memberReads).toBe(0)
+
+    const send = fixture.tools.find((tool) => tool.name === "keet_send_message")!
+    await expect(send.execute({ groupName: "Announcements", text: "published" }, undefined as never)).resolves.toEqual({ sent: true })
+    expect(core.sent).toEqual([{ groupId: "broadcast", text: "published" }])
+    await expect(send.execute({ groupName: "Announcements", text: "reply is rejected", replyTo: { deviceId: "device-moderator", seq: 1 } }, undefined as never)).rejects.toThrow("do not support replyTo")
+    await expect(send.execute({ groupName: "Announcements", text: "reaction is rejected", reaction: "📣" }, undefined as never)).rejects.toThrow("do not support reactions")
+    expect(core.sent).toHaveLength(1)
     await bridge.stop()
   })
 

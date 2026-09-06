@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { createKeetToolDefinitions, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE, type ManagedDestination } from "../packages/dsh-keet/src/keet-tools.js"
-import type { KeetCore, KeetMessageId } from "../packages/dsh-keet/src/core-contract.js"
+import type { KeetCore, KeetMessage, KeetMessageId } from "../packages/dsh-keet/src/core-contract.js"
 
 const groupId = "group-fixed"
 const dmId = "group-dm"
@@ -140,6 +140,57 @@ describe("Managed Destination Keet tools", () => {
     expect(reactionCalls.map(([kind]) => kind)).toEqual(["text", "reaction"])
     expect(reactionCalls[0]).toEqual(["text", dmId, "private decorated", undefined, expect.anything()])
     expect(reactionCalls[1]).toEqual(["reaction", dmId, target, "💬", expect.anything()])
+  })
+
+  it("routes Managed Broadcast reads and plain-text sends while rejecting unsupported operations", async () => {
+    const broadcastId = "group-broadcast"
+    let memberReads = 0
+    let sends = 0
+    const core = fakeCore({
+      listMembers: async () => { memberReads += 1; return [] },
+      readRecentMessages: async (id) => [{ messageId: target, groupId: id, senderId: "moderator", senderLabel: "Moderator", timestamp: 1, text: "announcement" }],
+      sendMessage: async (...args) => { sends += 1; return args[0] === broadcastId ? target : undefined },
+    })
+    const broadcast: ManagedDestination = { groupId: broadcastId, kind: "broadcast", groupName: "Announcements" }
+    const tools = createKeetToolDefinitions({
+      getCore: () => core,
+      destinations: [broadcast],
+      isReady: () => true,
+      serializeDestinationSend,
+      fs: {} as never,
+    })
+    await expect(tools[0]!.execute({}, exec())).resolves.toEqual({ groups: [{ groupName: "Announcements", kind: "broadcast" }] })
+    await expect(tools[1]!.execute({ groupName: "Announcements" }, exec())).rejects.toThrow("rosters are unavailable")
+    expect(memberReads).toBe(0)
+    await expect(tools[2]!.execute({ groupName: "Announcements", last: 1 }, exec())).resolves.toEqual({ messages: [{ messageId: target, senderLabel: "Moderator", timestamp: 1, text: "announcement" }] })
+    await expect(tools[3]!.execute({ groupName: "Announcements", text: "publish" }, exec())).resolves.toEqual({ sent: true })
+    expect(sends).toBe(1)
+    await expect(tools[3]!.execute({ groupName: "Announcements", text: "reply", replyTo: target }, exec())).rejects.toThrow("do not support replyTo")
+    await expect(tools[3]!.execute({ groupName: "Announcements", text: "react", reaction: "📣" }, exec())).rejects.toThrow("do not support reactions")
+    const image = tools.find((tool) => tool.name === "keet_send_image")!
+    await expect(image.execute({ groupName: "Announcements", path: "notice.png" }, exec())).rejects.toThrow("only for Managed DMs")
+    expect(sends).toBe(1)
+
+    const rejectedCore = fakeCore({ sendMessage: async () => { throw new Error("MODERATORS_ONLY") } })
+    const rejectedTools = createKeetToolDefinitions({ getCore: () => rejectedCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
+    await expect(rejectedTools[3]!.execute({ groupName: "Announcements", text: "must fail truthfully" }, exec())).rejects.toThrow("not sent")
+
+    const persisted: KeetMessage[] = []
+    const acknowledgedCore = fakeCore({
+      readRecentMessages: async () => persisted,
+      sendMessage: async () => {
+        persisted.push({ messageId: { deviceId: "device-broadcast", seq: 8 }, groupId: broadcastId, senderId: "bot", senderLabel: "Bot", timestamp: 2, text: "native append" })
+        return undefined
+      },
+    })
+    const acknowledgedTools = createKeetToolDefinitions({ getCore: () => acknowledgedCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
+    await expect(acknowledgedTools[3]!.execute({ groupName: "Announcements", text: "native append" }, exec())).resolves.toEqual({ sent: true })
+
+    let noOpSends = 0
+    const noOpCore = fakeCore({ sendMessage: async () => { noOpSends += 1; return undefined }, readRecentMessages: async () => [] })
+    const noOpTools = createKeetToolDefinitions({ getCore: () => noOpCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
+    await expect(noOpTools[3]!.execute({ groupName: "Announcements", text: "native no-op" }, exec())).rejects.toThrow("not sent")
+    expect(noOpSends).toBe(1)
   })
 
   it("does not turn missing display labels into model-visible identity IDs", async () => {

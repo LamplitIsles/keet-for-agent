@@ -1,8 +1,8 @@
 # Keet for Agent
 
 `@lamplitisles/dsh-keet` is a narrow DeepSeek Harness (DSH) plugin for every
-joined Keet `Default` room and every accepted complete `DirectMessage` room
-discovered at startup. It uses the official Keet Linux x86-64 runtime
+joined Keet `Default` or `Broadcast` room and every accepted complete
+`DirectMessage` room discovered at startup. It uses the official Keet Linux x86-64 runtime
 through a typed Integration Core; the runtime itself is supplied privately by
 the operator and is never included in this repository or package artifact.
 
@@ -164,19 +164,26 @@ do not echo invitations or Core-private records.
 
 The Integration Core reads the canonical joined-room list once at startup and
 also obtains one bounded pending-request snapshot. Joined `Default` rooms are
-managed groups. Complete `DirectMessage` rooms whose peer is not pending are
-managed DMs. Pending requests, broadcasts, unknown or incomplete records, and
-duplicate room IDs are excluded; failure to obtain the pending snapshot fails
-startup closed without admitting a DM.
+Managed Groups, joined `Broadcast` rooms are Managed Broadcasts, and complete
+`DirectMessage` rooms whose peer is not pending are Managed DMs. Pending
+requests, unknown or incomplete records, and duplicate room IDs are excluded;
+failure to obtain the pending snapshot fails startup closed without admitting a
+DM. A Managed Broadcast is read/proactive-text only: it has no bridge state,
+subscription, inbound trigger, context buffer, typing/read activity, roster,
+image, reply, or reaction path. The native Keet Core decides each post from
+the identity's current permission, so a non-moderator rejection is surfaced as
+an ordinary safe send failure without retrying.
 
 At startup the bridge selects the latest eligible existing human conversation
 in that workspace and keeps it for its lifetime. It never creates or switches
 conversations or groups. It exposes every admitted destination; unrelated
 joined rooms remain hidden. An empty eligible set is a valid connected state
 and lets onboarding complete before a later restart.
-Each destination has an independent bounded FIFO context buffer. Group text
-keeps the existing mention, display-label, and verified-reply triggers. Every
-new ordinary external DM text starts one serialized Agent turn. Group prompt
+Each Managed Group and Managed DM has an independent bounded FIFO context
+buffer; Managed Broadcasts do not have bridge state or inbound subscriptions.
+Group text keeps the existing mention, display-label, and verified-reply
+triggers. Every new ordinary external DM text starts one serialized Agent turn.
+Group prompt
 records retain canonical `{ device_id, seq }` provenance and the startup source
 `groupName`; DM prompts identify the source and sender display label but
 intentionally omit message IDs, reply relations, and sender IDs. All records are
@@ -238,22 +245,25 @@ An Agent turn's final DSH text is never relayed automatically. Call
 `keet_list_groups` first, then pass one exact returned `groupName` to the common
 destination tools:
 
-- `keet_list_groups`: every discovered Managed Group and Managed DM, returned
-  only as `{ groupName, kind }`;
+- `keet_list_groups`: every discovered Managed Group, Managed Broadcast, and
+  Managed DM, returned only as `{ groupName, kind }`;
 - `keet_list_members`: at most 128 deterministic current display names (Member
-  IDs remain Bridge-owned);
+  IDs remain Bridge-owned); Managed Broadcast roster lookup is rejected;
 - `keet_read_recent_messages`: 1–50 chronological bounded plain-text records;
   valid edited records expose their current text in explicit reads, while an
-  edit never triggers an Agent turn. Regular groups include stable message IDs
-  and optional reply targets, while DM results omit sender/message/reply IDs;
+  edit never triggers an Agent turn. Managed Group and Managed Broadcast
+  results include stable message IDs and optional reply targets, while DM
+  results omit sender/message/reply IDs;
 - `keet_send_message`: one non-empty text message up to 16,000 characters.
-  Regular groups may use an exact `{ deviceId, seq }` reply target; DM sends are
-  ordinary text and reject `replyTo`. An optional `reaction` is one bounded
-  Unicode emoji applied only to the exact message that triggered the active
-  ordinary Keet turn. Text is sent first and a requested reaction is
-  best-effort: text-only success returns `{ sent: true }`, while a requested
-  reaction returns `{ sent: true, reacted: true|false }`. A failed reaction
-  never retries or turns a confirmed text send into a tool error.
+  Regular groups may use an exact `{ deviceId, seq }` reply target; Managed
+  Broadcast and DM sends are ordinary text and reject `replyTo`. An optional
+  `reaction` is one bounded Unicode emoji applied only to the exact message
+  that triggered the active ordinary Keet turn for a regular group or DM;
+  reactions are unavailable for Managed Broadcasts. Text is sent first and a
+  requested reaction is best-effort: text-only success returns `{ sent: true }`,
+  while a requested reaction returns `{ sent: true, reacted: true|false }`. A
+  failed reaction never retries or turns a confirmed text send into a tool
+  error.
 - `keet_send_image`: one workspace-contained PNG, JPEG, WebP, or GIF to an
   exact Managed DM, optionally followed by an adjacent caption. The tool is
   available when the host composes the Active Conversation filesystem service;
@@ -295,9 +305,10 @@ operator guide for its required runtime variables. Never use a real user's
 identity, group, invitation, or data directory in tests.
 
 The real-worker smoke verifies the official worker's Keet reply relation. The
-opt-in two-sidecar onboarding smoke additionally accepts one human DM request,
-resolves the DM on both identities, sends ordinary DM text, and propagates a
-generated avatar observation. Neither smoke claims desktop UI rendering; the
+opt-in two-sidecar onboarding smoke additionally creates a fresh Broadcast,
+observes its room type on both identities, verifies a moderator post is
+persisted and a non-moderator post is rejected, and propagates a generated
+profile/avatar observation. Neither smoke claims desktop UI rendering; the
 manual circular-avatar check remains a separate disposable operator smoke.
 No official-runtime image interoperability smoke was authorized for this
 feature, so official-client image compatibility is unverified.
@@ -313,5 +324,6 @@ Hypercore/Hyperswarm transports are separate networks and are not Keet
 compatibility substitutes.
 
 MCP, OpenClaw, Hermes, a general chat CLI, multiple identities,
-automatic final-text delivery, non-image files/media/calls, moderation, avatar removal,
-and private-only operation remain outside this v1 slice.
+automatic final-text delivery, non-image files/media/calls, role management or
+inspection, avatar removal, and private-only operation remain outside this v1
+slice.

@@ -549,6 +549,8 @@ describe("typed Keet Integration Core unit behavior", () => {
     await expect(joined.core.inspectInvitation("https://not-keet")).rejects.toThrow("room invitation")
     await expect(joined.core.inspectInvitation("keet://chat/fixture-token")).resolves.toMatchObject({ isRoomInvitation: true })
     await expect(joined.core.createRoom({ title: "  New room  ", description: "description" })).resolves.toBe("group-created")
+    await expect(joined.core.createRoom({ title: " Broadcast room ", roomType: "Broadcast" })).resolves.toBe("group-created")
+    expect(joined.state.calls.at(-1)).toEqual({ name: "createRoom", args: [{ config: { title: "Broadcast room", roomType: "1" } }] })
     await expect(joined.core.createInvitation("group-test", { expires: 60 })).resolves.toEqual({ token: "fixture-token", url: "keet://chat/fixture-token" })
     await expect(joined.core.joinInvitation("keet://chat/fixture-token")).resolves.toEqual({ groupId: "group-joined" })
     const controller = new AbortController()

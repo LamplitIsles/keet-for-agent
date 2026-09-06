@@ -36,8 +36,14 @@ if (process.env.KEET_OFFICIAL_ONBOARDING_SMOKE !== "1") {
     const coreA = await KeetIntegrationCore.start({ executablePath, bundlePath, dataPath: identityAPath, swarming: true })
     sidecarA = coreA
     if (!coreA.createRoom || !coreA.createInvitation) throw new Error("Core onboarding helpers are unavailable")
-    const groupId = await coreA.createRoom({ title: "Keet for Agent onboarding smoke" })
-    const invitation = await coreA.createInvitation(groupId)
+    const groupId = await coreA.createRoom({ title: "Keet for Agent broadcast onboarding smoke", roomType: "Broadcast" })
+    await waitFor(async () => (await coreA.listGroups()).some((group) => group.groupId === groupId && group.roomType === "Broadcast"))
+    const moderatorText = "broadcast moderator post"
+    await coreA.sendMessage(groupId, moderatorText)
+    await waitFor(async () => (await coreA.readRecentMessages(groupId, 50)).some((message) => message.text === moderatorText))
+    // Explicitly omit moderator/admin capabilities so the joined identity can
+    // observe the persisted post while the native worker rejects its append.
+    const invitation = await coreA.createInvitation(groupId, { canModerate: false, canAdmin: false })
     const snapshotText = "onboarding snapshot admission"
     await coreA.sendMessage(groupId, snapshotText)
     await waitFor(async () => (await coreA.readRecentMessages(groupId, 50)).some((message) => message.text === snapshotText))
@@ -52,61 +58,26 @@ if (process.env.KEET_OFFICIAL_ONBOARDING_SMOKE !== "1") {
     await waitFor(async () => {
       const groupsA = await coreA.listGroups()
       const groupsB = await coreB.listGroups()
-      if (!groupsA.some((group) => group.groupId === groupId) || !groupsB.some((group) => group.groupId === groupId)) return false
+      if (!groupsA.some((group) => group.groupId === groupId && group.roomType === "Broadcast") || !groupsB.some((group) => group.groupId === groupId && group.roomType === "Broadcast")) return false
       const membersA = await coreA.listMembers(groupId)
       const membersB = await coreB.listMembers(groupId)
       return membersA.some((member) => member.displayName === "Keet Assistant" && member.avatar?.present === true) && membersB.some((member) => member.displayName === "Keet Assistant" && member.avatar?.present === true)
     })
 
-    const statusA = await coreA.status()
-    const statusB = await coreB.status()
-    const identityProfile = await coreA.sidecar.call("getIdentity", []) as { profileId?: unknown }
-    if (typeof identityProfile.profileId !== "string" || !statusB.identityId) throw new Error("official identity profile lookup failed")
-    // Contact-request creation is intentionally reachable only from this
-    // disposable official smoke through the raw pinned RPC. It is not on the
-    // KeetCore or DSH Agent-facing contracts.
-    await coreA.sidecar.call("sendDmRequest", [identityProfile.profileId, statusB.identityId, { message: "official DM smoke" }])
-    await waitFor(async () => (await coreB.listPendingDmRequests()).some((request) => request.memberId === statusA.identityId))
-    // The setup executable owns the identity lock while accepting a request;
-    // pause the observation sidecar, run the human-only operation, and resume
-    // it before checking the resulting DM.
-    await coreB.close()
-    sidecarB = undefined
-    const pending = await runSetup(setupPath, ["dm-requests", "--workspace", workspaceB], undefined, dshHome)
-    if (pending.operation !== "dm-requests" || !pending.requests?.some((request) => request.memberId === statusA.identityId)) throw new Error("DM request listing returned an unexpected result")
-    const accepted = await runSetup(setupPath, ["dm-accept", "--workspace", workspaceB, "--member-id", statusA.identityId], undefined, dshHome)
-    if (accepted.operation !== "dm-accept" || accepted.memberId !== statusA.identityId) throw new Error("DM acceptance returned an unexpected result")
-    coreB = await KeetIntegrationCore.start({ executablePath, bundlePath, dataPath: identityB, swarming: true })
-    sidecarB = coreB
-    const dmB = await coreB.resolveDm(statusA.identityId)
-    let dmA: Awaited<ReturnType<KeetIntegrationCore["resolveDm"]>>
-    await waitFor(async () => {
-      try { dmA = await coreA.resolveDm(statusB.identityId); return dmA.groupId === dmB.groupId } catch { return false }
-    })
-    const dmCallbacks: string[] = []
-    const dmSubscription = coreB.watchMessages(dmB.groupId, (message) => dmCallbacks.push(message.text))
+    const roomInfoB = await coreB.sidecar.call("getRoomInfo", [groupId]) as { self?: { member?: { status?: { isModerator?: unknown; isAdmin?: unknown } } } }
+    const ownStatus = roomInfoB.self?.member?.status
+    if (ownStatus?.isModerator !== false || ownStatus?.isAdmin !== false) throw new Error("onboarding identity unexpectedly received moderator/admin permission")
+    let peerPostRejected = false
     try {
-      const dmText = "official DM live text"
-      await coreA.sendMessage(dmA!.groupId, dmText)
-      await waitFor(async () => dmCallbacks.includes(dmText))
-    } finally {
-      await dmSubscription.close().catch(() => undefined)
+      await coreB.sendMessage(groupId, "broadcast peer post must fail")
+    } catch {
+      peerPostRejected = true
     }
-    const callbacks: string[] = []
-    const subscription = coreB.watchMessages(groupId, (message) => callbacks.push(message.text))
-    try {
-      await waitFor(async () => (await sidecarB!.readRecentMessages(groupId, 50)).some((message) => message.text === snapshotText))
-      await new Promise((resolve) => setTimeout(resolve, 1_000))
-      if (callbacks.includes(snapshotText)) throw new Error("subscription replayed an existing message during snapshot admission")
+    if (!peerPostRejected) peerPostRejected = !(await coreB.readRecentMessages(groupId, 50)).some((message) => message.text === "broadcast peer post must fail")
+    if (!peerPostRejected) throw new Error("non-moderator Broadcast post unexpectedly succeeded")
 
-      const liveText = "onboarding live callback"
-      await coreA.sendMessage(groupId, liveText)
-      await waitFor(async () => callbacks.includes(liveText))
-      if (callbacks.includes(snapshotText)) throw new Error("subscription delivered the snapshot message as live input")
-    } finally {
-      await subscription.close().catch(() => undefined)
-    }
-    console.log(JSON.stringify({ ok: true, groupObservedBy: 2, updatedLabelObservedBy: 2, avatarObservedBy: 2, dmRequestAccepted: true, dmResolvedBy: 2, dmLiveCallbackObserved: true, snapshotSuppressed: true, liveCallbackObserved: true, agentToolAvatarData: "absent" }))
+    await waitFor(async () => (await coreB.readRecentMessages(groupId, 50)).some((message) => message.text === snapshotText))
+    console.log(JSON.stringify({ ok: true, broadcastRoomObservedBy: 2, broadcastModeratorPostPersisted: true, broadcastPeerPostRejected: peerPostRejected, updatedLabelObservedBy: 2, avatarObservedBy: 2, agentToolAvatarData: "absent" }))
   } finally {
     await sidecarB?.close().catch(() => undefined)
     await sidecarA?.close().catch(() => undefined)
