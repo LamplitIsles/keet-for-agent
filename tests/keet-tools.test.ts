@@ -142,6 +142,50 @@ describe("Managed Destination Keet tools", () => {
     expect(reactionCalls[1]).toEqual(["reaction", dmId, target, "💬", expect.anything()])
   })
 
+  it("routes Managed Broadcast reads and plain-text sends while rejecting unsupported operations", async () => {
+    const broadcastId = "group-broadcast"
+    let memberReads = 0
+    let sends = 0
+    const core = fakeCore({
+      listMembers: async () => { memberReads += 1; return [] },
+      readRecentMessages: async (id) => [{ messageId: target, groupId: id, senderId: "moderator", senderLabel: "Moderator", timestamp: 1, text: "announcement", replyTo: { deviceId: "device-parent", seq: 2 } }],
+      sendMessage: async (...args) => { sends += 1; return args[0] === broadcastId ? target : undefined },
+    })
+    const broadcast: ManagedDestination = { groupId: broadcastId, kind: "broadcast", groupName: "Announcements" }
+    const tools = createKeetToolDefinitions({
+      getCore: () => core,
+      destinations: [broadcast],
+      isReady: () => true,
+      serializeDestinationSend,
+      fs: {} as never,
+    })
+    await expect(tools[0]!.execute({}, exec())).resolves.toEqual({ groups: [{ groupName: "Announcements", kind: "broadcast" }] })
+    await expect(tools[1]!.execute({ groupName: "Announcements" }, exec())).rejects.toThrow("rosters are unavailable")
+    expect(memberReads).toBe(0)
+    await expect(tools[2]!.execute({ groupName: "Announcements", last: 1 }, exec())).resolves.toEqual({ messages: [{ messageId: target, senderLabel: "Moderator", timestamp: 1, text: "announcement" }] })
+    await expect(tools[3]!.execute({ groupName: "Announcements", text: "publish" }, exec())).resolves.toEqual({ sent: true })
+    expect(sends).toBe(1)
+    await expect(tools[3]!.execute({ groupName: "Announcements", text: "reply", replyTo: target }, exec())).rejects.toThrow("do not support replyTo")
+    await expect(tools[3]!.execute({ groupName: "Announcements", text: "react", reaction: "📣" }, exec())).rejects.toThrow("do not support reactions")
+    const image = tools.find((tool) => tool.name === "keet_send_image")!
+    await expect(image.execute({ groupName: "Announcements", path: "notice.png" }, exec())).rejects.toThrow("only for Managed DMs")
+    expect(sends).toBe(1)
+
+    let rejectedSends = 0
+    const rejectedCore = fakeCore({ sendMessage: async () => { rejectedSends += 1; throw new Error("MODERATORS_ONLY") } })
+    const rejectedTools = createKeetToolDefinitions({ getCore: () => rejectedCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
+    await expect(rejectedTools[3]!.execute({ groupName: "Announcements", text: "must fail truthfully" }, exec())).rejects.toThrow("not sent")
+    expect(rejectedSends).toBe(1)
+
+    let undefinedSends = 0
+    let undefinedReads = 0
+    const undefinedCore = fakeCore({ sendMessage: async () => { undefinedSends += 1; return undefined }, readRecentMessages: async () => { undefinedReads += 1; return [] } })
+    const undefinedTools = createKeetToolDefinitions({ getCore: () => undefinedCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
+    await expect(undefinedTools[3]!.execute({ groupName: "Announcements", text: "native append" }, exec())).resolves.toEqual({ sent: true })
+    expect(undefinedSends).toBe(1)
+    expect(undefinedReads).toBe(0)
+  })
+
   it("does not turn missing display labels into model-visible identity IDs", async () => {
     const core = fakeCore({
       listMembers: async () => [{ memberId: "secret-member", displayName: "secret-member" }],

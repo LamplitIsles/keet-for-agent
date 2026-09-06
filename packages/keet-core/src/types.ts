@@ -160,6 +160,8 @@ export interface PreparedAvatar {
 export interface CreateGroupOptions {
   readonly title: string
   readonly description?: string
+  /** Disposable smoke helper room type; the DSH adapter never creates rooms. */
+  readonly roomType?: "Default" | "Broadcast"
 }
 
 export interface Invitation {

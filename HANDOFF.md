@@ -34,7 +34,7 @@ streaming path, terminal failure, intentional cleanup, and identity locking.
 Mocks and the fake worker do not establish official-client interoperability;
 the opt-in official-runtime smokes remain the only such evidence.
 README.md, `packages/dsh-keet/README.md`, and `CONTEXT.md` describe the
-reaction-facing behavior and glossary. Explicit recent reads expose current
+reaction-facing behavior, Managed Broadcast contract, and glossary. Explicit recent reads expose current
 edited text, while edited live updates never trigger turns. `AGENTS.md` owns
 build commands, safety constraints, official-smoke policy, and
 contributor/release workflow, including the scoped release-audit rule. The
@@ -49,42 +49,50 @@ the DM-only and text-history boundaries are specified and reversible.
 
 ## Product boundary
 
-The bridge discovers every joined `Default` room and every accepted complete
-`DirectMessage` room from one bounded startup snapshot, then binds all admitted
-destinations to one existing DSH conversation selected from the configured
-workspace. It never creates or switches conversations or groups. Pending DM
-requests, broadcasts, unknown room types, incomplete DMs, and duplicate room
-records are excluded; a pending-snapshot failure fails startup closed. Regular
-groups keep mention, current-label, and verified-reply triggers; every new
-ordinary external DM text triggers one serialized Agent turn. Destination
-buffers and subscriptions are isolated, each injected context names its
-restart-scoped source `groupName`, and the Agent's final text remains in DSH
-unless an explicit delivery tool is called. After a confirmed text send in a
-turn (with an optional reaction decoration), the injected policy reduces the
-final DSH response to the exact `✓` acknowledgement so the already-delivered
-Keet content is not duplicated.
+The bridge discovers every joined `Default` or `Broadcast` room and every
+accepted complete `DirectMessage` room from one bounded startup snapshot, then
+binds all admitted destinations to one existing DSH conversation selected from
+the configured workspace. It never creates or switches conversations or
+groups. Pending DM requests, unknown room types, incomplete DMs, and duplicate
+room records are excluded; a pending-snapshot failure fails startup closed.
+Regular groups keep mention, current-label, and verified-reply triggers; every
+new ordinary external DM text triggers one serialized Agent turn. Managed
+Broadcasts are listing/read/proactive-text destinations only: they have no
+Bridge state, subscription, context buffer, inbound trigger, typing/read
+activity, roster, image, reply-anchor, or reaction path. The native worker
+adjudicates every post from current permissions. Group/DM destination buffers
+and subscriptions are isolated, each injected context names its restart-scoped
+source `groupName`, and the Agent's final text remains in DSH unless an
+explicit delivery tool is called. After a confirmed text send in a turn (with
+an optional reaction decoration), the injected policy reduces the final DSH
+response to the exact `✓` acknowledgement so the already-delivered Keet
+content is not duplicated.
 
 The tools are `keet_list_groups`, `keet_list_members`,
 `keet_read_recent_messages`, `keet_send_message`, and `keet_send_image`. The
 first lists all
 discovered destinations as `{ groupName, kind }`; the remaining tools require an
 exact returned `groupName` (trimmed, case-sensitive, and restart-scoped).
-Regular history preserves canonical message IDs, optional reply provenance, and
-the current text of valid edited records; live edited updates remain suppressed.
-Roster results contain only display names and send results contain only bounded
-delivery booleans. `keet_send_message` always requires non-empty text and may
-optionally attach one native Unicode emoji to the current Keet trigger; the
-bridge supplies that Message ID internally. It sends text first, then attempts
-the reaction once as a best-effort decoration. Text-only success returns
-`{ sent: true }`; a requested reaction returns `{ sent: true, reacted: true }`
-or `{ sent: true, reacted: false }`. A failed reaction, cancellation, or lost
-readiness after text confirmation never retries or converts the tool into an
-error. Optional reactions are unavailable outside an active ordinary Keet turn,
-for `/compact`, stale/settled work, or another destination. DM history and
-prompts omit sender/message/reply IDs, and DM sends are ordinary text. Human
-reactions never trigger a turn; changed aggregate reactions on
-Integration-authored messages are best-effort bounded context on the next
-ordinary trigger for that same destination, with no reactor or Member IDs.
+Regular Group history preserves canonical message IDs, optional reply
+provenance, and the current text of valid edited records; Managed Broadcast
+history preserves canonical message IDs but omits reply provenance. Live edited
+updates remain suppressed. Roster results contain only display names and
+send results contain only bounded delivery booleans; Broadcast roster lookup is
+rejected. `keet_send_message` always requires non-empty text and may optionally
+attach one native Unicode emoji to the current Keet trigger for a regular Group
+or DM; the bridge supplies that Message ID internally. Managed Broadcast sends
+are plain text only and reject reply anchors and reactions. Text is sent first,
+then an eligible reaction is attempted once as a best-effort decoration.
+Text-only success returns `{ sent: true }`; a requested reaction returns
+`{ sent: true, reacted: true }` or `{ sent: true, reacted: false }`. A failed
+reaction, cancellation, or lost readiness after text confirmation never retries
+or converts the tool into an error. Optional reactions are unavailable outside
+an active ordinary Keet turn, for `/compact`, stale/settled work, Broadcasts,
+or another destination. DM history and prompts omit sender/message/reply IDs,
+and DM sends are ordinary text. Human reactions never trigger a turn; changed
+aggregate reactions on Integration-authored messages are best-effort bounded
+context on the next ordinary trigger for that same destination, with no reactor
+or Member IDs.
 `keet_send_image` is DM-only, accepts one PNG, JPEG,
 WebP, or GIF from the bound Active Conversation workspace, preserves the
 source bytes, and sends an optional caption as adjacent text. It rejects URLs,
@@ -190,7 +198,10 @@ KEET_OFFICIAL_ONBOARDING_SMOKE=1 pnpm official-onboarding-smoke
 Without those environment variables they must report a skip. Fake-worker and
 Loader passes do not establish official-client interoperability. The real-worker
 smoke verifies only the official worker's Keet reply relation round-trip; it does
-not verify desktop UI rendering.
+not verify desktop UI rendering. The opt-in two-sidecar onboarding smoke also
+creates a fresh Broadcast, observes its normalized type on both identities,
+confirms a moderator post persists, confirms a non-moderator post is rejected,
+and observes generated profile/avatar propagation.
 
 Profile avatar input is prepared by setup from a local PNG, JPEG, or WebP up to
 8 MiB into deterministic square 64/128/256 PNG variants below Keet's 512 KiB
@@ -215,5 +226,8 @@ The separate Oxlint `--type-check` mode and style/formatting policy are not
 enabled. The package build uses tsdown 0.23.0 with the explicit native `tsgo`
 declaration generator; its bounded config ports the existing CSS load hook and
 preserves the Node ESM, browser CJS, and `client.d.cts` artifact contract.
-No Keet domain language changed, so `CONTEXT.md` and the ADR set need no update
-for this reversible tooling migration.
+The Managed Broadcast domain language changed in this slice, so `CONTEXT.md`,
+the root/package READMEs, and this handoff now describe its read/proactive-text
+boundary. `AGENTS.md` was inspected and needs no update: contributor workflow,
+commands, safety rules, and official-smoke opt-in policy are unchanged. No ADR
+is needed because this is a reversible adapter capability extension.

@@ -34,19 +34,29 @@ messages in that group; destination tools select it by the exact startup
 `groupName`, never by an arbitrary room ID.
 _Avoid_: Approved Room, arbitrary room, adapter-created group
 
+**Managed Broadcast**:
+A pre-existing Keet `Broadcast` room, already joined by the bridge identity,
+that the DSH Keet Bridge discovers at startup. Agents can read its plain-text
+history and proactively publish plain-text posts, but its inbound messages do
+not trigger Agent turns or accept reply relations. It has no Bridge state,
+subscription, context buffer, typing/read activity, roster, image, or reaction
+path; the Official Keet Core decides each posting attempt from the identity's
+current native permission, so rejected posts are surfaced without retry.
+_Avoid_: Managed Group, role-cached broadcast, arbitrary room
+
 **Managed DM**:
 An accepted complete one-to-one Keet room typed `DirectMessage`, discovered in
 the canonical joined-room list when its peer is absent from the bounded pending
 request snapshot. It shares the Integration Identity and Active Conversation
-with every Managed Group. Every new ordinary external DM text triggers a turn;
+with every Managed Group and Managed Broadcast. Every new ordinary external DM text triggers a turn;
 DM prompts and history omit canonical message IDs and reply relations.
 _Avoid_: contact request, arbitrary private room, Agent-created DM
 
 **Managed Destination**:
 One entry in the bridge's immutable startup allowlist: every joined `Default`
-room and accepted complete `DirectMessage` admitted from the bounded snapshot.
-`keet_list_groups` returns these entries as an exact `groupName` and `kind`; the
-other Keet tools require that exact returned name.
+room, joined `Broadcast` room, and accepted complete `DirectMessage` admitted
+from the bounded snapshot. `keet_list_groups` returns these entries as an exact
+`groupName` and `kind`; the other Keet tools require that exact returned name.
 _Avoid_: all joined rooms, implicit target, arbitrary destination
 
 **Managed Destination Name**:
@@ -66,9 +76,9 @@ _Avoid_: one session per destination, session switching
 **Model-visible ID ownership**:
 Group IDs and Member IDs remain Bridge/Core-owned routing and classification
 state. Agent-visible list, roster, history, and send results omit those IDs;
-only regular-group canonical Keet Message IDs and optional reply targets remain
-because an Agent can use them for a native reply. Managed DM records expose no
-message or reply IDs.
+regular-group and Managed Broadcast history may retain canonical Keet Message
+IDs, while optional reply targets are useful only for regular-group sends.
+Managed DM records expose no message or reply IDs.
 _Avoid_: sender ID in prompts, roster Member ID, send receipt Message ID
 
 **DSH Keet Bridge**:

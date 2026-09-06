@@ -249,10 +249,16 @@ export class KeetIntegrationCore implements KeetCore {
     if (!options || typeof options.title !== "string" || !options.title.trim() || options.title.length > 512) {
       throw publicError("room title must be non-empty and at most 512 characters")
     }
-    const config: { title: string; description?: string } = { title: options.title.trim() }
+    const config: { title: string; description?: string; roomType?: "0" | "1" } = { title: options.title.trim() }
     if (options.description !== undefined) {
       if (typeof options.description !== "string" || options.description.length > 2_000) throw publicError("room description is invalid")
       config.description = options.description
+    }
+    if (options.roomType !== undefined) {
+      if (options.roomType !== "Default" && options.roomType !== "Broadcast") throw publicError("room type is invalid")
+      // The pinned worker's createRoom config uses string enum values: "0"
+      // for Default and "1" for Broadcast.
+      config.roomType = options.roomType === "Broadcast" ? "1" : "0"
     }
     const result = await this.callWithSignal("createRoom", [{ config }])
     if (typeof result !== "string" || !result.trim() || result.length > MAX_GROUP_ID) throw publicError("Keet returned an invalid Managed Group ID")
