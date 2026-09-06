@@ -37,6 +37,13 @@ through the real DSH Loader in a disposable DSH home. It is the v1 local/link
 or tarball operator path. There is no publication, registry, or release
 workflow, and nothing may be pushed from this task.
 
+The local web profile links directly to `packages/dsh-keet`. To deploy that
+linked checkout, run `pnpm run deploy`; it builds first and restarts
+`dsh.service` only after the build succeeds. Verify deployment with
+`systemctl --user is-active dsh.service`. Use service health as the default
+deployment verification; run browser checks only when the user explicitly
+requests them.
+
 ## Git and release audit
 
 For this already-public repository, scope ordinary follow-up PR audits to the

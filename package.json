@@ -10,6 +10,7 @@
     "lint": "oxlint --type-aware packages tests scripts tsdown.config.ts vitest.config.ts",
     "test": "vitest run tests",
     "build": "pnpm --filter @lamplitisles/dsh-keet build",
+    "deploy": "pnpm build && systemctl --user restart dsh.service",
     "pack-smoke": "tsx scripts/pack-smoke.ts",
     "real-worker-smoke": "tsx packages/keet-core/test/real-worker-smoke.ts",
     "official-onboarding-smoke": "pnpm build && tsx scripts/official-onboarding-smoke.ts"
