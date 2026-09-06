@@ -57,6 +57,40 @@ export interface KeetReactionSummary {
   readonly own: boolean
 }
 
+/** Raster formats shared by Keet's file records and DSH image admission. */
+export type KeetImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+
+/**
+ * A bounded native Keet image file record.  `file` is intentionally opaque:
+ * it contains the worker-owned external-blob pointer and never crosses into
+ * model/session content.  Adapters pass it back only to `readImage`.
+ */
+export interface KeetImageFile {
+  readonly file: unknown
+  readonly mediaType: KeetImageMediaType
+  readonly name?: string
+  readonly bytes?: number
+  readonly width?: number
+  readonly height?: number
+}
+
+/** One prepared preview variant sent alongside an outbound native image. */
+export interface KeetImagePreview {
+  readonly bytes: Uint8Array
+  readonly mediaType: KeetImageMediaType
+  readonly width: number
+  readonly height: number
+}
+
+/** Native image input for `sendImage`; source bytes remain unmodified. */
+export interface PreparedKeetImage {
+  readonly bytes: Uint8Array
+  readonly mediaType: KeetImageMediaType
+  readonly width: number
+  readonly height: number
+  readonly name?: string
+  readonly preview?: KeetImagePreview
+}
 export interface KeetMember {
   readonly memberId: string
   readonly displayName: string
@@ -74,6 +108,8 @@ export interface KeetMessage {
   readonly senderLabel: string
   readonly timestamp: number
   readonly text: string
+  /** Ordered native image files attached to this chat record. */
+  readonly images?: readonly KeetImageFile[]
   /**
    * Normalized top-level chat position retained for bridge-owned read state.
    * Adapters must not render or expose this metadata to an Agent.
@@ -163,6 +199,10 @@ export interface KeetCore {
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listMembers(groupId: string): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
+  /** Download and bound one live external-blob image record. */
+  readImage?(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
+  /** Save and publish one native image record; no chat text is emitted. */
+  sendImage?(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
   /** Mark a Managed DM read through the native chat-index boundary. */
   setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void>

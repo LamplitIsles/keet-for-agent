@@ -11,9 +11,10 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
 
 - `packages/keet-core/src/` owns the typed sidecar lifecycle, pinned runtime
   admission, normalized room/group/member/message values (including bounded
-  aggregate reaction summaries), canonical room-list DM resolution,
-  subscriptions, text sends, native reaction add (RPC 156), onboarding, and
-  profile update. Core also owns the single Unicode reaction validator.
+  aggregate reaction summaries and image descriptors), canonical room-list DM
+  resolution, subscriptions, text/native-image sends, image reads, native
+  reaction add (RPC 156), onboarding, and profile update. Core also owns the
+  single Unicode reaction validator.
 - `packages/dsh-keet/src/` owns the DSH Host bridge, Managed Destination tools
   (including optional reaction decoration on `keet_send_message`), setup
   executable, settings schema/client, and protocol rendering.
@@ -23,7 +24,8 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
 - `docs/runtime-extraction.md` is the operator guide for the private runtime.
 
 Core test boundary: Integration Core normalization, policy, orchestration,
-DM convergence, onboarding, profile, cancellation, and stream handling tests
+DM convergence, onboarding, profile, cancellation, native image stream and
+file-lifecycle handling tests
 use a real but unstarted `KeetSidecar` whose consumed methods are replaced by
 a test-local scripted seam. The fake worker is reserved for the small fd-3
 process contract suite: admission, one representative startup/RPC path, one
@@ -33,11 +35,15 @@ the opt-in official-runtime smokes remain the only such evidence.
 README.md, `packages/dsh-keet/README.md`, and `CONTEXT.md` describe the
 reaction-facing behavior and glossary. `AGENTS.md` owns build commands, safety
 constraints, official-smoke policy, and contributor/release workflow, including
-the scoped release-audit rule. Runtime extraction/setup documentation remains
-unchanged because reactions require no operator configuration or additional
-private runtime files. Inbound reaction normalization preserves literal Unicode
-and wraps bounded Keet wire shortcodes (for example `heart` as `:heart:`);
-outbound reaction validation remains Unicode-only.
+the scoped release-audit rule. The public and package READMEs also document the
+DM-only image lifecycle, explicit
+workspace-contained send tool, DSH durable attachment admission, text-only
+recent reads, and the fact that official-client image interoperability remains
+unverified. `CONTEXT.md` defines Inbound DM Image, Inbound DM Image Failure,
+and Explicit DM Image Send. Inbound reaction normalization preserves literal
+Unicode and wraps bounded Keet wire shortcodes (for example `heart` as
+`:heart:`); outbound reaction validation remains Unicode-only. No ADR is needed;
+the DM-only and text-history boundaries are specified and reversible.
 
 ## Product boundary
 
@@ -57,8 +63,9 @@ final DSH response to the exact `✓` acknowledgement so the already-delivered
 Keet content is not duplicated.
 
 The tools are `keet_list_groups`, `keet_list_members`,
-`keet_read_recent_messages`, and `keet_send_message`. The first lists all
-discovered destinations as `{ groupName, kind }`; the other three require an
+`keet_read_recent_messages`, `keet_send_message`, and `keet_send_image`. The
+first lists all
+discovered destinations as `{ groupName, kind }`; the remaining tools require an
 exact returned `groupName` (trimmed, case-sensitive, and restart-scoped).
 Regular history preserves canonical message IDs and optional reply provenance,
 while roster results contain only display names and send results contain only
@@ -75,8 +82,14 @@ prompts omit sender/message/reply IDs, and DM sends are ordinary text. Human
 reactions never trigger a turn; changed aggregate reactions on
 Integration-authored messages are best-effort bounded context on the next
 ordinary trigger for that same destination, with no reactor or Member IDs.
-Normalized duplicate names fail selected operations closed before Core access,
-with ambiguous sends confirming that no message was sent.
+`keet_send_image` is DM-only, accepts one PNG, JPEG,
+WebP, or GIF from the bound Active Conversation workspace, preserves the
+source bytes, and sends an optional caption as adjacent text. It rejects URLs,
+outside-workspace paths, malformed/corrupt content, and unsupported formats
+before native delivery; image-success/caption-failure is reported as a bounded
+no-retry partial delivery. Normalized duplicate names fail selected operations
+closed before Core access, with ambiguous sends confirming that no message was
+sent.
 Setup is human-only: `join` reads exactly one invitation URL from stdin,
 `dm-requests` lists bounded sender identities, `dm-accept` accepts one exact
 pending sender, and `profile` can independently update display name and a
@@ -98,7 +111,15 @@ input, executed once through the composed DSH command registry against the
 bound Agent, and returned as one bounded message in that DM. It creates no
 Agent turn or model-history entry; unavailable or failed command/delivery
 paths do not retry or fall back. The Host composition must inject the
-`commands` service (and its compaction backend).
+`commands` service (and its compaction backend), DSH's `attachments` service
+for image admission, and the DSH `fs` service for workspace-contained sends.
+A newly received DM image is streamed through Core,
+admitted atomically through `attachments`, and passed to one Agent turn as
+ordered durable image blocks plus its caption. Failed batches create no session
+image event or turn; they retain one bounded, non-triggering failure record for
+the next successful same-DM turn and attempt one generic notice without retry.
+Initial snapshots, self-authored/group/historical images, and
+`keet_read_recent_messages` never fetch image bytes.
 
 ## Compatibility and safety
 
@@ -140,3 +161,11 @@ Profile avatar input is prepared by setup from a local PNG, JPEG, or WebP up to
 inline limit. Avatar-only updates preserve the current display name. Official
 clients apply the circular presentation mask; this repository does not claim a
 desktop visual smoke.
+
+The image path uses the pinned native `saveFileBlob`, `sendFile`, and
+`readFileStream` RPCs. Obsolete `addFile` and `addFileBlob` calls remain
+unsupported and are not wrapped by compatibility fallbacks. Runtime files,
+identity data, downloaded images, and transient previews remain outside source
+and package artifacts. No official-runtime image interoperability smoke was
+authorized for this change, so official-client image compatibility is
+unverified.

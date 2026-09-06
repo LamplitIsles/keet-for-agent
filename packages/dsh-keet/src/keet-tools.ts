@@ -3,11 +3,15 @@ import { validateKeetReaction } from "@lamplitisles/keet-integration-core"
 import type { KeetCore, KeetMessage, KeetMessageId } from "./core-contract.js"
 import { MAX_GROUP_MEMBERS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES } from "./constants.js"
 import { boundedMembers, renderKeetMessage, sameMessageId } from "./keet-protocol.js"
+import path from "node:path"
+import type { KeetAttachmentStore, KeetImageAttachmentRef, KeetWorkspaceFileSystem } from "./image-contract.js"
+import type { PreparedKeetImage, KeetImageMediaType } from "./core-contract.js"
 
 export const KEET_LIST_GROUPS = "keet_list_groups" as const
 export const KEET_LIST_MEMBERS = "keet_list_members" as const
 export const KEET_READ_RECENT_MESSAGES = "keet_read_recent_messages" as const
 export const KEET_SEND_MESSAGE = "keet_send_message" as const
+export const KEET_SEND_IMAGE = "keet_send_image" as const
 
 export type ManagedDestinationKind = "group" | "dm"
 
@@ -56,12 +60,19 @@ export interface KeetToolDependencies {
   onDestinationMessageSent?: (groupId: string, messageId: KeetMessageId | undefined) => void
   /** Current Keet-trigger target for an optional send reaction; absent for non-Keet work and /compact. */
   getActiveReactionTarget?: () => ActiveReactionTarget | undefined
+  /** DSH durable image admission service. */
+  attachments?: KeetAttachmentStore
+  /** Bound Active Conversation workspace filesystem. */
+  workspaceFilesystem?: KeetWorkspaceFileSystem
+  /** Workspace root used for lexical containment checks. */
+  workspaceRoot?: string
 }
 
 export interface KeetListGroupsResult { groups: ManagedDestinationSummary[] }
 export interface KeetListMembersResult { members: KeetMemberResult[] }
 export interface KeetReadRecentMessagesResult { messages: Array<KeetGroupMessageResult | KeetDmMessageResult> }
 export interface KeetSendMessageResult { sent: true; reacted?: boolean }
+export interface KeetSendImageResult { sent: true }
 
 const EMPTY_SIGNAL = new AbortController().signal
 const UNKNOWN_SENDER = "Unknown sender"
@@ -113,13 +124,13 @@ function destinationsOf(deps: KeetToolDependencies): readonly ManagedDestination
   return deps.destinations
 }
 
-function destinationOf(deps: KeetToolDependencies, groupNameValue: unknown, operation: "members" | "read" | "send"): ManagedDestination {
+function destinationOf(deps: KeetToolDependencies, groupNameValue: unknown, operation: "members" | "read" | "send" | "send-image"): ManagedDestination {
   if (typeof groupNameValue !== "string" || !groupNameValue.trim()) throw safeError("groupName must be one returned by keet_list_groups.")
   const groupName = groupNameValue.trim()
   const matches = destinationsOf(deps).filter((candidate) => candidate.groupName === groupName)
   if (!matches.length) throw safeError("groupName is not an allowed Managed Destination.")
   if (matches.length > 1) {
-    throw safeError(operation === "send" ? "Managed Destination name is ambiguous; no message was sent." : "Managed Destination name is ambiguous.")
+    throw safeError(operation === "send" ? "Managed Destination name is ambiguous; no message was sent." : operation === "send-image" ? "Managed Destination name is ambiguous; no image was sent." : "Managed Destination name is ambiguous.")
   }
   return matches[0]!
 }
@@ -138,6 +149,10 @@ function escapeRendererText(value: string): string { return value.replace(/&/g, 
 function escapeRendererAttr(value: string): string { return escapeRendererText(value).replace(/"/g, "&quot;").replace(/[\r\n\u2028\u2029]+/g, " ") }
 
 function historyRecord(message: KeetMessage, kind: ManagedDestinationKind): KeetGroupMessageResult | KeetDmMessageResult | undefined {
+  // Recent reads intentionally remain a plain-text boundary. An image record's
+  // caption may be retained as ordinary text, while its file descriptors are
+  // neither rendered nor followed by a read-file RPC.
+  if (typeof message.text !== "string" || !message.text.trim()) return undefined
   const senderLabel = typeof message.senderLabel === "string" && message.senderLabel.trim() && message.senderLabel !== message.senderId
     ? boundedString(message.senderLabel, UNKNOWN_SENDER)
     : UNKNOWN_SENDER
@@ -248,6 +263,184 @@ async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: Ab
   }
 }
 
+const IMAGE_MAX_BYTES = 16 * 1024 * 1024
+const IMAGE_MAX_PIXELS = 100_000_000
+const IMAGE_MAX_DIMENSION = 20_000
+const IMAGE_PREVIEW_MAX_BYTES = 512 * 1024
+const IMAGE_PREVIEW_MAX_DIMENSION = 512
+const IMAGE_MEDIA_TYPES = new Set<KeetImageMediaType>(["image/png", "image/jpeg", "image/webp", "image/gif"])
+function boundedImageLimit(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? Math.min(value, fallback) : fallback
+}
+
+async function sendImage(deps: KeetToolDependencies, args: unknown, signal: AbortSignal): Promise<KeetSendImageResult> {
+  if (signal.aborted) throw cancelled(signal)
+  const record = args && typeof args === "object" ? args as { groupName?: unknown; path?: unknown; caption?: unknown } : {}
+  const destination = destinationOf(deps, record.groupName, "send-image")
+  if (destination.kind !== "dm") throw safeError("keet_send_image is available only for Managed DMs.")
+  if (typeof record.path !== "string" || !record.path.trim() || record.path.length > 4_096) throw safeError("path must be a workspace-contained image path.")
+  if (record.caption !== undefined && (typeof record.caption !== "string" || record.caption.length > MAX_MESSAGE_TEXT)) throw safeError("caption must be at most 16,000 characters.")
+  const caption = typeof record.caption === "string" && record.caption.trim() ? record.caption : undefined
+  const core = ensureReady(deps)
+  if (typeof core.sendImage !== "function") throw safeError("Keet image delivery is unavailable.")
+  const bytes = await readWorkspaceFile(deps, record.path, signal)
+  if (signal.aborted) throw cancelled(signal)
+  const prepared = await prepareOutboundImage(bytes, path.basename(record.path), deps.attachments, signal)
+  if (signal.aborted) throw cancelled(signal)
+  try {
+    await core.sendImage(destination.groupId, prepared, signal)
+    if (signal.aborted) throw cancelled(signal)
+    try { deps.onDestinationMessageSent?.(destination.groupId, undefined) } catch { /* receipt bookkeeping never changes delivery */ }
+  } catch (error) {
+    if (signal.aborted) throw cancelled(signal)
+    throw operationError(error, "Keet image was not sent.")
+  }
+  if (caption) {
+    try {
+      const messageId = await core.sendMessage(destination.groupId, caption, undefined, signal)
+      if (signal.aborted) throw cancelled(signal)
+      try { deps.onDestinationMessageSent?.(destination.groupId, messageId) } catch { /* receipt bookkeeping never changes delivery */ }
+    } catch (error) {
+      if (signal.aborted) throw safeError("Image was delivered, but its caption was not sent; do not retry.")
+      throw safeError("Image was delivered, but its caption was not sent; do not retry.")
+    }
+  }
+  return { sent: true }
+}
+
+async function readWorkspaceFile(deps: KeetToolDependencies, input: string, signal: AbortSignal): Promise<Uint8Array> {
+  if (signal.aborted) throw cancelled(signal)
+  const filesystem = deps.workspaceFilesystem
+  if (!filesystem) throw safeError("Active Conversation workspace files are unavailable.")
+  if (input.includes("\u0000") || /^[a-z][a-z\d+.-]*:/i.test(input) || input.includes("://")) throw safeError("path must be a workspace-contained image path.")
+  const root = deps.workspaceRoot ?? filesystem.root
+  if (!root || typeof root !== "string" || !path.isAbsolute(root)) throw safeError("Active Conversation workspace files are unavailable.")
+  const candidate = path.resolve(root, input)
+  if (!withinRoot(root, candidate)) throw safeError("path must stay inside the Active Conversation workspace.")
+
+  // Production DSH composition exposes the target-based ctx.fs service. It
+  // owns canonical path identity (including symlinks and remote backends),
+  // containment, regular-file checks, and bounded byte reads.
+  if (typeof filesystem.resolve === "function" && typeof filesystem.contains === "function" && typeof filesystem.readBytes === "function") {
+    const maxBytes = Math.min(
+      IMAGE_MAX_BYTES,
+      boundedImageLimit(deps.attachments?.imageLimits?.maxImageBytes, IMAGE_MAX_BYTES),
+      boundedImageLimit(deps.attachments?.imageLimits?.maxMessageImageBytes, IMAGE_MAX_BYTES),
+    )
+    try {
+      const workspaceTarget = await filesystem.resolve(root, { cwd: root, signal })
+      const target = await filesystem.resolve(input, { cwd: root, signal })
+      if (!filesystem.contains(workspaceTarget, target)) throw safeError("path must stay inside the Active Conversation workspace.")
+      const info = filesystem.stat ? await filesystem.stat(target, signal) : undefined
+      if (info && info.type !== "file") throw safeError("workspace image could not be read.")
+      if (info?.size !== undefined && (!Number.isSafeInteger(info.size) || info.size < 1 || info.size > maxBytes)) throw safeError("workspace image is missing or too large.")
+      const bytes = await filesystem.readBytes(target, signal, maxBytes)
+      if (signal.aborted) throw cancelled(signal)
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > maxBytes) throw safeError("workspace image is missing or too large.")
+      return bytes
+    } catch (error) {
+      if (signal.aborted) throw cancelled(signal)
+      if (error instanceof Error && /^(path must|workspace image)/.test(error.message)) throw error
+      throw safeError("workspace image could not be read.")
+    }
+  }
+
+  // Test-owned fakes may expose a direct bounded read while they do not model
+  // DSH's opaque target type. No process-global filesystem fallback exists.
+  if (typeof filesystem.readFile !== "function") throw safeError("Active Conversation workspace files are unavailable.")
+  let resolved = candidate
+  try {
+    if (filesystem.resolvePath) resolved = await filesystem.resolvePath(candidate, signal)
+    else if (filesystem.realpath) resolved = await filesystem.realpath(candidate, signal)
+  } catch {
+    if (signal.aborted) throw cancelled(signal)
+    throw safeError("workspace image path could not be resolved.")
+  }
+  if (typeof resolved !== "string" || !path.isAbsolute(resolved) || !withinRoot(root, resolved)) throw safeError("path must stay inside the Active Conversation workspace.")
+  let bytes: Uint8Array
+  try { bytes = await filesystem.readFile(resolved, signal) } catch {
+    if (signal.aborted) throw cancelled(signal)
+    throw safeError("workspace image could not be read.")
+  }
+  if (signal.aborted) throw cancelled(signal)
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > IMAGE_MAX_BYTES) throw safeError("workspace image is missing or too large.")
+  return bytes
+}
+
+function withinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate))
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
+async function prepareOutboundImage(bytes: Uint8Array, name: string, attachments: KeetAttachmentStore | undefined, signal: AbortSignal): Promise<PreparedKeetImage> {
+  const mediaType = detectImageMediaType(bytes)
+  if (!mediaType) throw safeError("workspace image format is unsupported or corrupt.")
+  const limits = attachments?.imageLimits
+  const maxBytes = Math.min(
+    IMAGE_MAX_BYTES,
+    boundedImageLimit(limits?.maxImageBytes, IMAGE_MAX_BYTES),
+    boundedImageLimit(limits?.maxMessageImageBytes, IMAGE_MAX_BYTES),
+  )
+  if (limits?.mediaTypes && !limits.mediaTypes.includes(mediaType)) throw safeError("workspace image format is unsupported or corrupt.")
+  if (bytes.byteLength > maxBytes) throw safeError("workspace image is too large.")
+  try {
+    const loaded = await import("sharp")
+    const factory = (loaded.default ?? loaded) as unknown as (input: Buffer, options?: Record<string, unknown>) => any
+    const maxPixels = Math.min(IMAGE_MAX_PIXELS, boundedImageLimit(limits?.maxImagePixels, IMAGE_MAX_PIXELS))
+    const maxDimension = Math.min(IMAGE_MAX_DIMENSION, boundedImageLimit(limits?.maxImageDimension, IMAGE_MAX_DIMENSION))
+    const image = factory(Buffer.from(bytes), { limitInputPixels: maxPixels, failOn: "error" })
+    const metadata = await image.metadata()
+    const format = metadata?.format === "jpg" ? "jpeg" : metadata?.format
+    if (format !== mediaType.slice("image/".length)
+      || !Number.isSafeInteger(metadata?.width)
+      || !Number.isSafeInteger(metadata?.height)
+      || metadata.width < 1
+      || metadata.height < 1) throw new Error("invalid image")
+    if (metadata.width > maxDimension || metadata.height > maxDimension || metadata.width * metadata.height > maxPixels) throw new Error("image bounds")
+    if (attachments?.validateImage) {
+      // Validators are extension points; pass an isolated view so a buggy
+      // validator cannot mutate the source bytes that will be sent.
+      const input = { data: bytes.slice(), mediaType, ...(safeName(name) ? { name: safeName(name) } : {}) }
+      await attachments.validateImage(input)
+    }
+    if (signal.aborted) throw new Error("cancelled")
+    const preview = await makePreview(image, metadata.width, metadata.height)
+    return { bytes, mediaType, width: metadata.width, height: metadata.height, ...(safeName(name) ? { name: safeName(name) } : {}), preview }
+  } catch (error) {
+    if (signal.aborted) throw cancelled(signal)
+    if (error instanceof Error && error.message === "cancelled") throw cancelled(signal)
+    throw safeError("workspace image is unsupported or corrupt.")
+  }
+}
+
+async function makePreview(image: any, width: number, height: number): Promise<{ bytes: Uint8Array; mediaType: KeetImageMediaType; width: number; height: number }> {
+  let target = IMAGE_PREVIEW_MAX_DIMENSION
+  let bytes: Buffer
+  while (true) {
+    bytes = await image.clone().rotate().resize(target, target, { fit: "inside", withoutEnlargement: true }).png({ compressionLevel: 9, effort: 5 }).toBuffer()
+    if (bytes.byteLength <= IMAGE_PREVIEW_MAX_BYTES || target <= 64) break
+    target = Math.floor(target / 2)
+  }
+  if (bytes.byteLength > IMAGE_PREVIEW_MAX_BYTES) throw safeError("workspace image preview is too large.")
+  const scale = Math.min(1, target / width, target / height)
+  const previewWidth = Math.max(1, Math.round(width * scale))
+  const previewHeight = Math.max(1, Math.round(height * scale))
+  return { bytes, mediaType: "image/png", width: previewWidth, height: previewHeight }
+}
+
+function safeName(value: string): string {
+  const base = value.replace(/\\/g, "/").split("/").at(-1)?.trim() ?? ""
+  return Array.from(base).slice(0, 255).join("")
+}
+
+function detectImageMediaType(bytes: Uint8Array): KeetImageMediaType | undefined {
+  if (bytes.byteLength >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return "image/png"
+  if (bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg"
+  if (bytes.byteLength >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61) return "image/gif"
+  if (bytes.byteLength >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp"
+  return undefined
+}
+
 function messageIdSchema(): any {
   return { type: "object", additionalProperties: false, properties: { deviceId: { type: "string", required: true }, seq: { type: "integer", required: true } } }
 }
@@ -303,5 +496,18 @@ export function createKeetToolDefinitions(deps: KeetToolDependencies): readonly 
     output: { schema: { type: "object", additionalProperties: false, properties: { sent: { type: "boolean", const: true, required: true }, reacted: { type: "boolean", description: "Present only when a reaction was requested; false means text was sent but the decoration was not confirmed." } } }, render: (_args, value) => renderText(value.sent ? value.reacted === undefined ? "Keet message sent." : value.reacted ? "Keet message sent with reaction." : "Keet message sent; reaction was not added." : "Keet message was not sent.") },
     async execute(args, exec) { return sendMessage(scopedDeps, args, signalOf(exec)) },
   })
-  return [list, members, read, send]
+  const image = scopedDeps.workspaceFilesystem
+    ? defineTool({
+      name: KEET_SEND_IMAGE,
+      description: "Send one supported PNG, JPEG, WebP, or GIF from the Active Conversation workspace to an exact Managed DM, optionally followed by one caption text message. This never sends to a Managed Group or retries a partial delivery.",
+      parameters: {
+        groupName: { type: "string", required: true, description: "An exact Managed DM groupName returned by keet_list_groups." },
+        path: { type: "string", required: true, description: "A workspace-contained image path; URLs and paths outside the Active Conversation workspace are rejected." },
+        caption: { type: "string", description: "Optional bounded plain-text caption sent immediately after the image." },
+      },
+      output: { schema: { type: "object", additionalProperties: false, properties: { sent: { type: "boolean", const: true, required: true } } }, render: (_args, value) => renderText(value.sent ? "Keet image sent." : "Keet image was not sent.") },
+      async execute(args, exec) { return sendImage(scopedDeps, args, signalOf(exec)) },
+    })
+    : undefined
+  return image ? [list, members, read, send, image] : [list, members, read, send]
 }

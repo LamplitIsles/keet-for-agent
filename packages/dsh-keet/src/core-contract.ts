@@ -7,6 +7,30 @@ export interface KeetMessageId {
   readonly deviceId: string
   readonly seq: number
 }
+export type KeetImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+/** Opaque Integration Core image descriptor; its worker pointer is never model-visible. */
+export interface KeetImageFile {
+  readonly file: unknown
+  readonly mediaType: KeetImageMediaType
+  readonly name?: string
+  readonly bytes?: number
+  readonly width?: number
+  readonly height?: number
+}
+export interface KeetImagePreview {
+  readonly bytes: Uint8Array
+  readonly mediaType: KeetImageMediaType
+  readonly width: number
+  readonly height: number
+}
+export interface PreparedKeetImage {
+  readonly bytes: Uint8Array
+  readonly mediaType: KeetImageMediaType
+  readonly width: number
+  readonly height: number
+  readonly name?: string
+  readonly preview?: KeetImagePreview
+}
 
 export interface KeetReactionSummary {
   /** Unicode emoji or a colon-wrapped bounded Keet wire shortcode. */
@@ -42,6 +66,7 @@ export interface KeetMessage {
   readonly senderLabel: string
   readonly timestamp: number
   readonly text: string
+  readonly images?: readonly KeetImageFile[]
   /** Bridge-internal top-level chat position; never rendered to the Agent. */
   readonly chatIndex?: number
   readonly mentions?: readonly string[]
@@ -67,6 +92,8 @@ export interface KeetCore {
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listMembers(groupId: string): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
+  readImage?(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
+  sendImage?(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
   /** Mark a Managed DM read through the native chat-index boundary. */
   setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void>

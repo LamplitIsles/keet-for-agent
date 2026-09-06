@@ -47,6 +47,16 @@ unchanged. Whitespace, unsafe punctuation, and arbitrary prose are omitted;
 the grammar is forward-compatible display normalization, not an authenticity
 assertion. The Agent's final text is not sent automatically.
 
+New external Managed DM messages may contain one or more PNG, JPEG, WebP, or
+GIF images with an optional caption. The bridge streams every image in order,
+admits the complete batch through DSH's durable `attachments` service, and
+submits one Agent turn with the caption and ordered durable image blocks. A
+download, validation, or storage failure creates no image reference, session
+event, or Agent turn; when possible one bounded DM failure notice is sent and a
+non-triggering failure record remains for the next successful turn in that
+DM. Group/self/snapshot/historical images do no image work, and
+`keet_read_recent_messages` remains plain-text-only.
+
 At the start of active Managed DM work, the bridge marks the triggering chat
 index plus one as read and publishes native typing activity. Typing refreshes
 every four seconds until the work settles, fails, is cancelled, or a successful
@@ -64,7 +74,7 @@ generic bounded response, and failures do not retry or fall back to an Agent
 turn. Whitespace, arguments, casing changes, and group messages use the
 ordinary bridge path.
 
-Call `keet_list_groups` first. The other three tools require an exact returned
+Call `keet_list_groups` first. The remaining tools require an exact returned
 `groupName` (caller whitespace is trimmed, matching remains case-sensitive):
 
 - `keet_list_groups` — every discovered Managed Group and Managed DM, each
@@ -81,13 +91,23 @@ Call `keet_list_groups` first. The other three tools require an exact returned
   `{ sent: true }`, while a requested reaction returns
   `{ sent: true, reacted: true|false }`. A failed reaction never retries or
   turns a confirmed text send into a tool error.
+- `keet_send_image` — DM-only delivery of one PNG, JPEG, WebP, or GIF read via
+  the bound DSH `ctx.fs` Active Conversation workspace filesystem. The path must
+  remain inside that workspace; URLs, unsupported/corrupt/oversized content,
+  Managed Groups, unknown names, and ambiguous names are rejected before
+  delivery. Source bytes are preserved for native Keet delivery and a bounded
+  preview is used only for presentation. An optional caption follows as one
+  adjacent ordinary DM text send. Complete success returns only `{ sent: true }`;
+  if the image succeeds but the caption fails, the bounded error says the image
+  was delivered and must not be retried. Nothing is sent automatically after a
+  turn or image creation.
 
-After any confirmed `keet_send_message` text delivery, the injected Agent
-policy requires the final DSH response to be exactly `✓`, whether or not its
-optional reaction was confirmed; otherwise it responds normally. Outbound
-reactions accept Unicode emoji only. Bounded Keet wire-shortcode values such as
-`heart` and `+1` appear only as colon-wrapped inbound context labels such as
-`:heart:` and `:+1:`.
+After any confirmed `keet_send_message` text delivery or successful
+`keet_send_image`, the injected Agent policy requires the final DSH response to
+be exactly `✓`, whether or not an optional reaction was confirmed; otherwise it
+responds normally. Outbound reactions accept Unicode emoji only. Bounded Keet
+wire-shortcode values such as `heart` and `+1` appear only as colon-wrapped
+inbound context labels such as `:heart:` and `:+1:`.
 
 Names are captured when DSH starts after trimming bounded titles and replacing
 line separators with spaces. A missing title uses the bounded fallback name.
@@ -128,4 +148,6 @@ operation.
 
 The artifact contains source-derived code, declarations, the client bundle,
 Cordis patch, license, and notices. Runtime assets and identity/group data are
-operator-local and are not part of this package.
+operator-local and are not part of this package. The local fake-worker and
+Loader gates do not establish official-client image interoperability; that
+status remains unverified until a separately authorized disposable smoke.

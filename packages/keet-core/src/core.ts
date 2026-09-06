@@ -12,6 +12,10 @@ import {
   type KeetMessage,
   type KeetMessageId,
   type KeetReactionSummary,
+  type KeetImageFile,
+  type KeetImageMediaType,
+  type KeetImagePreview,
+  type PreparedKeetImage,
   type KeetReadiness,
   type KeetSubscription,
   type ManagedGroup,
@@ -48,6 +52,13 @@ const KEET_WIRE_SHORTCODE_PATTERN = /^(?:[a-z0-9][a-z0-9_+-]*|[+-][0-9]+)$/
 // RegExp's `v` flag keeps the accepted value tied to the runtime's anchored
 // RGI emoji property without requiring a maintained Unicode sequence table.
 const RGI_EMOJI_PATTERN = new RegExp("^\\p{RGI_Emoji}$", "v")
+/** Transport-side bounds; DSH admission applies its own deployment limits. */
+const MAX_IMAGE_BYTES = 16 * 1024 * 1024
+const MAX_IMAGE_COUNT = 16
+const MAX_IMAGE_MESSAGE_BYTES = 32 * 1024 * 1024
+const MAX_IMAGE_PIXELS = 100_000_000
+const MAX_IMAGE_DIMENSION = 20_000
+const IMAGE_MEDIA_TYPES = new Set<KeetImageMediaType>(["image/png", "image/jpeg", "image/webp", "image/gif"])
 
 type RawRecord = Record<string, unknown>
 
@@ -294,6 +305,75 @@ export class KeetIntegrationCore implements KeetCore {
     validateReactionResult(result)
   }
 
+  /**
+   * Read one external-blob image through the pinned streaming RPC.  The
+   * stream is always destroyed on cancellation, terminal failure, or an
+   * exceeded bound; no file pointer or transport detail escapes the public
+   * error.
+   */
+  async readImage(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array> {
+    const id = boundedId(groupId, "Managed Group ID")
+    const descriptor = validateImageFileForRead(image)
+    ensureSignal(signal)
+    let stream: AsyncIterable<unknown> & { destroy?: (error?: Error) => void; on?: (...args: unknown[]) => unknown }
+    try {
+      stream = this.sidecar.subscribe("readFileStream", [id, descriptor.file, { includeProgress: false }]) as typeof stream
+    } catch {
+      throw publicError("Keet image read is unavailable")
+    }
+    let abortHandler: (() => void) | undefined
+    const closeStream = (error?: Error) => {
+      try { stream.destroy?.(error) } catch { /* stream is already closed */ }
+    }
+    try {
+      const chunks: Uint8Array[] = []
+      let total = 0
+      if (signal) {
+        abortHandler = () => closeStream(publicError("Keet operation cancelled"))
+        signal.addEventListener("abort", abortHandler, { once: true })
+      }
+      for await (const value of stream) {
+        ensureSignal(signal)
+        const chunk = imageChunk(value)
+        if (!chunk || chunk.byteLength < 1) throw publicError("Keet image stream was invalid")
+        total += chunk.byteLength
+        if (total > MAX_IMAGE_BYTES || total > MAX_IMAGE_MESSAGE_BYTES) throw publicError("Keet image exceeds the supported size")
+        chunks.push(chunk)
+      }
+      if (total < 1) throw publicError("Keet image stream was empty")
+      if (descriptor.bytes !== undefined && descriptor.bytes !== total) throw publicError("Keet image size did not match its descriptor")
+      const result = new Uint8Array(total)
+      let offset = 0
+      for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength }
+      return result
+    } catch (error) {
+      closeStream(error instanceof Error ? error : undefined)
+      if (signal?.aborted || error instanceof Error && error.message === "Keet operation cancelled") throw publicError("Keet operation cancelled")
+      throw error instanceof Error && /^Keet image/.test(error.message) ? error : publicError("Keet image read failed")
+    } finally {
+      if (abortHandler) signal?.removeEventListener("abort", abortHandler)
+      closeStream()
+    }
+  }
+
+  /** Save the source bytes and publish one native file/image record. */
+  async sendImage(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void> {
+    const id = boundedId(groupId, "Managed Group ID")
+    const prepared = validatePreparedKeetImage(image)
+    ensureSignal(signal)
+    const metadata: Record<string, unknown> = {
+      mimetype: prepared.mediaType,
+      dimensions: { width: prepared.width, height: prepared.height },
+      ...(prepared.name ? { name: prepared.name } : {}),
+    }
+    const saved = await this.callWithSignal("saveFileBlob", [id, Buffer.from(prepared.bytes), metadata], signal)
+    const file = validateSavedFile(saved)
+    const payload = {
+      ...file,
+      ...(prepared.preview ? { preview: makeNativePreview(prepared.preview, prepared.name) } : {}),
+    }
+    await this.callWithSignal("sendFile", [id, payload], signal)
+  }
   async setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void> {
     const id = boundedId(groupId, "Managed Group ID")
     if (!Number.isSafeInteger(length) || length < 0 || length > MAX_CHAT_LENGTH) {
@@ -697,11 +777,18 @@ function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefi
   const nestedContent = isRecord(value.content) ? value.content : undefined
   const chat = isRecord(value.chat) ? value.chat : undefined
   const text = firstText(value.text, value.body, nestedMessage?.text, nestedMessage?.body, nestedContent?.text, nestedContent?.body, chat?.text)
-  if (!text || !text.trim() || text.length > MAX_TEXT) return undefined
+  const files = messageFiles(value, nestedMessage, nestedContent)
+  const images = normalizeImageFiles(files, groupId)
+  // A file-bearing record is admitted only when every file is a supported
+  // image.  Text-only records retain their original non-empty requirement;
+  // image-only records are valid and carry an empty caption.
+  if (files.length > 0 && (!images || images.length !== files.length)) return undefined
+  if ((!text || !text.trim()) && (!images || images.length < 1)) return undefined
+  if (text && text.length > MAX_TEXT) return undefined
   const rawGroupId = firstString(value.groupId, value.roomId, nestedMessage?.groupId, nestedMessage?.roomId)
   if (rawGroupId && rawGroupId !== groupId) return undefined
   const kind = firstString(value.type, value.messageType, value.eventType, nestedMessage?.type, nestedContent?.type, nestedContent?.msgtype)
-  if (kind && !["text", "ordinary", "m.text"].includes(kind)) return undefined
+  if (kind && !["text", "ordinary", "m.text", "file", "image"].includes(kind)) return undefined
   if (value.deleted === true || value.edited === true || value.isDeleted === true || value.isEdit === true || chat?.edited === true) return undefined
   if (isRecord(value.relatesTo) || isRecord(value["m.relates_to"])) return undefined
   const rawId = value.messageId ?? value.id ?? value.oplog ?? value.key ?? value
@@ -752,12 +839,88 @@ function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefi
     senderId: senderId.slice(0, MAX_MEMBER_ID),
     senderLabel: senderLabel.slice(0, MAX_MEMBER_ID) || senderId.slice(0, MAX_MEMBER_ID),
     timestamp: Number.isFinite(timestamp) ? timestamp : 0,
-    text: text.slice(0, MAX_TEXT),
+    text: text?.slice(0, MAX_TEXT) ?? "",
+    ...(images && images.length > 0 ? { images } : {}),
     ...(chatIndex !== undefined ? { chatIndex } : {}),
     ...(mentions && mentions.length > 0 ? { mentions } : {}),
     ...(replyTo ? { replyTo } : {}),
     ...(reactions ? { reactions } : {}),
   }
+}
+
+function messageFiles(value: RawRecord, nestedMessage: RawRecord | undefined, nestedContent: RawRecord | undefined): unknown[] {
+  const candidates: unknown[] = [value.files, nestedMessage?.files, nestedContent?.files, value.file, nestedMessage?.file]
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      if (candidate.length > 0) return candidate
+      continue
+    }
+    if (candidate !== undefined && candidate !== null) return [candidate]
+  }
+  return []
+}
+
+function normalizeImageFiles(files: readonly unknown[], groupId: string): KeetImageFile[] | undefined {
+  if (!files.length) return undefined
+  if (files.length > MAX_IMAGE_COUNT) return undefined
+  const images: KeetImageFile[] = []
+  let total = 0
+  for (const value of files) {
+    if (!isRecord(value)) return undefined
+    const rawRoomId = firstString(value.roomId, value.groupId, value.roomKey)
+    if (rawRoomId && rawRoomId !== groupId) return undefined
+    const metadata = isRecord(value.metadata) ? value.metadata : undefined
+    const pointer = isRecord(value.pointer) ? value.pointer : undefined
+    // Only external blobs are readable through the official stream RPC. An
+    // inline/drive pointer is a different lifecycle and is rejected here.
+    if (!pointer || !hasExternalBlobPointer(pointer.externalBlob)) return undefined
+    const rawType = firstString(metadata?.mimetype, metadata?.mimeType, metadata?.mediaType, value.mimetype, value.mimeType, value.mediaType, value.type)
+    const mediaType = normalizeImageMediaType(rawType)
+    if (!mediaType) return undefined
+    const rawDimensions = metadata?.dimensions ?? value.dimensions ?? (value.width !== undefined || value.height !== undefined ? { width: value.width, height: value.height } : undefined)
+    if (rawDimensions !== undefined && !isRecord(rawDimensions)) return undefined
+    const dimensions = isRecord(rawDimensions) ? rawDimensions : undefined
+    const width = normalizeImageDimension(dimensions?.width)
+    const height = normalizeImageDimension(dimensions?.height)
+    if (rawDimensions !== undefined && (width === undefined || height === undefined)) return undefined
+    if (width !== undefined && height !== undefined && (width * height > MAX_IMAGE_PIXELS || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION)) return undefined
+    const rawBytes = metadata?.size ?? metadata?.bytes ?? value.bytes ?? value.size
+    if (rawBytes !== undefined && normalizeImageByteLength(rawBytes) === undefined) return undefined
+    // `externalBlob.blob` is the worker's opaque blob identifier (often a
+    // fixed-size key), not the encoded image length.  Trust an explicit
+    // metadata/record size only; the streaming read remains authoritative.
+    const bytes = normalizeImageByteLength(rawBytes)
+    if (bytes !== undefined) {
+      if (bytes < 1 || bytes > MAX_IMAGE_BYTES) return undefined
+      total += bytes
+      if (total > MAX_IMAGE_MESSAGE_BYTES) return undefined
+    }
+    const rawName = firstString(metadata?.name, value.name)
+    const name = rawName ? sanitizeFileName(rawName) : undefined
+    images.push({ file: value, mediaType, ...(name ? { name } : {}), ...(bytes !== undefined ? { bytes } : {}), ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}) })
+  }
+  return images
+}
+
+function normalizeImageMediaType(value: unknown): KeetImageMediaType | undefined {
+  if (typeof value !== "string") return undefined
+  const normalized = value.trim().toLowerCase().split(";", 1)[0]
+  return IMAGE_MEDIA_TYPES.has(normalized as KeetImageMediaType) ? normalized as KeetImageMediaType : undefined
+}
+
+function normalizeImageByteLength(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) return value.byteLength
+  return undefined
+}
+
+function normalizeImageDimension(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= MAX_IMAGE_DIMENSION ? value : undefined
+}
+
+function sanitizeFileName(value: string): string {
+  const base = value.replace(/\\/g, "/").split("/").at(-1)?.trim() ?? ""
+  return base ? Array.from(base).slice(0, 255).join("") : ""
 }
 
 function normalizeMentions(values: readonly unknown[]): string[] {
@@ -787,6 +950,88 @@ function normalizeChatIndex(value: unknown): number | undefined {
 
 function extractMessageId(value: unknown): KeetMessageId | undefined {
   return normalizeMessageId(value) ?? (isRecord(value) ? normalizeMessageId(value.messageId ?? value.id) : undefined)
+}
+
+function validateImageFileForRead(image: KeetImageFile): KeetImageFile {
+  if (!image || typeof image !== "object" || !IMAGE_MEDIA_TYPES.has(image.mediaType)) throw publicError("Keet image descriptor is invalid")
+  if (image.bytes !== undefined && (!Number.isSafeInteger(image.bytes) || image.bytes < 1 || image.bytes > MAX_IMAGE_BYTES)) throw publicError("Keet image descriptor is invalid")
+  if (image.width !== undefined || image.height !== undefined) {
+    if (!normalizeImageDimension(image.width) || !normalizeImageDimension(image.height)) throw publicError("Keet image dimensions are invalid")
+    if (image.width! * image.height! > MAX_IMAGE_PIXELS) throw publicError("Keet image dimensions are invalid")
+  }
+  const file = image.file
+  if (!isRecord(file) || !isRecord(file.pointer) || !hasExternalBlobPointer(file.pointer.externalBlob)) throw publicError("Keet image descriptor is invalid")
+  return image
+}
+
+function hasExternalBlobPointer(value: unknown): value is RawRecord {
+  // The blob identifier is opaque and may be a Buffer, string, or worker
+  // object.  Presence is the only transport fact Core relies on; its bytes
+  // are obtained exclusively through readFileStream.
+  return isRecord(value)
+    && Object.prototype.hasOwnProperty.call(value, "key")
+    && value.key !== null
+    && value.key !== undefined
+    && Object.prototype.hasOwnProperty.call(value, "blob")
+    && value.blob !== null
+    && value.blob !== undefined
+}
+
+function imageChunk(value: unknown): Uint8Array | undefined {
+  if (Buffer.isBuffer(value)) return new Uint8Array(value)
+  if (value instanceof Uint8Array) return value
+  if (isRecord(value) && (Buffer.isBuffer(value.data) || value.data instanceof Uint8Array)) return new Uint8Array(value.data as Uint8Array)
+  return undefined
+}
+
+function validatePreparedKeetImage(image: PreparedKeetImage): PreparedKeetImage {
+  if (!image || typeof image !== "object" || !IMAGE_MEDIA_TYPES.has(image.mediaType)) throw publicError("Keet image is unsupported")
+  if (!(image.bytes instanceof Uint8Array) || image.bytes.byteLength < 1 || image.bytes.byteLength > MAX_IMAGE_BYTES) throw publicError("Keet image exceeds the supported size")
+  if (!Number.isSafeInteger(image.width) || !Number.isSafeInteger(image.height) || image.width < 1 || image.height < 1 || image.width > MAX_IMAGE_DIMENSION || image.height > MAX_IMAGE_DIMENSION || image.width * image.height > MAX_IMAGE_PIXELS) throw publicError("Keet image dimensions are invalid")
+  const detected = detectImageMediaType(image.bytes)
+  if (detected !== image.mediaType) throw publicError("Keet image format is unsupported")
+  if (image.preview !== undefined) {
+    const preview = image.preview
+    if (!(preview.bytes instanceof Uint8Array) || preview.bytes.byteLength < 1 || preview.bytes.byteLength > 512 * 1024 || !IMAGE_MEDIA_TYPES.has(preview.mediaType)) throw publicError("Keet image preview is invalid")
+    if (!Number.isSafeInteger(preview.width) || !Number.isSafeInteger(preview.height) || preview.width < 1 || preview.height < 1 || preview.width > 2_048 || preview.height > 2_048 || preview.width * preview.height > 4_000_000) throw publicError("Keet image preview is invalid")
+    if (detectImageMediaType(preview.bytes) !== preview.mediaType) throw publicError("Keet image preview is invalid")
+  }
+  const name = image.name ? sanitizeFileName(image.name) : ""
+  return name ? { ...image, name } : {
+    bytes: image.bytes,
+    mediaType: image.mediaType,
+    width: image.width,
+    height: image.height,
+    ...(image.preview ? { preview: image.preview } : {}),
+  }
+}
+
+function detectImageMediaType(bytes: Uint8Array): KeetImageMediaType | undefined {
+  if (bytes.byteLength >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return "image/png"
+  if (bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg"
+  if (bytes.byteLength >= 6 && ((bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && bytes[5] === 0x61))) return "image/gif"
+  if (bytes.byteLength >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp"
+  return undefined
+}
+
+function validateSavedFile(value: unknown): RawRecord {
+  if (!isRecord(value) || !isRecord(value.pointer) || !hasExternalBlobPointer(value.pointer.externalBlob)) throw publicError("Keet image save failed")
+  return value
+}
+
+function makeNativePreview(preview: KeetImagePreview, name: string | undefined): RawRecord {
+  const variant = {
+    metadata: {
+      mimetype: preview.mediaType,
+      dimensions: { width: preview.width, height: preview.height },
+      ...(name ? { name } : {}),
+    },
+    pointer: { inlined: Buffer.from(preview.bytes) },
+  }
+  // Keet's display schema accepts any subset of these image variants. One
+  // bounded variant is enough for native presentation and avoids duplicating
+  // preview bytes in the RPC payload.
+  return { small: variant, medium: variant, large: variant }
 }
 
 function compareMessages(a: KeetMessage, b: KeetMessage): number {

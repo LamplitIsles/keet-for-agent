@@ -170,6 +170,28 @@ and delivery failures are reported without retrying or falling back to an
 Agent turn. Whitespace, arguments, casing changes, and regular-group messages
 remain ordinary bridge input.
 
+### DM images
+
+New external Managed DM messages may contain one or more PNG, JPEG, WebP, or
+GIF images and an optional caption. The bridge downloads every image in order,
+admits the complete batch through DSH's durable `attachments` service, and
+starts one Agent turn containing the caption and durable image blocks. A
+download, validation, or storage failure starts no turn and publishes no image
+reference; when possible it sends one short failure notice and retains one
+non-triggering failure record for the next successful turn in that DM. Group
+images, self-authored images, startup snapshots, and historical reads do no
+image work. `keet_read_recent_messages` remains strictly plain-text-only.
+
+The explicit `keet_send_image` tool sends one supported image to an exact
+Managed DM by reading a workspace-contained path through the bound DSH `ctx.fs`
+Active Conversation filesystem. It rejects URLs, outside-workspace paths, corrupt or
+unsupported content, and oversized images. Source bytes are preserved for the
+native Keet file send; a bounded preview is generated only for presentation.
+An optional caption is sent as one adjacent ordinary DM text message. A fully
+successful call returns `{ sent: true }`; if the image is delivered but its
+caption fails, the tool reports a bounded error that says not to retry. Images
+are never sent automatically when an Agent turn completes or creates an image.
+
 An Agent turn's final DSH text is never relayed automatically. Call
 `keet_list_groups` first, then pass one exact returned `groupName` to the common
 destination tools:
@@ -189,20 +211,26 @@ destination tools:
   best-effort: text-only success returns `{ sent: true }`, while a requested
   reaction returns `{ sent: true, reacted: true|false }`. A failed reaction
   never retries or turns a confirmed text send into a tool error.
+- `keet_send_image`: one workspace-contained PNG, JPEG, WebP, or GIF to an
+  exact Managed DM, optionally followed by an adjacent caption. The tool is
+  available when the host composes the Active Conversation filesystem service;
+  inbound image admission additionally requires DSH's attachment service. It
+  returns only `{ sent: true }` on complete success.
 
-After any confirmed `keet_send_message` text delivery, the injected Agent
-policy requires the final DSH response to be exactly `✓`, whether or not its
-optional reaction was confirmed. Without a successful delivery, the Agent
-responds normally. Outbound reactions accept Unicode emoji only; bounded Keet
-wire shortcodes such as `heart` appear only as colon-wrapped inbound context
-labels such as `:heart:`.
+After any confirmed `keet_send_message` text delivery or successful
+`keet_send_image`, the injected Agent policy requires the final DSH response to
+be exactly `✓`, whether or not an optional reaction was confirmed. Without a
+successful delivery, the Agent responds normally. Outbound reactions accept
+Unicode emoji only; bounded Keet wire shortcodes such as `heart` appear only as
+colon-wrapped inbound context labels such as `:heart:`.
 
 Destination names are captured once per DSH restart from bounded titles (line
 separators become spaces). Selectors trim input but otherwise match exactly and
 case-sensitively. Every destination tool rejects an arbitrary or undiscovered
 name before touching Core; normalized duplicate names fail closed, and an
 ambiguous send says that no message was sent. The tools never accept
-invitations, identity data, files, media, or formatting options.
+invitations, identity data, arbitrary files, media, or formatting options;
+`keet_send_image` accepts only its bounded workspace-contained raster input.
 
 ## Verification
 
@@ -228,6 +256,8 @@ opt-in two-sidecar onboarding smoke additionally accepts one human DM request,
 resolves the DM on both identities, sends ordinary DM text, and propagates a
 generated avatar observation. Neither smoke claims desktop UI rendering; the
 manual circular-avatar check remains a separate disposable operator smoke.
+No official-runtime image interoperability smoke was authorized for this
+feature, so official-client image compatibility is unverified.
 
 ## Scope and privacy
 
@@ -240,5 +270,5 @@ Hypercore/Hyperswarm transports are separate networks and are not Keet
 compatibility substitutes.
 
 MCP, OpenClaw, Hermes, a general chat CLI, multiple identities,
-automatic final-text delivery, files/media/calls, moderation, avatar removal,
+automatic final-text delivery, non-image files/media/calls, moderation, avatar removal,
 and private-only operation remain outside this v1 slice.
