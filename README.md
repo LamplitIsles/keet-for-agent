@@ -251,9 +251,10 @@ destination tools:
   IDs remain Bridge-owned); Managed Broadcast roster lookup is rejected;
 - `keet_read_recent_messages`: 1–50 chronological bounded plain-text records;
   valid edited records expose their current text in explicit reads, while an
-  edit never triggers an Agent turn. Managed Group and Managed Broadcast
-  results include stable message IDs and optional reply targets, while DM
-  results omit sender/message/reply IDs;
+  edit never triggers an Agent turn. Managed Group results include stable
+  message IDs and optional reply targets; Managed Broadcast results include
+  stable message IDs but omit reply targets; DM results omit sender/message/
+  reply IDs;
 - `keet_send_message`: one non-empty text message up to 16,000 characters.
   Regular groups may use an exact `{ deviceId, seq }` reply target; Managed
   Broadcast and DM sends are ordinary text and reject `replyTo`. An optional

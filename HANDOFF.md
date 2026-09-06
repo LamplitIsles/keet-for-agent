@@ -73,9 +73,10 @@ The tools are `keet_list_groups`, `keet_list_members`,
 first lists all
 discovered destinations as `{ groupName, kind }`; the remaining tools require an
 exact returned `groupName` (trimmed, case-sensitive, and restart-scoped).
-Regular Group and Managed Broadcast history preserves canonical message IDs,
-optional reply provenance, and the current text of valid edited records; live
-edited updates remain suppressed. Roster results contain only display names and
+Regular Group history preserves canonical message IDs, optional reply
+provenance, and the current text of valid edited records; Managed Broadcast
+history preserves canonical message IDs but omits reply provenance. Live edited
+updates remain suppressed. Roster results contain only display names and
 send results contain only bounded delivery booleans; Broadcast roster lookup is
 rejected. `keet_send_message` always requires non-empty text and may optionally
 attach one native Unicode emoji to the current Keet trigger for a regular Group

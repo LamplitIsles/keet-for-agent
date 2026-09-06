@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { createKeetToolDefinitions, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE, type ManagedDestination } from "../packages/dsh-keet/src/keet-tools.js"
-import type { KeetCore, KeetMessage, KeetMessageId } from "../packages/dsh-keet/src/core-contract.js"
+import type { KeetCore, KeetMessageId } from "../packages/dsh-keet/src/core-contract.js"
 
 const groupId = "group-fixed"
 const dmId = "group-dm"
@@ -148,7 +148,7 @@ describe("Managed Destination Keet tools", () => {
     let sends = 0
     const core = fakeCore({
       listMembers: async () => { memberReads += 1; return [] },
-      readRecentMessages: async (id) => [{ messageId: target, groupId: id, senderId: "moderator", senderLabel: "Moderator", timestamp: 1, text: "announcement" }],
+      readRecentMessages: async (id) => [{ messageId: target, groupId: id, senderId: "moderator", senderLabel: "Moderator", timestamp: 1, text: "announcement", replyTo: { deviceId: "device-parent", seq: 2 } }],
       sendMessage: async (...args) => { sends += 1; return args[0] === broadcastId ? target : undefined },
     })
     const broadcast: ManagedDestination = { groupId: broadcastId, kind: "broadcast", groupName: "Announcements" }
@@ -171,26 +171,19 @@ describe("Managed Destination Keet tools", () => {
     await expect(image.execute({ groupName: "Announcements", path: "notice.png" }, exec())).rejects.toThrow("only for Managed DMs")
     expect(sends).toBe(1)
 
-    const rejectedCore = fakeCore({ sendMessage: async () => { throw new Error("MODERATORS_ONLY") } })
+    let rejectedSends = 0
+    const rejectedCore = fakeCore({ sendMessage: async () => { rejectedSends += 1; throw new Error("MODERATORS_ONLY") } })
     const rejectedTools = createKeetToolDefinitions({ getCore: () => rejectedCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
     await expect(rejectedTools[3]!.execute({ groupName: "Announcements", text: "must fail truthfully" }, exec())).rejects.toThrow("not sent")
+    expect(rejectedSends).toBe(1)
 
-    const persisted: KeetMessage[] = []
-    const acknowledgedCore = fakeCore({
-      readRecentMessages: async () => persisted,
-      sendMessage: async () => {
-        persisted.push({ messageId: { deviceId: "device-broadcast", seq: 8 }, groupId: broadcastId, senderId: "bot", senderLabel: "Bot", timestamp: 2, text: "native append" })
-        return undefined
-      },
-    })
-    const acknowledgedTools = createKeetToolDefinitions({ getCore: () => acknowledgedCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
-    await expect(acknowledgedTools[3]!.execute({ groupName: "Announcements", text: "native append" }, exec())).resolves.toEqual({ sent: true })
-
-    let noOpSends = 0
-    const noOpCore = fakeCore({ sendMessage: async () => { noOpSends += 1; return undefined }, readRecentMessages: async () => [] })
-    const noOpTools = createKeetToolDefinitions({ getCore: () => noOpCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
-    await expect(noOpTools[3]!.execute({ groupName: "Announcements", text: "native no-op" }, exec())).rejects.toThrow("not sent")
-    expect(noOpSends).toBe(1)
+    let undefinedSends = 0
+    let undefinedReads = 0
+    const undefinedCore = fakeCore({ sendMessage: async () => { undefinedSends += 1; return undefined }, readRecentMessages: async () => { undefinedReads += 1; return [] } })
+    const undefinedTools = createKeetToolDefinitions({ getCore: () => undefinedCore, destinations: [broadcast], isReady: () => true, serializeDestinationSend })
+    await expect(undefinedTools[3]!.execute({ groupName: "Announcements", text: "native append" }, exec())).resolves.toEqual({ sent: true })
+    expect(undefinedSends).toBe(1)
+    expect(undefinedReads).toBe(0)
   })
 
   it("does not turn missing display labels into model-visible identity IDs", async () => {

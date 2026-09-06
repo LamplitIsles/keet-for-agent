@@ -2,7 +2,7 @@ import { defineTool, type ToolDefinition, type ToolRunContext } from "@deepseek-
 import { validateKeetReaction } from "@lamplitisles/keet-integration-core"
 import type { KeetCore, KeetMessage, KeetMessageId } from "./core-contract.js"
 import { MAX_GROUP_MEMBERS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES } from "./constants.js"
-import { boundedMembers, renderKeetMessage, sameMessageId } from "./keet-protocol.js"
+import { boundedMembers, messageIdKey, renderKeetMessage } from "./keet-protocol.js"
 import path from "node:path"
 import { boundedImageLimit, type KeetAttachmentStore, type KeetImageAttachmentRef, type KeetWorkspaceFileSystem } from "./image-contract.js"
 import type { PreparedKeetImage, KeetImageMediaType } from "./core-contract.js"
@@ -78,8 +78,6 @@ export interface KeetSendImageResult { sent: true }
 
 const EMPTY_SIGNAL = new AbortController().signal
 const UNKNOWN_SENDER = "Unknown sender"
-const BROADCAST_CONFIRM_ATTEMPTS = 10
-const BROADCAST_CONFIRM_DELAY_MS = 100
 
 function signalOf(exec: ToolRunContext | undefined): AbortSignal { return exec?.signal ?? EMPTY_SIGNAL }
 function cancelled(signal: AbortSignal): Error { return new Error(signal.aborted ? "Keet tool operation cancelled." : "Keet operation unavailable.") }
@@ -106,28 +104,6 @@ function boundedString(value: unknown, fallback: string): string {
 }
 function boundedMessageText(value: unknown): string {
   return typeof value === "string" ? Array.from(value).slice(0, MAX_MESSAGE_TEXT).join("") : ""
-}
-
-function messageIdKey(id: KeetMessageId): string { return `${id.deviceId}\u0000${id.seq}` }
-
-async function confirmBroadcastSend(core: KeetCore, groupId: string, text: string, previousIds: ReadonlySet<string>, signal: AbortSignal): Promise<KeetMessageId | undefined> {
-  for (let attempt = 0; attempt < BROADCAST_CONFIRM_ATTEMPTS; attempt += 1) {
-    const messages = await core.readRecentMessages(groupId, MAX_RECENT_MESSAGES, signal)
-    const match = [...messages].reverse().find((message) => message.text === text && !previousIds.has(messageIdKey(message.messageId)))
-    if (match) return { ...match.messageId }
-    if (attempt + 1 < BROADCAST_CONFIRM_ATTEMPTS) await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => finish(resolve), BROADCAST_CONFIRM_DELAY_MS)
-      const onAbort = () => finish(() => reject(cancelled(signal)))
-      const finish = (settle: () => void) => {
-        clearTimeout(timer)
-        signal.removeEventListener("abort", onAbort)
-        settle()
-      }
-      signal.addEventListener("abort", onAbort, { once: true })
-      if (signal.aborted) onAbort()
-    })
-  }
-  return undefined
 }
 
 /** Normalize one title once into the single-line name used by tools and prompts. */
@@ -185,7 +161,7 @@ function historyRecord(message: KeetMessage, kind: ManagedDestinationKind): Keet
   const base = { senderLabel, timestamp: Number.isFinite(message.timestamp) ? message.timestamp : 0, text: boundedMessageText(message.text) }
   if (kind === "dm") return base
   if (!validMessageId(message.messageId)) return undefined
-  const replyTo = validMessageId(message.replyTo) ? { deviceId: message.replyTo.deviceId.slice(0, MAX_PROVENANCE_CHARS), seq: message.replyTo.seq } : undefined
+  const replyTo = kind === "group" && validMessageId(message.replyTo) ? { deviceId: message.replyTo.deviceId.slice(0, MAX_PROVENANCE_CHARS), seq: message.replyTo.seq } : undefined
   return { messageId: { deviceId: message.messageId.deviceId.slice(0, MAX_PROVENANCE_CHARS), seq: message.messageId.seq }, ...base, ...(replyTo ? { replyTo } : {}) }
 }
 
@@ -270,14 +246,7 @@ async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: Ab
     await deps.serializeDestinationSend(destination.groupId, async () => {
       if (signal.aborted) throw cancelled(signal)
       if (!deps.isReady()) throw new Error("Keet bridge lost readiness; no message was sent.")
-      const previousBroadcastMessageIds = destination.kind === "broadcast"
-        ? new Set((await core.readRecentMessages(destination.groupId, MAX_RECENT_MESSAGES, signal)).map((message) => messageIdKey(message.messageId)))
-        : new Set<string>()
       messageId = await core.sendMessage(destination.groupId, text, destination.kind === "group" ? record.replyTo as KeetMessageId | undefined : undefined, signal)
-      if (destination.kind === "broadcast" && messageId === undefined) {
-        messageId = await confirmBroadcastSend(core, destination.groupId, text, previousBroadcastMessageIds, signal)
-        if (messageId === undefined) throw new Error("Managed Broadcast post was not confirmed")
-      }
       try { deps.onDestinationMessageSent?.(destination.groupId, messageId) } catch { /* receipt bookkeeping never changes delivery */ }
     })
   } catch (error) {
@@ -294,7 +263,7 @@ async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: Ab
   // mutation.
   if (signal.aborted || !readyOf(deps)) return { sent: true, reacted: false }
   const active = activeTargetOf(deps)
-  if (!active || active.groupId !== target!.groupId || !validMessageId(active.messageId) || !sameMessageId(active.messageId, target!.messageId)) return { sent: true, reacted: false }
+  if (!active || active.groupId !== target!.groupId || !validMessageId(active.messageId) || messageIdKey(active.messageId) !== messageIdKey(target!.messageId)) return { sent: true, reacted: false }
   try {
     await core.addReaction(destination.groupId, target!.messageId, reaction!, signal)
     if (signal.aborted || !readyOf(deps)) return { sent: true, reacted: false }
@@ -466,11 +435,11 @@ function messageSchema(): any {
   return {
     type: "object", additionalProperties: false,
     properties: {
-      messageId: { ...messageIdSchema(), description: "Present for regular-group history; omitted for Managed DM history." },
+      messageId: { ...messageIdSchema(), description: "Present for regular-group or Managed Broadcast history; omitted for Managed DM history." },
       senderLabel: { type: "string", required: true },
       timestamp: { type: "number", required: true },
       text: { type: "string", required: true },
-      replyTo: { ...messageIdSchema(), description: "Optional reply provenance in regular-group or Managed Broadcast history; Managed DM history omits message IDs." },
+      replyTo: { ...messageIdSchema(), description: "Optional reply provenance in regular-group history; Managed Broadcast and Managed DM history omit it." },
     },
   }
 }
