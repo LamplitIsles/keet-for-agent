@@ -34,6 +34,14 @@ messages in that group; destination tools select it by the exact startup
 `groupName`, never by an arbitrary room ID.
 _Avoid_: Approved Room, arbitrary room, adapter-created group
 
+**Managed Broadcast**:
+A pre-existing Keet `Broadcast` room, already joined by the bridge identity,
+that the DSH Keet Bridge discovers at startup. Agents can read its plain-text
+history and proactively publish plain-text posts, but its inbound messages do
+not trigger Agent turns or accept reply relations; the Official Keet Core
+decides each posting attempt from the identity's current native permission.
+_Avoid_: Managed Group, role-cached broadcast, arbitrary room
+
 **Managed DM**:
 An accepted complete one-to-one Keet room typed `DirectMessage`, discovered in
 the canonical joined-room list when its peer is absent from the bounded pending
@@ -44,9 +52,9 @@ _Avoid_: contact request, arbitrary private room, Agent-created DM
 
 **Managed Destination**:
 One entry in the bridge's immutable startup allowlist: every joined `Default`
-room and accepted complete `DirectMessage` admitted from the bounded snapshot.
-`keet_list_groups` returns these entries as an exact `groupName` and `kind`; the
-other Keet tools require that exact returned name.
+room, joined `Broadcast` room, and accepted complete `DirectMessage` admitted
+from the bounded snapshot. `keet_list_groups` returns these entries as an exact
+`groupName` and `kind`; the other Keet tools require that exact returned name.
 _Avoid_: all joined rooms, implicit target, arbitrary destination
 
 **Managed Destination Name**:
