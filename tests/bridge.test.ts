@@ -411,9 +411,8 @@ describe("Keet bridge", () => {
     await connectionBridge.stop()
   })
 
-  it("keeps reaction summaries pending across rejected and cancelled pre-admission follow-ups", async () => {
+  it("keeps reaction summaries pending when a follow-up is discarded before claim", async () => {
     const cases: readonly { name: string; admission: FollowupAdmission }[] = [
-      { name: "rejected", admission: "claim-only" },
       { name: "cancelled", admission: "discard" },
     ]
     for (const testCase of cases) {
@@ -426,7 +425,7 @@ describe("Keet bridge", () => {
       fixture = makeAgent(() => {
         followups += 1
         return undefined
-      }, async () => { if (testCase.admission === "claim-only" && followups === 1) fixture.emitTurnEnd(1, "blocked") }, { followupAdmission: testCase.admission })
+      }, async () => undefined, { followupAdmission: testCase.admission })
       const bridge = new KeetBridge(deps(core, fixture.agent))
       await bridge.start()
       deliver(message(20, `${testCase.name} first`, { mentions: ["bot"] }))
@@ -515,6 +514,30 @@ describe("Keet bridge", () => {
     deliver(message(5, "re-add trigger", { mentions: ["bot"] }))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect((fixture.prompts[3] as any).content[0].text).toContain('emoji=":heart:" count="2"')
+    await bridge.stop()
+  })
+
+  it("delivers reaction context once after a claim even without a session message event", async () => {
+    let deliver!: (message: KeetMessage) => void
+    const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+    core.readRecentMessages = async (groupId) => [{ ...message(1, "integration-authored", {
+      groupId,
+      messageId: { deviceId: "device-bot", seq: 1 },
+      senderId: "bot",
+      senderLabel: "Keet Bot",
+      reactions: [{ emoji: ":keet_love:", count: 1, own: false }],
+    }) }]
+    const fixture = makeAgent(undefined, async () => undefined, { followupAdmission: "claim-only" })
+    const bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+
+    deliver(message(2, "first trigger", { mentions: ["bot"] }))
+    await flushBridge()
+    expect((fixture.prompts[0] as any).content[0].text).toContain('emoji=":keet_love:" count="1"')
+
+    deliver(message(3, "next trigger", { mentions: ["bot"] }))
+    await flushBridge()
+    expect((fixture.prompts[1] as any).content[0].text).not.toContain("reaction context")
     await bridge.stop()
   })
 

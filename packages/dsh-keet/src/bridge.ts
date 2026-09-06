@@ -357,6 +357,11 @@ export class KeetBridge {
     const pending = this.pendingKeetTurns.get(requestId)
     if (!pending || pending.claimedTurn !== undefined) return
     pending.claimedTurn = turn
+    // DSH has durably removed this message from its inbox before it emits the
+    // claim notification. Treat that as the one-shot delivery boundary: a
+    // later session event is not guaranteed to be observable by this plugin.
+    const state = this.states.get(pending.destination.groupId)
+    if (state) for (const reaction of pending.pending) rememberDeliveredReactionState(state, reaction.reactionKey, reaction.signature)
   }
 
   private admitKeetTurn(requestId: string, turn: number): void {
@@ -364,8 +369,6 @@ export class KeetBridge {
     const pending = this.pendingKeetTurns.get(requestId)
     if (!pending || pending.claimedTurn !== turn || this.activeReactionTargetValue !== undefined) return
     this.activeReactionTargetValue = { ...pending.target, requestId, turn }
-    const state = this.states.get(pending.destination.groupId)
-    if (state) for (const reaction of pending.pending) rememberDeliveredReactionState(state, reaction.reactionKey, reaction.signature)
   }
 
   private discardKeetTurn(requestId: string): void {
