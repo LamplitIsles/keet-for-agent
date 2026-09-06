@@ -19,6 +19,15 @@ state file or treats an outbound Keet send as an Agent-turn receipt. Native
 mentions are normal explicit sends and remain subject to Keet's own send
 confirmation.
 
+Member Join observations carry a bounded adapter-private receipt on their DSH
+user message. The bridge replays every inspectable workspace session's inbox
+splices at startup: insertion is pending, a non-canceled removal is consumed,
+and a canceled removal remains eligible. That receipt is keyed to the
+group/member pair without placing Keet IDs in the model-visible prompt. If any
+session inspection or receipt replay is incomplete, roster observations are
+suppressed for that bridge run; ordinary message intake still follows the
+normal claim/discard/settle path.
+
 This receipt boundary does not claim exactly-once delivery to Keet or to an
 external model provider. It provides the narrower, observable guarantee that a
 single accepted Keet-triggered inbox item is consumed once by DSH, while a

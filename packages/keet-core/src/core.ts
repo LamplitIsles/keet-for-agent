@@ -278,9 +278,10 @@ export class KeetIntegrationCore implements KeetCore {
     return { token: value, url: `keet://chat/${value}` }
   }
 
-  async listMembers(groupId: string): Promise<KeetMember[]> {
+  async listMembers(groupId: string, signal?: AbortSignal): Promise<KeetMember[]> {
     const id = boundedId(groupId, "Managed Group ID")
-    const raw = await this.safeCall("getMembers", [id, { limit: 128 }])
+    ensureSignal(signal)
+    const raw = await this.callWithSignal("getMembers", [id, { limit: 128 }], signal)
     if (!Array.isArray(raw)) throw publicError("Keet returned an invalid member list")
     const byId = new Map<string, KeetMember>()
     for (const value of raw) {

@@ -49,6 +49,7 @@ function hasHumanPromptContent(data: unknown): boolean {
 
 /** Return the latest timestamp at which a persisted human user prompt entered the session. */
 export function lastHumanPromptAt(inspection: SessionInspectionLike): number | undefined {
+  if (!inspection || !Array.isArray(inspection.events)) return undefined
   let latest: number | undefined;
   for (const event of inspection.events) {
     if (event.type !== "user/message" || sourceKind(event.data) !== "user" || !hasHumanPromptContent(event.data)) continue;
@@ -74,6 +75,7 @@ export function selectMostRecentEligibleSession(
     if (archivedSessionIds.has(sessionId)) continue;
     const inspection = inspections.get(sessionId);
     if (!inspection) continue;
+    if (!inspection.meta || typeof inspection.meta !== "object") continue;
     const origin = inspection.meta.origin;
     if (origin === "subagent") continue;
     const last = lastHumanPromptAt(inspection);

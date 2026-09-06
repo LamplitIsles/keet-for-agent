@@ -93,7 +93,7 @@ export interface KeetCore {
   resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
-  listMembers(groupId: string): Promise<KeetMember[]>
+  listMembers(groupId: string, signal?: AbortSignal): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
   readImage(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
   sendImage(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void>

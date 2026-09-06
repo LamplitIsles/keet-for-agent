@@ -70,6 +70,14 @@ explicit delivery tool is called. After a confirmed text send in a turn (with
 an optional reaction decoration), the injected policy reduces the final DSH
 response to the exact `✓` acknowledgement so the already-delivered Keet
 content is not duplicated.
+While ready, regular Managed Groups use a fixed ten-second roster poll. The
+first successful read is the startup baseline; later additions excluding the
+Integration Identity produce one bounded Member Join turn per group/member
+pair. Member Join prompts contain only an untrusted display name and source
+`groupName`, have no message/reply/image/activity/reaction capability, and use
+DSH inbox splice receipts for at-most-once suppression across restarts. Failed
+session inspection suppresses roster observation for that run while ordinary
+message intake continues.
 
 The tools are `keet_list_groups`, `keet_list_members`,
 `keet_read_recent_messages`, `keet_send_message`, and `keet_send_image`. The

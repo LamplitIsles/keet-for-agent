@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools"
 import { KeetBridge, bridgeRpcHandler, type KeetBridgeAgent, type KeetBridgeDependencies } from "../packages/dsh-keet/src/bridge.js"
-import type { KeetCore, KeetMessage, KeetMessageId, ManagedGroup, KeetPendingDmRequest } from "../packages/dsh-keet/src/core-contract.js"
+import type { KeetCore, KeetMember, KeetMessage, KeetMessageId, ManagedGroup, KeetPendingDmRequest } from "../packages/dsh-keet/src/core-contract.js"
 
 const settings: { groupId: string; workspaceId: string; dmMemberId?: string } = { groupId: "group-fixed", workspaceId: "workspace" }
 const dmGroupId = "group-dm"
@@ -10,7 +10,7 @@ function message(seq: number, text: string, extra: Partial<KeetMessage> = {}): K
   return { messageId: { deviceId: "device-human", seq }, groupId: settings.groupId, senderId: "human", senderLabel: "Alice", timestamp: seq, text, ...extra }
 }
 
-function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; onListMembers?: (groupId: string) => void; fail?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingDisplayName?: boolean; dm?: boolean; duplicateNames?: boolean; groups?: ManagedGroup[]; pending?: KeetPendingDmRequest[]; pendingFailure?: boolean; pendingMalformed?: "envelope" | "entry" } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
+function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void, groupId: string) => void; onSubscription?: (terminate: () => void) => void; onListMembers?: (groupId: string) => void; membersFor?: (groupId: string) => readonly KeetMember[]; fail?: boolean; failWatch?: boolean; missingIdentity?: boolean; missingDisplayName?: boolean; dm?: boolean; duplicateNames?: boolean; groups?: ManagedGroup[]; pending?: KeetPendingDmRequest[]; pendingFailure?: boolean; pendingMalformed?: "envelope" | "entry" } = {}): KeetCore & { sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }>; closed: boolean } {
   const sent: Array<{ groupId: string; text: string; replyTo?: KeetMessageId }> = []
   let closed = false
   const core: KeetCore & { sent: typeof sent; closed: boolean } = {
@@ -24,6 +24,7 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
     resolveDm: async () => ({ groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: "peer", title: options.duplicateNames ? "Shared\nName" : "Managed DM" }),
     listMembers: async (groupId) => {
       options.onListMembers?.(groupId)
+      if (options.membersFor) return [...options.membersFor(groupId)]
       return [{ memberId: "bot", displayName: "Keet Bot" }, ...(groupId === dmGroupId ? [{ memberId: "peer", displayName: "Peer" }] : [{ memberId: "human", displayName: "Alice" }])]
     },
     readRecentMessages: async (groupId) => [{ ...message(1, "old self reply", { groupId }), senderId: "bot", senderLabel: "Keet Bot", messageId: { deviceId: "device-bot", seq: 1 } }],
@@ -1300,7 +1301,7 @@ describe("Keet bridge", () => {
     expect(bridge.agent).toBeUndefined()
   })
 
-  it("starts every canonical destination without reading destination rosters", async () => {
+  it("starts every canonical destination and establishes only regular-group roster baselines", async () => {
     const handlers = new Map<string, (message: KeetMessage) => void>()
     let rosterCalls = 0
     const core = fakeCore({ dm: true, onListMembers: () => { rosterCalls += 1 }, onWatch: (handler, groupId) => { handlers.set(groupId, handler) } })
@@ -1308,8 +1309,186 @@ describe("Keet bridge", () => {
     await bridge.start()
     expect(bridge.readiness.state).toBe("ready")
     expect([...handlers.keys()]).toEqual([settings.groupId, dmGroupId])
-    expect(rosterCalls).toBe(0)
+    await flushBridge()
+    expect(rosterCalls).toBe(1)
     await bridge.stop()
+  })
+
+  it("uses the first successful roster poll as a baseline and admits one bounded Member Join turn", async () => {
+    vi.useFakeTimers()
+    try {
+      let roster: KeetMember[] = [{ memberId: "bot", displayName: "Keet Bot" }, { memberId: "member-alice", displayName: "Alice" }]
+      const fixture = makeAgent()
+      const core = fakeCore({ membersFor: () => roster })
+      const bridge = new KeetBridge(deps(core, fixture.agent))
+      await bridge.start()
+
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(0)
+
+      roster = [...roster, { memberId: "member-bob", displayName: "Bob" }]
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(1)
+      const prompt = JSON.stringify(fixture.prompts[0])
+      expect(prompt).toContain("Member Join")
+      expect(prompt).toContain("Bob")
+      expect(prompt).toContain("Test group")
+      expect(prompt).not.toContain("member-bob")
+      expect(prompt).not.toContain("device-human")
+      expect(bridge.activeReactionTarget).toBeUndefined()
+      await bridge.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps roster observations isolated to regular groups and excludes self, DM, and Broadcast members", async () => {
+    vi.useFakeTimers()
+    try {
+      const secondGroup = "group-second"
+      const groups: ManagedGroup[] = [
+        { groupId: settings.groupId, roomType: "Default", title: "First" },
+        { groupId: secondGroup, roomType: "Default", title: "Second" },
+        { groupId: "group-broadcast", roomType: "Broadcast", title: "News" },
+        { groupId: dmGroupId, roomType: "DirectMessage", title: "DM", dmMemberId: "peer" },
+      ]
+      const roster = new Map<string, KeetMember[]>([
+        [settings.groupId, [{ memberId: "bot", displayName: "Keet Bot" }, { memberId: "a", displayName: "Alice" }]],
+        [secondGroup, [{ memberId: "bot", displayName: "Keet Bot" }, { memberId: "b", displayName: "Bea" }]],
+        ["group-broadcast", [{ memberId: "bot", displayName: "Keet Bot" }]],
+        [dmGroupId, [{ memberId: "bot", displayName: "Keet Bot" }, { memberId: "peer", displayName: "Peer" }]],
+      ])
+      const fixture = makeAgent()
+      const core = fakeCore({ groups, membersFor: (groupId) => roster.get(groupId) ?? [] })
+      const bridge = new KeetBridge(deps(core, fixture.agent))
+      await bridge.start()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+
+      roster.get(settings.groupId)!.push({ memberId: "new-a", displayName: "New Alice" })
+      roster.get(secondGroup)!.push({ memberId: "new-b", displayName: "New Bea" })
+      roster.get(dmGroupId)!.push({ memberId: "new-peer", displayName: "New Peer" })
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(2)
+      const prompts = fixture.prompts.map((value) => JSON.stringify(value))
+      expect(prompts.some((value) => value.includes('source group name=\\"First\\"') && value.includes("New Alice"))).toBe(true)
+      expect(prompts.some((value) => value.includes('source group name=\\"Second\\"') && value.includes("New Bea"))).toBe(true)
+      expect(prompts.some((value) => value.includes("New Peer") || value.includes("News"))).toBe(false)
+      await bridge.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not infer a join from a failed roster read and retries from the last successful baseline", async () => {
+    vi.useFakeTimers()
+    try {
+      let roster: KeetMember[] = [{ memberId: "bot", displayName: "Keet Bot" }, { memberId: "member-alice", displayName: "Alice" }]
+      let reads = 0
+      const fixture = makeAgent()
+      const core = fakeCore({ membersFor: () => {
+        reads += 1
+        if (reads === 2) throw new Error("roster unavailable")
+        return roster
+      } })
+      const bridge = new KeetBridge(deps(core, fixture.agent))
+      await bridge.start()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      roster = [...roster, { memberId: "member-bob", displayName: "Bob" }]
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(1)
+      expect(JSON.stringify(fixture.prompts[0])).toContain("Bob")
+      await bridge.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps canceled roster admission eligible but consumes the receipt after a claim", async () => {
+    vi.useFakeTimers()
+    try {
+      let roster: KeetMember[] = [{ memberId: "bot", displayName: "Keet Bot" }]
+      const fixture = makeAgent(undefined, async () => undefined, { followupAdmission: "discard" })
+      const core = fakeCore({ membersFor: () => roster })
+      const bridge = new KeetBridge(deps(core, fixture.agent))
+      await bridge.start()
+      await vi.advanceTimersByTimeAsync(10_000)
+      roster = [...roster, { memberId: "member-bob", displayName: "Bob" }]
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(1)
+
+      // The canceled removal leaves the observation eligible, so the same
+      // current roster can be retried without waiting for leave/rejoin churn.
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(2)
+
+      fixture.setFollowupAdmission("admit")
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(3)
+      await vi.advanceTimersByTimeAsync(20_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(3)
+      await bridge.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("replays durable roster receipts across bridge restarts without re-delivering consumed joins", async () => {
+    vi.useFakeTimers()
+    try {
+      const roster: KeetMember[] = [{ memberId: "bot", displayName: "Keet Bot" }, { memberId: "member-bob", displayName: "Bob" }]
+      const firstFixture = makeAgent()
+      const firstCore = fakeCore({ membersFor: () => roster })
+      const first = new KeetBridge(deps(firstCore, firstFixture.agent))
+      await first.start()
+      await vi.advanceTimersByTimeAsync(10_000)
+      // The first read is the startup baseline; make Bob a live observation.
+      roster.push({ memberId: "member-carol", displayName: "Carol" })
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(firstFixture.prompts).toHaveLength(1)
+      const admitted = firstFixture.prompts[0]
+      await first.stop()
+
+      const consumedEvents = [
+        { type: "user/message", time: 1, data: { source: { kind: "user" }, content: "hello" } },
+        { type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, inserted: [admitted] } },
+        { type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, removedCount: 1, inserted: [] } },
+      ]
+      const consumedFixture = makeAgent()
+      const consumedCore = fakeCore({ membersFor: () => roster })
+      const consumed = new KeetBridge(deps(consumedCore, consumedFixture.agent, { prior: { meta: { id: "prior" }, events: consumedEvents } }))
+      await consumed.start()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(consumedFixture.prompts).toHaveLength(0)
+      await consumed.stop()
+
+      const canceledFixture = makeAgent()
+      const canceledCore = fakeCore({ membersFor: () => roster })
+      const canceled = new KeetBridge(deps(canceledCore, canceledFixture.agent, { prior: { meta: { id: "prior" }, events: [
+        { type: "user/message", time: 1, data: { source: { kind: "user" }, content: "hello" } },
+        { type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, inserted: [admitted] } },
+        { type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, removedCount: 1, inserted: [], outcome: "canceled" } },
+      ] } }))
+      await canceled.start()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(canceledFixture.prompts).toHaveLength(1)
+      expect(JSON.stringify(canceledFixture.prompts[0])).toContain("Carol")
+      await canceled.stop()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("keeps mention and verified-reply triggers without a status display name", async () => {

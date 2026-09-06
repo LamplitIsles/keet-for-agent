@@ -179,7 +179,7 @@ async function listMembers(deps: KeetToolDependencies, args: unknown, signal: Ab
   if (destination.kind === "broadcast") throw safeError("Managed Broadcast rosters are unavailable.")
   const core = ensureReady(deps)
   try {
-    const members = boundedMembers(await core.listMembers(destination.groupId))
+    const members = boundedMembers(await core.listMembers(destination.groupId, signal))
     if (signal.aborted) throw cancelled(signal)
     if (!deps.isReady()) throw new Error("Keet bridge lost readiness; no group operation was performed.")
     return { members: members.slice(0, MAX_GROUP_MEMBERS) }
@@ -284,14 +284,15 @@ async function resolveMentionMembers(core: KeetCore, groupId: string, value: unk
   }
   const requested = [...new Set(value.map((name) => (name as string).trim()))]
   let members: readonly KeetMember[]
-  try { members = await core.listMembers(groupId) }
+  try { members = await core.listMembers(groupId, signal) }
   catch (error) { throw operationError(error, "Keet member roster is unavailable.") }
   if (signal.aborted) throw cancelled(signal)
   const ids: string[] = []
   for (const name of requested) {
     const matches = members.filter((member) => member.displayName === name)
-    if (matches.length !== 1) throw safeError("each mention must name one current unique member.")
-    ids.push(matches[0]!.memberId)
+    const memberId = matches.length === 1 && typeof matches[0]?.memberId === "string" ? matches[0].memberId.trim() : ""
+    if (matches.length !== 1 || !memberId) throw safeError("each mention must name one current unique member.")
+    ids.push(memberId)
   }
   return ids
 }

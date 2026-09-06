@@ -201,7 +201,7 @@ export interface KeetCore {
   listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
   /** Accept exactly one already-pending request and wait for its DM room. */
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
-  listMembers(groupId: string): Promise<KeetMember[]>
+  listMembers(groupId: string, signal?: AbortSignal): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
   /** Download and bound one live external-blob image record. */
   readImage(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
