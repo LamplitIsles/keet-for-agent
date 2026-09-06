@@ -202,6 +202,16 @@ Unicode reactions remain unchanged. Whitespace, unsafe punctuation, and
 arbitrary prose are omitted; the grammar is forward-compatible display
 normalization, not an authenticity assertion.
 
+While the bridge is ready, each regular Managed Group is polled every ten
+seconds. The first successful roster read is a startup baseline; later
+observed additions (excluding the Integration Identity) produce at most one
+Member Join turn for that group/member pair across DSH restarts. Joins missed
+between polls, startup members, failed reads, DMs, Broadcasts, and leave/rejoin
+churn do not create turns. The prompt contains only a bounded, untrusted
+display name and source `groupName`; it has no Keet message/reply ID, activity,
+image, or reaction capability. DSH's durable inbox splice history is the
+receipt authority, so a claimed observation is not delivered again.
+
 When a Managed DM turn (including `/compact`) actually begins, the bridge marks
 the triggering message read at its normalized chat index plus one and publishes
 native typing activity. Typing refreshes every four seconds while the work is
@@ -262,8 +272,11 @@ destination tools:
   stable message IDs but omit reply targets; DM results omit sender/message/
   reply IDs;
 - `keet_send_message`: one non-empty text message up to 16,000 characters.
-  Regular groups may use an exact `{ deviceId, seq }` reply target; Managed
-  Broadcast and DM sends are ordinary text and reject `replyTo`. An optional
+  Regular groups may use an exact `{ deviceId, seq }` reply target and native
+  `mentions` containing exact current member display names. Names are resolved
+  immediately against the roster; absent or ambiguous names fail before a
+  message is sent, and Member IDs never reach the Agent. Managed Broadcast and
+  DM sends are ordinary text and reject `replyTo` and native mentions. An optional
   `reaction` is one bounded Unicode emoji applied only to the exact message
   that triggered the active ordinary Keet turn for a regular group or DM;
   reactions are unavailable for Managed Broadcasts. Text is sent first and a

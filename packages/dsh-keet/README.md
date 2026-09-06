@@ -59,6 +59,16 @@ unchanged. Whitespace, unsafe punctuation, and arbitrary prose are omitted;
 the grammar is forward-compatible display normalization, not an authenticity
 assertion. The Agent's final text is not sent automatically.
 
+While ready, the bridge polls each regular Managed Group roster every ten
+seconds. The first successful read is the startup baseline; a later observed
+member addition produces one bounded Member Join turn at most once per
+group/member pair across restarts. Startup members, missed between-poll joins,
+failed reads, the Integration Identity, DMs, Broadcasts, and leave/rejoin
+churn do not produce turns. Member Join context contains only an untrusted
+display name and source `groupName`, with no message/reply ID, image, activity,
+or reaction capability. DSH's durable inbox splice history is the at-most-once
+receipt authority; canceled inbox work remains eligible.
+
 New external Managed DM messages may contain one or more PNG, JPEG, WebP, or
 GIF images with an optional caption. The bridge sends one tuple through a
 finite `readFileStream` request, half-closes the request side, admits the
@@ -102,8 +112,11 @@ Call `keet_list_groups` first. The remaining tools require an exact returned
   canonical message IDs but omit reply targets, while DM records omit all
   message/reply IDs;
 - `keet_send_message` — explicit bounded text delivery. Regular groups accept
-  an exact `{ deviceId, seq }` reply target; Managed Broadcast and DM sends are
-  ordinary text and reject `replyTo`. An optional `reaction` is one bounded
+  an exact `{ deviceId, seq }` reply target and native `mentions` by exact
+  current member display name. The bridge resolves names immediately and fails
+  before delivery for missing or ambiguous members; Member IDs never reach the
+  Agent. Managed Broadcast and DM sends are ordinary text and reject `replyTo`
+  and native mentions. An optional `reaction` is one bounded
   Unicode emoji applied only to the exact message that triggered the active
   ordinary Keet turn for a regular group or DM; it is unavailable for Managed
   Broadcasts. Text is sent first and the reaction is best-effort: text-only

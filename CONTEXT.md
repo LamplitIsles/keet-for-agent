@@ -119,6 +119,31 @@ independently starting a turn. Managed DM ordinary external text uses a
 separate every-message trigger and is not a Reply Trigger.
 _Avoid_: Every group message, mention only
 
+**Native Mention**:
+A regular Managed Group outbound message whose `mentions` are exact current
+member display names. The Bridge resolves each name to one current Member ID at
+send time and passes Keet's native `{ type: "mention", memberId }` record to
+the Core. Missing or duplicate display names fail closed; Member IDs never
+cross into Agent-visible prompts, tools, or results.
+_Avoid_: literal `@name` text as a substitute, Member ID tool arguments
+
+**Member Join Trigger**:
+A bridge-owned observation that a Member ID appears in a regular Managed Group
+roster after the first successful ten-second poll baseline. It carries only a
+bounded, untrusted display name and source `groupName` into one serialized
+Agent turn. Startup, missed-between-poll, failed-read, self, DM, Broadcast, and
+leave/rejoin observations do not trigger; a claimed `(group, member)` receipt
+remains consumed across DSH restarts.
+_Avoid_: native membership event, startup catch-up, automatic welcome, Member ID in a prompt
+
+**Durable Inbox Receipt**:
+The adapter-private identifier attached to one DSH user message for admission.
+DSH `agent/inbox/spliced` insertion makes a roster receipt pending; a
+non-canceled removal consumes it, while `outcome: "canceled"` leaves it
+eligible. Incomplete workspace-session inspection suppresses roster intake for
+that bridge run without stopping ordinary message triggers.
+_Avoid_: plugin receipt database, exactly-once Keet delivery, outbound send receipt
+
 **DM Activity Signal**:
 
 Bridge-owned, best-effort native read-anchor and typing metadata for one active

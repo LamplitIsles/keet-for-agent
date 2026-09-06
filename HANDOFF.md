@@ -70,6 +70,14 @@ explicit delivery tool is called. After a confirmed text send in a turn (with
 an optional reaction decoration), the injected policy reduces the final DSH
 response to the exact `✓` acknowledgement so the already-delivered Keet
 content is not duplicated.
+While ready, regular Managed Groups use a fixed ten-second roster poll. The
+first successful read is the startup baseline; later additions excluding the
+Integration Identity produce one bounded Member Join turn per group/member
+pair. Member Join prompts contain only an untrusted display name and source
+`groupName`, have no message/reply/image/activity/reaction capability, and use
+DSH inbox splice receipts for at-most-once suppression across restarts. Failed
+session inspection suppresses roster observation for that run while ordinary
+message intake continues.
 
 The tools are `keet_list_groups`, `keet_list_members`,
 `keet_read_recent_messages`, `keet_send_message`, and `keet_send_image`. The
@@ -81,7 +89,9 @@ provenance, and the current text of valid edited records; Managed Broadcast
 history preserves canonical message IDs but omits reply provenance. Live edited
 updates remain suppressed. Roster results contain only display names and
 send results contain only bounded delivery booleans; Broadcast roster lookup is
-rejected. `keet_send_message` always requires non-empty text and may optionally
+rejected. `keet_send_message` always requires non-empty text, may natively
+mention exact current display names in a regular Group (resolved internally to
+unique current Member IDs; missing/ambiguous names fail before send), and may optionally
 attach one native Unicode emoji to the current Keet trigger for a regular Group
 or DM; the bridge supplies that Message ID internally. Managed Broadcast sends
 are plain text only and reject reply anchors and reactions. Text is sent first,

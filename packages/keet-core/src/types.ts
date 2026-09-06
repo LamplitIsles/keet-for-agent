@@ -201,7 +201,7 @@ export interface KeetCore {
   listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
   /** Accept exactly one already-pending request and wait for its DM room. */
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
-  listMembers(groupId: string): Promise<KeetMember[]>
+  listMembers(groupId: string, signal?: AbortSignal): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
   /** Download and bound one live external-blob image record. */
   readImage(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
@@ -214,7 +214,8 @@ export interface KeetCore {
   updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void>
   /** Add one native Unicode emoji reaction to an exact message. */
   addReaction(groupId: string, messageId: KeetMessageId, reaction: string, signal?: AbortSignal): Promise<void>
-  sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal): Promise<KeetMessageId | undefined>
+  /** Native mentions are Core-owned routing values and never model-visible. */
+  sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal, mentions?: readonly string[]): Promise<KeetMessageId | undefined>
   inspectInvitation(invitation: string, signal?: AbortSignal): Promise<InvitationInfo>
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>
   updateDisplayName(displayName: string, signal?: AbortSignal): Promise<void>
