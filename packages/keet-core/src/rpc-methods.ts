@@ -22,6 +22,8 @@ export const RPC_METHODS = {
   setUnreadAnchor: 218,
   /** Native Managed DM typing timestamp refresh; the worker enforces room gates. */
   updateTypingIndicator: 220,
+  /** Native aggregate reaction mutation; the worker enforces room/message policy. */
+  addReaction: 156,
   boot: 225,
 } as const
 

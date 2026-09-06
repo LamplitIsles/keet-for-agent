@@ -50,6 +50,7 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
     },
     setUnreadAnchor: async () => undefined,
     updateTypingIndicator: async () => undefined,
+    addReaction: async () => undefined,
     sendMessage: async (groupId, text, replyTo) => { sent.push({ groupId, text, ...(replyTo ? { replyTo } : {}) }); return { deviceId: "device-bot", seq: sent.length + 10 } },
     inspectInvitation: async () => ({ isRoomInvitation: true }),
     joinInvitation: async () => ({ groupId: settings.groupId }),
@@ -78,20 +79,56 @@ function deps(core: KeetCore | undefined, agent?: KeetBridgeAgent, inspections: 
   }
 }
 
-function makeAgent(onFollowup?: (message: unknown) => unknown, whenIdle: () => Promise<void> = async () => undefined): { agent: KeetBridgeAgent; tools: ToolDefinition[]; disposed: string[]; prompts: unknown[] } {
+type FollowupAdmission = "admit" | "claim-only" | "discard"
+type TurnEndKind = "completed" | "blocked" | "aborted" | "error"
+
+function makeAgent(onFollowup?: (message: unknown) => unknown, whenIdle: () => Promise<void> = async () => undefined, options: { followupAdmission?: FollowupAdmission } = {}): { agent: KeetBridgeAgent; tools: ToolDefinition[]; disposed: string[]; prompts: unknown[]; emitClaim: (message: unknown, turn: number, admitted?: boolean) => void; emitTurnEnd: (turn: number, reason?: TurnEndKind) => void; setFollowupAdmission: (admission: FollowupAdmission) => void } {
   const tools: ToolDefinition[] = []
   const disposed: string[] = []
   const prompts: unknown[] = []
+  const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
+  const session = { id: "session" }
+  const openTurns = new Set<number>()
+  let nextTurn = 0
+  let followupAdmission = options.followupAdmission ?? "admit"
+  const emit = (name: string, ...args: unknown[]): void => {
+    for (const listener of [...listeners.get(name) ?? []]) listener(...args)
+  }
+  const emitClaim = (message: unknown, turn: number, admitted = true): void => {
+    openTurns.add(turn)
+    emit("agent/inbox/claimed", { agent, message, turn })
+    if (admitted) emit("session/event", session, { type: "user/message", data: message })
+  }
+  const emitTurnEnd = (turn: number, reason: TurnEndKind = "completed"): void => {
+    openTurns.delete(turn)
+    emit("session/event", session, { type: "turn/end", data: { turn, reason: { kind: reason } } })
+  }
   const agent: KeetBridgeAgent = {
     id: "session" as never,
-    followup: async (message) => { prompts.push(message); return onFollowup?.(message) },
-    whenIdle,
+    followup: async (message) => {
+      prompts.push(message)
+      if (followupAdmission === "admit") emitClaim(message, ++nextTurn)
+      else if (followupAdmission === "claim-only") emitClaim(message, ++nextTurn, false)
+      else if (followupAdmission === "discard") emit("agent/inbox/discarded", { agent, message })
+      return onFollowup?.(message)
+    },
+    whenIdle: async () => {
+      let reason: TurnEndKind = "completed"
+      try { await whenIdle() } catch (error) { reason = "error"; throw error }
+      finally { for (const turn of [...openTurns]) emitTurnEnd(turn, reason) }
+    },
     ctx: {
       tools: { register: (tool: ToolDefinition) => { tools.push(tool); return () => disposed.push(tool.name) } },
       systemPrompt: { section: (section: { name: string }) => { disposed.push(section.name); return () => disposed.push(`policy:${section.name}`) } },
+      on: (name: string, listener: (...args: unknown[]) => void) => {
+        const registered = listeners.get(name) ?? new Set<(...args: unknown[]) => void>()
+        registered.add(listener)
+        listeners.set(name, registered)
+        return () => { registered.delete(listener); return true }
+      },
     } as never,
   }
-  return { agent, tools, disposed, prompts }
+  return { agent, tools, disposed, prompts, emitClaim, emitTurnEnd, setFollowupAdmission: (admission) => { followupAdmission = admission } }
 }
 
 async function flushBridge(): Promise<void> {
@@ -233,6 +270,253 @@ describe("Keet bridge", () => {
     await bridge.stop()
   })
 
+  it("keeps the exact trigger target through followup and idle while allowing a text send with reaction", async () => {
+    let deliver!: (message: KeetMessage) => void
+    let bridge!: KeetBridge
+    let releaseIdle!: () => void
+    const idle = new Promise<void>((resolve) => { releaseIdle = resolve })
+    const reactionCalls: unknown[][] = []
+    const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+    core.addReaction = async (...args) => { reactionCalls.push(args as unknown[]) }
+    const fixture = makeAgent(async (prompt) => {
+      expect(bridge.activeReactionTarget).toEqual({ groupId: settings.groupId, messageId: { deviceId: "device-human", seq: 2 } })
+      const send = fixture.tools.find((tool) => tool.name === "keet_send_message")!
+      await expect(send.execute({ groupName: "Test group", text: "also sending text", reaction: "👍🏽" }, undefined as never)).resolves.toEqual({ sent: true, reacted: true })
+      void prompt
+    }, () => idle)
+    bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+    deliver(message(2, "please react and answer", { mentions: ["bot"] }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(reactionCalls).toEqual([[settings.groupId, { deviceId: "device-human", seq: 2 }, "👍🏽", expect.anything()]])
+    expect(bridge.activeReactionTarget).toEqual({ groupId: settings.groupId, messageId: { deviceId: "device-human", seq: 2 } })
+    releaseIdle()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(bridge.activeReactionTarget).toBeUndefined()
+    await bridge.stop()
+  })
+
+  it("clears the active reaction target after failed work and terminal teardown before any later Core mutation", async () => {
+    const assertReactionUnavailable = async (fixture: ReturnType<typeof makeAgent>, core: ReturnType<typeof fakeCore>, reactionCalls: unknown[][]): Promise<void> => {
+      const send = fixture.tools.find((tool) => tool.name === "keet_send_message")!
+      await expect(send.execute({ groupName: "Test group", text: "must not send", reaction: "👍" }, undefined as never)).rejects.toThrow(/unavailable|not ready|lost readiness/)
+      expect(core.sent).toHaveLength(0)
+      expect(reactionCalls).toHaveLength(0)
+    }
+
+    let deliverRejected!: (message: KeetMessage) => void
+    const rejectedCalls: unknown[][] = []
+    const rejectedCore = fakeCore({ onWatch: (handler) => { deliverRejected = handler } })
+    rejectedCore.addReaction = async (...args) => { rejectedCalls.push(args as unknown[]) }
+    const rejectedFixture = makeAgent(() => Promise.reject(new Error("followup failed")))
+    const rejectedBridge = new KeetBridge(deps(rejectedCore, rejectedFixture.agent))
+    await rejectedBridge.start()
+    deliverRejected(message(10, "reject this turn", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(rejectedBridge.activeReactionTarget).toBeUndefined()
+    await assertReactionUnavailable(rejectedFixture, rejectedCore, rejectedCalls)
+    await rejectedBridge.stop()
+
+    let deliverIdleFailure!: (message: KeetMessage) => void
+    const idleFailureCalls: unknown[][] = []
+    const idleFailureCore = fakeCore({ onWatch: (handler) => { deliverIdleFailure = handler } })
+    idleFailureCore.addReaction = async (...args) => { idleFailureCalls.push(args as unknown[]) }
+    const idleFailureFixture = makeAgent(undefined, async () => { throw new Error("idle failed") })
+    const idleFailureBridge = new KeetBridge(deps(idleFailureCore, idleFailureFixture.agent))
+    await idleFailureBridge.start()
+    deliverIdleFailure(message(11, "idle failure", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(idleFailureBridge.activeReactionTarget).toBeUndefined()
+    await assertReactionUnavailable(idleFailureFixture, idleFailureCore, idleFailureCalls)
+    await idleFailureBridge.stop()
+
+    let deliverStopped!: (message: KeetMessage) => void
+    let releaseStopped!: () => void
+    const stoppedFollowup = new Promise<void>((resolve) => { releaseStopped = resolve })
+    const stoppedCalls: unknown[][] = []
+    const stoppedCore = fakeCore({ onWatch: (handler) => { deliverStopped = handler } })
+    stoppedCore.addReaction = async (...args) => { stoppedCalls.push(args as unknown[]) }
+    const stoppedFixture = makeAgent(() => stoppedFollowup)
+    const stoppedBridge = new KeetBridge(deps(stoppedCore, stoppedFixture.agent))
+    await stoppedBridge.start()
+    deliverStopped(message(12, "stop during work", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(stoppedBridge.activeReactionTarget).toEqual({ groupId: settings.groupId, messageId: { deviceId: "device-human", seq: 12 } })
+    await stoppedBridge.stop()
+    expect(stoppedBridge.activeReactionTarget).toBeUndefined()
+    await assertReactionUnavailable(stoppedFixture, stoppedCore, stoppedCalls)
+    releaseStopped()
+    await flushBridge()
+    expect(stoppedCalls).toHaveLength(0)
+
+    let deliverConnectionLoss!: (message: KeetMessage) => void
+    let terminateConnection!: () => void
+    let releaseConnection!: () => void
+    const connectionFollowup = new Promise<void>((resolve) => { releaseConnection = resolve })
+    const connectionCalls: unknown[][] = []
+    const connectionCore = fakeCore({
+      onWatch: (handler) => { deliverConnectionLoss = handler },
+      onSubscription: (terminate) => { terminateConnection = terminate },
+    })
+    connectionCore.addReaction = async (...args) => { connectionCalls.push(args as unknown[]) }
+    const connectionFixture = makeAgent(() => connectionFollowup)
+    const connectionBridge = new KeetBridge(deps(connectionCore, connectionFixture.agent))
+    await connectionBridge.start()
+    deliverConnectionLoss(message(13, "connection loss", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(connectionBridge.activeReactionTarget).toEqual({ groupId: settings.groupId, messageId: { deviceId: "device-human", seq: 13 } })
+    terminateConnection()
+    await flushBridge()
+    expect(connectionBridge.readiness).toMatchObject({ state: "failed", detail: "connection-failed" })
+    expect(connectionBridge.activeReactionTarget).toBeUndefined()
+    await assertReactionUnavailable(connectionFixture, connectionCore, connectionCalls)
+    releaseConnection()
+    await flushBridge()
+    expect(connectionCalls).toHaveLength(0)
+    await connectionBridge.stop()
+  })
+
+  it("keeps reaction summaries pending across rejected and cancelled pre-admission follow-ups", async () => {
+    const cases: readonly { name: string; admission: FollowupAdmission }[] = [
+      { name: "rejected", admission: "claim-only" },
+      { name: "cancelled", admission: "discard" },
+    ]
+    for (const testCase of cases) {
+      let deliver!: (message: KeetMessage) => void
+      let followups = 0
+      let currentReactions: NonNullable<KeetMessage["reactions"]> = [{ emoji: "👍", count: 1, own: false }]
+      const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+      core.readRecentMessages = async (groupId) => [{ ...message(1, "integration response", { groupId, messageId: { deviceId: "device-bot", seq: 1 }, senderId: "bot", senderLabel: "Keet Bot", reactions: currentReactions }) }]
+      let fixture!: ReturnType<typeof makeAgent>
+      fixture = makeAgent(() => {
+        followups += 1
+        return undefined
+      }, async () => { if (testCase.admission === "claim-only" && followups === 1) fixture.emitTurnEnd(1, "blocked") }, { followupAdmission: testCase.admission })
+      const bridge = new KeetBridge(deps(core, fixture.agent))
+      await bridge.start()
+      deliver(message(20, `${testCase.name} first`, { mentions: ["bot"] }))
+      await flushBridge()
+      expect(bridge.activeReactionTarget, testCase.name).toBeUndefined()
+      expect(fixture.prompts, testCase.name).toHaveLength(1)
+
+      fixture.setFollowupAdmission("admit")
+      deliver(message(21, `${testCase.name} retry`, { mentions: ["bot"] }))
+      await flushBridge()
+      expect(fixture.prompts, testCase.name).toHaveLength(2)
+      expect((fixture.prompts[1] as any).content[0].text, testCase.name).toContain('emoji="👍" count="1"')
+      currentReactions = []
+      await bridge.stop()
+    }
+  })
+
+  it("clears target authorization at the Keet turn boundary before later non-Keet work", async () => {
+    let deliver!: (message: KeetMessage) => void
+    let releaseNonKeet!: () => void
+    const nonKeetWork = new Promise<void>((resolve) => { releaseNonKeet = resolve })
+    const reactionCalls: unknown[][] = []
+    const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+    core.addReaction = async (...args) => { reactionCalls.push(args as unknown[]) }
+    let bridge!: KeetBridge
+    let targetDuringKeet: KeetBridge["activeReactionTarget"]
+    let targetDuringNonKeet: KeetBridge["activeReactionTarget"]
+    let reactionRejected = false
+    const fixture = makeAgent(async () => {
+      targetDuringKeet = bridge.activeReactionTarget
+    }, async () => {
+      fixture.emitTurnEnd(1, "aborted")
+      fixture.emitClaim({ id: "non-keet-work" }, 2)
+      targetDuringNonKeet = bridge.activeReactionTarget
+      const send = fixture.tools.find((tool) => tool.name === "keet_send_message")!
+      try { await send.execute({ groupName: "Test group", text: "must not send", reaction: "👍" }, undefined as never) } catch { reactionRejected = true }
+      await nonKeetWork
+    })
+    bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+    deliver(message(22, "boundary trigger", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(targetDuringKeet).toEqual({ groupId: settings.groupId, messageId: { deviceId: "device-human", seq: 22 } })
+    expect(targetDuringNonKeet).toBeUndefined()
+    expect(reactionRejected).toBe(true)
+    expect(reactionCalls).toHaveLength(0)
+    releaseNonKeet()
+    await flushBridge()
+    expect(bridge.activeReactionTarget).toBeUndefined()
+    await bridge.stop()
+  })
+
+  it("keeps human reaction changes silent, delivers changed aggregate context once, and permits removal and re-addition", async () => {
+    let deliver!: (message: KeetMessage) => void
+    let currentReactions: KeetMessage["reactions"] = []
+    const authored = (): KeetMessage => ({ ...message(1, "integration-authored", { messageId: { deviceId: "device-bot", seq: 1 }, senderId: "bot", senderLabel: "Keet Bot", ...(currentReactions ? { reactions: currentReactions } : {}) }) })
+    const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+    core.addReaction = async () => undefined
+    core.readRecentMessages = async (groupId) => [{ ...authored(), groupId }]
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+
+    currentReactions = [{ emoji: ":heart:", count: 2, own: false }]
+    // A reaction-only state change has no subscription message and must not
+    // wake the Agent.
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(0)
+    deliver(message(2, "first trigger", { mentions: ["bot"] }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const firstPrompt = (fixture.prompts[0] as any).content[0].text as string
+    expect(firstPrompt).toContain('emoji=":heart:" count="2"')
+    expect(firstPrompt).toContain("integration-authored")
+    expect(firstPrompt).not.toContain("device-bot")
+
+    deliver(message(3, "unchanged trigger", { mentions: ["bot"] }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect((fixture.prompts[1] as any).content[0].text).not.toContain("reaction context")
+
+    currentReactions = []
+    deliver(message(4, "removal trigger", { mentions: ["bot"] }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect((fixture.prompts[2] as any).content[0].text).not.toContain("reaction context")
+
+    currentReactions = [{ emoji: ":heart:", count: 2, own: false }]
+    deliver(message(5, "re-add trigger", { mentions: ["bot"] }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect((fixture.prompts[3] as any).content[0].text).toContain('emoji=":heart:" count="2"')
+    await bridge.stop()
+  })
+
+  it("isolates reaction context per destination and keeps an unavailable refresh from suppressing text", async () => {
+    const handlers = new Map<string, (message: KeetMessage) => void>()
+    const core = fakeCore({ dm: true, onWatch: (handler, groupId) => { handlers.set(groupId, handler) } })
+    core.addReaction = async () => undefined
+    core.readRecentMessages = async (groupId) => groupId === settings.groupId
+      ? [{ ...message(1, "group response", { groupId, messageId: { deviceId: "device-bot", seq: 1 }, senderId: "bot", senderLabel: "Keet Bot", reactions: [{ emoji: "✅", count: 1, own: false }] }) }]
+      : [{ ...dmMessage(1, "dm response", { messageId: { deviceId: "device-bot", seq: 2 }, senderId: "bot", senderLabel: "Keet Bot", reactions: [{ emoji: "💬", count: 1, own: false }] }) }]
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent, {}, { ...settings, dmMemberId: "peer" }))
+    await bridge.start()
+    handlers.get(settings.groupId)!(message(2, "group trigger", { mentions: ["bot"] }))
+    handlers.get(dmGroupId)!(dmMessage(2, "dm trigger"))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    const prompts = fixture.prompts.map((prompt) => (prompt as any).content[0].text as string)
+    expect(prompts).toHaveLength(2)
+    expect(prompts.find((prompt) => prompt.includes("group trigger"))).toContain('emoji="✅" count="1"')
+    expect(prompts.find((prompt) => prompt.includes("group trigger"))).not.toContain('emoji="💬"')
+    expect(prompts.find((prompt) => prompt.includes("dm trigger"))).toContain('emoji="💬" count="1"')
+    expect(prompts.find((prompt) => prompt.includes("dm trigger"))).not.toContain('emoji="✅"')
+    await bridge.stop()
+
+    let reads = 0
+    const failingCore = fakeCore({ onWatch: (handler) => { handlers.set("failing", handler) } })
+    failingCore.addReaction = async () => undefined
+    failingCore.readRecentMessages = async () => { reads += 1; if (reads > 1) throw new Error("history unavailable"); return [] }
+    const failingFixture = makeAgent()
+    const failingBridge = new KeetBridge(deps(failingCore, failingFixture.agent))
+    await failingBridge.start()
+    handlers.get("failing")!(message(6, "still deliver", { mentions: ["bot"] }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(JSON.stringify(failingFixture.prompts[0])).toContain("still deliver")
+    await failingBridge.stop()
+  })
+
   it("snapshots a named destination, routes sends through its internal group ID, and keeps native reply ownership", async () => {
     let deliver!: (message: KeetMessage) => void
     const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
@@ -313,7 +597,7 @@ describe("Keet bridge", () => {
 
     deliver(message(51, "recovered follow-up", { replyTo: recovered.messageId }))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(reads).toBe(2)
+    expect(reads).toBe(3)
     expect(fixture.prompts).toHaveLength(1)
 
     deliver(message(52, "reply to another participant", { replyTo: { deviceId: "device-other", seq: 9 } }))

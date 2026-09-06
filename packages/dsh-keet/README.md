@@ -37,8 +37,15 @@ ordinary external DM text opens one serialized Agent turn. Group prompts retain
 canonical message IDs and reply provenance while identifying the source with its
 startup `groupName`; DM prompts identify the source and sender label but omit
 message IDs and reply relations. Sender IDs never enter Agent prompts.
-Integration-authored messages and snapshot/history records never trigger. The
-Agent's final text is not sent automatically.
+Integration-authored messages and snapshot/history records never trigger. Human
+reactions to an Integration-authored message are silent; changed aggregate
+reactions may be included once as bounded, untrusted context on the next
+ordinary trigger for that same destination. Keet picker/custom wire tokens that
+match the bounded lowercase/digit/_+- grammar use colon-wrapped native names
+such as `:heart:` in that context, while literal Unicode reactions remain
+unchanged. Whitespace, unsafe punctuation, and arbitrary prose are omitted;
+the grammar is forward-compatible display normalization, not an authenticity
+assertion. The Agent's final text is not sent automatically.
 
 At the start of active Managed DM work, the bridge marks the triggering chat
 index plus one as read and publishes native typing activity. Typing refreshes
@@ -66,11 +73,21 @@ Call `keet_list_groups` first. The other three tools require an exact returned
 - `keet_read_recent_messages` — 1–50 chronological ordinary text records;
   regular-group records retain canonical message IDs and optional reply targets,
   while DM records omit all message/reply IDs;
-- `keet_send_message` — explicit bounded text delivery returning only
-  `{ sent: true }`. Regular groups accept an exact `{ deviceId, seq }` reply
-  target; DM sends are ordinary text and reject `replyTo`. After a successful
-  send in the current turn, the injected Agent policy requires the final DSH
-  response to be exactly `✓`; without a successful send, it responds normally.
+- `keet_send_message` — explicit bounded text delivery. Regular groups accept
+  an exact `{ deviceId, seq }` reply target; DM sends are ordinary text and
+  reject `replyTo`. An optional `reaction` is one bounded Unicode emoji applied
+  only to the exact message that triggered the active ordinary Keet turn. Text
+  is sent first and the reaction is best-effort: text-only success returns
+  `{ sent: true }`, while a requested reaction returns
+  `{ sent: true, reacted: true|false }`. A failed reaction never retries or
+  turns a confirmed text send into a tool error.
+
+After any confirmed `keet_send_message` text delivery, the injected Agent
+policy requires the final DSH response to be exactly `✓`, whether or not its
+optional reaction was confirmed; otherwise it responds normally. Outbound
+reactions accept Unicode emoji only. Bounded Keet wire-shortcode values such as
+`heart` and `+1` appear only as colon-wrapped inbound context labels such as
+`:heart:` and `:+1:`.
 
 Names are captured when DSH starts after trimming bounded titles and replacing
 line separators with spaces. A missing title uses the bounded fallback name.

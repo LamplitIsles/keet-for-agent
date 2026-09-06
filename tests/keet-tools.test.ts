@@ -21,6 +21,7 @@ function fakeCore(overrides: Partial<KeetCore> = {}): KeetCore {
     watchMessages: () => ({ closed: false, close: async () => undefined }),
     setUnreadAnchor: async () => undefined,
     updateTypingIndicator: async () => undefined,
+    addReaction: async () => undefined,
     sendMessage: async () => ({ deviceId: "device-b", seq: 9 }),
     inspectInvitation: async () => ({ isRoomInvitation: true }),
     joinInvitation: async () => ({ groupId }),
@@ -125,6 +126,17 @@ describe("Managed Destination Keet tools", () => {
     expect(calls).toHaveLength(1)
     expect(await tools[3]!.execute({ groupName: dmName, text: "private response" }, exec())).toEqual({ sent: true })
     expect(calls.at(-1)).toEqual([dmId, "private response", undefined, expect.anything()])
+
+    const reactionCalls: unknown[][] = []
+    const reactionCore = fakeCore({
+      sendMessage: async (...args) => { reactionCalls.push(["text", ...args]); return target },
+      addReaction: async (...args) => { reactionCalls.push(["reaction", ...args]) },
+    })
+    const reactionSend = createKeetToolDefinitions({ getCore: () => reactionCore, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId: dmId, messageId: target }) })[3]!
+    await expect(reactionSend.execute({ groupName: dmName, text: "private decorated", reaction: "💬" }, exec())).resolves.toEqual({ sent: true, reacted: true })
+    expect(reactionCalls.map(([kind]) => kind)).toEqual(["text", "reaction"])
+    expect(reactionCalls[0]).toEqual(["text", dmId, "private decorated", undefined, expect.anything()])
+    expect(reactionCalls[1]).toEqual(["reaction", dmId, target, "💬", expect.anything()])
   })
 
   it("does not turn missing display labels into model-visible identity IDs", async () => {
@@ -149,5 +161,93 @@ describe("Managed Destination Keet tools", () => {
     const controller = new AbortController(); controller.abort()
     await expect(definitions(core)[3]!.execute({ groupName, text: "nope" }, exec(controller.signal))).rejects.toThrow("cancelled")
     expect(invoked).toBe(0)
+  })
+
+  it("sends text before an optional reaction and keeps IDs out of the result", async () => {
+    const calls: unknown[][] = []
+    const core = fakeCore({
+      sendMessage: async (...args) => { calls.push(["text", ...args]); return target },
+      addReaction: async (...args) => { calls.push(["reaction", ...args]) },
+    })
+    const tools = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId, messageId: target }) })
+    const send = tools.find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    expect(JSON.stringify(send.parameters)).not.toContain("messageId")
+    await expect(send.execute({ groupName: ` ${groupName} `, text: "written reply", reaction: "👍🏽" }, exec())).resolves.toEqual({ sent: true, reacted: true })
+    expect(calls.map(([kind]) => kind)).toEqual(["text", "reaction"])
+    expect(calls[1]).toEqual(["reaction", groupId, target, "👍🏽", expect.anything()])
+    const rendered = send.output.render({}, { sent: true, reacted: true } as never)
+    expect((rendered[0] as { type: "text"; text: string }).text).not.toContain("device-a")
+    expect((rendered[0] as { type: "text"; text: string }).text).toContain("reaction")
+  })
+
+  it("fails optional-reaction preconditions before sending text", async () => {
+    let sent = 0
+    let reacted = 0
+    const core = fakeCore({ sendMessage: async () => { sent += 1; return target }, addReaction: async () => { reacted += 1 } })
+    const sendUnavailable = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, getActiveReactionTarget: () => undefined }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    await expect(sendUnavailable.execute({ groupName, text: "must not send", reaction: "👍" }, exec())).rejects.toThrow("unavailable outside")
+    const sendDifferent = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId: "other", messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    await expect(sendDifferent.execute({ groupName, text: "must not send", reaction: "👍" }, exec())).rejects.toThrow("different")
+    const sendDuplicate = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "first", kind: "group", groupName }, { groupId: "second", kind: "dm", groupName }], isReady: () => true, getActiveReactionTarget: () => ({ groupId: "first", messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    await expect(sendDuplicate.execute({ groupName, text: "must not send", reaction: "👍" }, exec())).rejects.toThrow("no message was sent")
+    await expect(sendUnavailable.execute({ groupName, text: "must not send", reaction: "not emoji" }, exec())).rejects.toThrow("exactly one Unicode emoji")
+    const controller = new AbortController(); controller.abort()
+    await expect(sendUnavailable.execute({ groupName, text: "must not send", reaction: "👍" }, exec(controller.signal))).rejects.toThrow("cancelled")
+    expect(sent).toBe(0)
+    expect(reacted).toBe(0)
+  })
+
+  it("returns truthful partial delivery when the optional reaction fails without retrying", async () => {
+    const calls: string[] = []
+    const core = fakeCore({
+      sendMessage: async () => { calls.push("text"); return target },
+      addReaction: async () => { calls.push("reaction"); throw new Error("provider rejected reaction") },
+    })
+    const tools = createKeetToolDefinitions({ getCore: () => core, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId, messageId: target }) })
+    const send = tools.find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    await expect(send.execute({ groupName, text: "text survives", reaction: "👍" }, exec())).resolves.toEqual({ sent: true, reacted: false })
+    expect(calls).toEqual(["text", "reaction"])
+    await expect(send.execute({ groupName, text: "text only" }, exec())).resolves.toEqual({ sent: true })
+    expect(calls).toEqual(["text", "reaction", "text"])
+
+    const failedCalls: string[] = []
+    const failedCore = fakeCore({
+      sendMessage: async () => { failedCalls.push("text"); throw new Error("provider text failure") },
+      addReaction: async () => { failedCalls.push("reaction") },
+    })
+    const failedSend = createKeetToolDefinitions({ getCore: () => failedCore, destinations, isReady: () => true, getActiveReactionTarget: () => ({ groupId, messageId: target }) }).find((tool) => tool.name === KEET_SEND_MESSAGE)!
+    await expect(failedSend.execute({ groupName, text: "text fails", reaction: "👍" }, exec())).rejects.toThrow("not sent")
+    expect(failedCalls).toEqual(["text"])
+  })
+
+  it("treats Core send resolution as confirmation when readiness drops afterward", async () => {
+    let ready = true
+    let textSends = 0
+    let resolveText!: (messageId: KeetMessageId) => void
+    const textResult = new Promise<KeetMessageId>((resolve) => { resolveText = resolve })
+    const textCore = fakeCore({ sendMessage: async () => { textSends += 1; return textResult } })
+    const textSend = createKeetToolDefinitions({ getCore: () => textCore, destinations, isReady: () => ready })[3]!
+    const textExecution = textSend.execute({ groupName, text: "confirmed text" }, exec())
+    resolveText(target)
+    ready = false
+    await expect(textExecution).resolves.toEqual({ sent: true })
+    expect(textSends).toBe(1)
+
+    ready = true
+    textSends = 0
+    let reactionAttempts = 0
+    let resolveReactionText!: (messageId: KeetMessageId) => void
+    const reactionTextResult = new Promise<KeetMessageId>((resolve) => { resolveReactionText = resolve })
+    const reactionCore = fakeCore({
+      sendMessage: async () => { textSends += 1; return reactionTextResult },
+      addReaction: async () => { reactionAttempts += 1 },
+    })
+    const reactionSend = createKeetToolDefinitions({ getCore: () => reactionCore, destinations, isReady: () => ready, getActiveReactionTarget: () => ({ groupId, messageId: target }) })[3]!
+    const reactionExecution = reactionSend.execute({ groupName, text: "confirmed text with reaction", reaction: "👍" }, exec())
+    resolveReactionText(target)
+    ready = false
+    await expect(reactionExecution).resolves.toEqual({ sent: true, reacted: false })
+    expect(textSends).toBe(1)
+    expect(reactionAttempts).toBe(0)
   })
 })

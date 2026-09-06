@@ -69,6 +69,15 @@ rpc.register(139, {
     for await (const args of stream) void args
   },
 })
+// Representative native reaction mutation used by the fd-3 process contract.
+rpc.register(156, {
+  request: any,
+  response: any,
+  onrequest: ([roomId, messageId, emoji]) => {
+    if (roomId !== groupId || !messageId || typeof emoji !== "string") return { ok: false }
+    return { key: Buffer.alloc(32), length: 1 }
+  },
+})
 rpc.register(225, { request: any, response: any, onrequest: () => ({}) })
 
 let incoming = Buffer.alloc(0)

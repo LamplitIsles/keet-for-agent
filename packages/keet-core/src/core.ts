@@ -11,6 +11,7 @@ import {
   type KeetMember,
   type KeetMessage,
   type KeetMessageId,
+  type KeetReactionSummary,
   type KeetReadiness,
   type KeetSubscription,
   type ManagedGroup,
@@ -36,6 +37,17 @@ const DM_REQUEST_PENDING = 3
 // leave one safe integer available for that read length.
 const MAX_CHAT_INDEX = Number.MAX_SAFE_INTEGER - 1
 const MAX_CHAT_LENGTH = Number.MAX_SAFE_INTEGER
+const MAX_REACTIONS_PER_MESSAGE = 16
+const MAX_REACTION_GRAPHEME_CODE_POINTS = 64
+const MAX_REACTION_COUNT = 100_000
+// Safe bounded inbound Keet wire-shortcode grammar: picker/custom tokens start
+// with a lowercase letter or digit (then lowercase/digit/_+-), or use a
+// signed numeric form such as `+1`. This is forward-compatible display
+// normalization, not an authenticity assertion.
+const KEET_WIRE_SHORTCODE_PATTERN = /^(?:[a-z0-9][a-z0-9_+-]*|[+-][0-9]+)$/
+// RegExp's `v` flag keeps the accepted value tied to the runtime's anchored
+// RGI emoji property without requiring a maintained Unicode sequence table.
+const RGI_EMOJI_PATTERN = new RegExp("^\\p{RGI_Emoji}$", "v")
 
 type RawRecord = Record<string, unknown>
 
@@ -270,6 +282,16 @@ export class KeetIntegrationCore implements KeetCore {
     }
     messages.sort(compareMessages)
     return messages.slice(-last)
+  }
+
+  async addReaction(groupId: string, messageId: KeetMessageId, reaction: string, signal?: AbortSignal): Promise<void> {
+    const id = boundedId(groupId, "Managed Group ID")
+    const target = normalizeMessageId(messageId)
+    if (!target) throw publicError("reaction target is not a valid Keet message ID")
+    const emoji = validateKeetReaction(reaction)
+    ensureSignal(signal)
+    const result = await this.callWithSignal("addReaction", [id, target, emoji], signal)
+    validateReactionResult(result)
   }
 
   async setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void> {
@@ -613,6 +635,62 @@ function normalizeAvatarObservation(value: unknown): KeetMember["avatar"] | unde
   return { present: true }
 }
 
+/**
+ * Validate the one native reaction grammar shared by every Core caller. The
+ * runtime's RGI emoji property is the authority for complete emoji sequences;
+ * the small bound prevents pathological input before the property check.
+ */
+export function validateKeetReaction(value: string): string {
+  if (typeof value !== "string" || !value || value.trim() !== value) throw publicError("reaction must be exactly one Unicode emoji")
+  const codePoints = Array.from(value)
+  if (codePoints.length === 0 || codePoints.length > MAX_REACTION_GRAPHEME_CODE_POINTS || Buffer.byteLength(value, "utf8") > MAX_REACTION_GRAPHEME_CODE_POINTS * 4) {
+    throw publicError("reaction must be exactly one bounded Unicode emoji")
+  }
+  if (!RGI_EMOJI_PATTERN.test(value)) throw publicError("reaction must be exactly one Unicode emoji")
+  return value
+}
+
+function normalizeInboundReaction(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value || value.trim() !== value) return undefined
+  try { return validateKeetReaction(value) } catch {
+    // Keet wire values may be picker/custom tokens. The bounded grammar is a
+    // forward-compatible display boundary, not an authenticity assertion.
+  }
+  if (Array.from(value).length > MAX_REACTION_GRAPHEME_CODE_POINTS || Buffer.byteLength(value, "utf8") > MAX_REACTION_GRAPHEME_CODE_POINTS * 4 || !KEET_WIRE_SHORTCODE_PATTERN.test(value)) return undefined
+  return `:${value}:`
+}
+
+function normalizeReactionSummaries(value: RawRecord): readonly KeetReactionSummary[] | undefined {
+  if (!Object.prototype.hasOwnProperty.call(value, "reactions")) return undefined
+  const reactions = isRecord(value.reactions) ? value.reactions : undefined
+  const digest = reactions && isRecord(reactions.digest) ? reactions.digest : undefined
+  const entries = digest && Array.isArray(digest.reactions) ? digest.reactions : []
+  const mine = new Set<string>()
+  if (reactions && Array.isArray(reactions.mine)) {
+    for (const value of reactions.mine.slice(0, MAX_REACTIONS_PER_MESSAGE * 8)) {
+      const reaction = normalizeInboundReaction(value)
+      if (reaction) mine.add(reaction)
+      if (mine.size >= MAX_REACTIONS_PER_MESSAGE) break
+    }
+  }
+  const aggregate = new Map<string, KeetReactionSummary>()
+  for (const entry of entries.slice(0, MAX_REACTIONS_PER_MESSAGE * 8)) {
+    if (!isRecord(entry) || typeof entry.text !== "string") continue
+    const count = entry.count
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > MAX_REACTION_COUNT) continue
+    const emoji = normalizeInboundReaction(entry.text)
+    if (!emoji) continue
+    const prior = aggregate.get(emoji)
+    if (!prior) aggregate.set(emoji, { emoji, count, own: mine.has(emoji) })
+    else aggregate.set(emoji, { emoji, count: Math.min(MAX_REACTION_COUNT, prior.count + count), own: prior.own || mine.has(emoji) })
+  }
+  if (!aggregate.size) return []
+  return Object.freeze([...aggregate.values()]
+    .sort((left, right) => left.emoji < right.emoji ? -1 : left.emoji > right.emoji ? 1 : 0)
+    .slice(0, MAX_REACTIONS_PER_MESSAGE)
+    .map((reaction) => Object.freeze(reaction)))
+}
+
 function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefined {
   if (!isRecord(value)) return undefined
   const nestedMessage = isRecord(value.message) ? value.message : undefined
@@ -667,6 +745,7 @@ function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefi
         : Array.isArray(nestedMessage?.mentions)
           ? normalizeMentions(nestedMessage.mentions)
           : undefined
+  const reactions = normalizeReactionSummaries(value)
   return {
     messageId,
     groupId,
@@ -677,6 +756,7 @@ function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefi
     ...(chatIndex !== undefined ? { chatIndex } : {}),
     ...(mentions && mentions.length > 0 ? { mentions } : {}),
     ...(replyTo ? { replyTo } : {}),
+    ...(reactions ? { reactions } : {}),
   }
 }
 
@@ -697,8 +777,8 @@ function normalizeMessageId(value: unknown): KeetMessageId | undefined {
   if (!isRecord(value)) return undefined
   const deviceId = firstString(value.deviceId, value.device, value.writerId, value.senderId, value.memberId)
   const seq = firstNumber(value.seq, value.sequence, value.index)
-  if (!deviceId || seq === undefined || !Number.isSafeInteger(seq) || seq < 0) return undefined
-  return { deviceId: deviceId.slice(0, MAX_MEMBER_ID), seq }
+  if (!deviceId || deviceId.length > MAX_MEMBER_ID || seq === undefined || !Number.isSafeInteger(seq) || seq < 0) return undefined
+  return { deviceId, seq }
 }
 
 function normalizeChatIndex(value: unknown): number | undefined {
@@ -743,6 +823,18 @@ function validateVoidResult(value: unknown, operation: string): void {
   if (value === undefined || value === null) return
   if (!isRecord(value) || Array.isArray(value) || Object.keys(value).length > 0) {
     throw publicError(`Keet returned an invalid ${operation} result`)
+  }
+}
+
+function validateReactionResult(value: unknown): void {
+  // Pinned Keet 4.21.5 API v1 `_addReaction` delegates to room.dispatch(),
+  // whose successful dispatch result is exactly `{ key, length }`. RPC 156 is
+  // registered with tiny-buffer-rpc/any, so failed/no-op dispatches arrive as
+  // undefined or null and must not be treated as confirmed mutations.
+  const key = isRecord(value) ? value.key : undefined
+  const length = isRecord(value) ? value.length : undefined
+  if (!isRecord(value) || Array.isArray(value) || Object.keys(value).length !== 2 || !Object.prototype.hasOwnProperty.call(value, "key") || !Object.prototype.hasOwnProperty.call(value, "length") || !Buffer.isBuffer(key) || key.byteLength !== 32 || typeof length !== "number" || !Number.isSafeInteger(length) || length < 1) {
+    throw publicError("Keet returned an invalid reaction result")
   }
 }
 

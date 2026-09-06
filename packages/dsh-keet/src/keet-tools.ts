@@ -1,7 +1,8 @@
 import { defineTool, type ToolDefinition, type ToolRunContext } from "@deepseek-ai/dsh-tools"
+import { validateKeetReaction } from "@lamplitisles/keet-integration-core"
 import type { KeetCore, KeetMessage, KeetMessageId } from "./core-contract.js"
 import { MAX_GROUP_MEMBERS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES } from "./constants.js"
-import { boundedMembers, renderKeetMessage } from "./keet-protocol.js"
+import { boundedMembers, renderKeetMessage, sameMessageId } from "./keet-protocol.js"
 
 export const KEET_LIST_GROUPS = "keet_list_groups" as const
 export const KEET_LIST_MEMBERS = "keet_list_members" as const
@@ -21,6 +22,11 @@ export interface ManagedDestination {
 export interface ManagedDestinationSummary {
   readonly groupName: string
   readonly kind: ManagedDestinationKind
+}
+
+export interface ActiveReactionTarget {
+  readonly groupId: string
+  readonly messageId: KeetMessageId
 }
 
 export interface KeetMemberResult {
@@ -48,12 +54,14 @@ export interface KeetToolDependencies {
   isReady: () => boolean
   /** Bridge-owned receipt hook used to recognize later native replies. */
   onDestinationMessageSent?: (groupId: string, messageId: KeetMessageId | undefined) => void
+  /** Current Keet-trigger target for an optional send reaction; absent for non-Keet work and /compact. */
+  getActiveReactionTarget?: () => ActiveReactionTarget | undefined
 }
 
 export interface KeetListGroupsResult { groups: ManagedDestinationSummary[] }
 export interface KeetListMembersResult { members: KeetMemberResult[] }
 export interface KeetReadRecentMessagesResult { messages: Array<KeetGroupMessageResult | KeetDmMessageResult> }
-export interface KeetSendMessageResult { sent: true }
+export interface KeetSendMessageResult { sent: true; reacted?: boolean }
 
 const EMPTY_SIGNAL = new AbortController().signal
 const UNKNOWN_SENDER = "Unknown sender"
@@ -66,6 +74,7 @@ function operationError(error: unknown, fallback: string): Error {
   if (/^reply target (?:was not found|is not a valid)/.test(message)) return safeError(message)
   if (/^reply targets are not supported/.test(message)) return safeError("DM sends do not support replyTo.")
   if (/^message text must be non-empty/.test(message)) return safeError(message)
+  if (/^reaction (?:must|target)|^Keet reaction|duplicate reaction|already reacted/i.test(message)) return safeError(message)
   return safeError(fallback)
 }
 function renderText(value: string): { type: "text"; text: string }[] { return [{ type: "text", text: value.slice(0, MAX_PROMPT_CHARS) }] }
@@ -181,24 +190,61 @@ async function readMessages(deps: KeetToolDependencies, args: unknown, signal: A
   }
 }
 
+function readyOf(deps: KeetToolDependencies): boolean {
+  try { return deps.isReady() }
+  catch { return false }
+}
+
+function activeTargetOf(deps: KeetToolDependencies): ActiveReactionTarget | undefined {
+  try { return deps.getActiveReactionTarget?.() }
+  catch { return undefined }
+}
+
 async function sendMessage(deps: KeetToolDependencies, args: unknown, signal: AbortSignal): Promise<KeetSendMessageResult> {
   if (signal.aborted) throw cancelled(signal)
-  const record = args && typeof args === "object" ? args as { groupName?: unknown; text?: unknown; replyTo?: unknown } : {}
+  const record = args && typeof args === "object" ? args as { groupName?: unknown; text?: unknown; replyTo?: unknown; reaction?: unknown } : {}
   const destination = destinationOf(deps, record.groupName, "send")
   if (!validBody(record.text)) throw safeError("text must be non-empty and at most 16,000 characters.")
   if (destination.kind === "dm" && record.replyTo !== undefined) throw safeError("DM sends do not support replyTo.")
   if (record.replyTo !== undefined && !validMessageId(record.replyTo)) throw safeError("replyTo must be a canonical Keet message ID.")
+  const reactionRequested = record.reaction !== undefined
+  let reaction: string | undefined
+  let target: ActiveReactionTarget | undefined
+  if (reactionRequested) {
+    if (typeof record.reaction !== "string") throw safeError("reaction must be one Unicode emoji.")
+    try { reaction = validateKeetReaction(record.reaction) }
+    catch (error) { throw operationError(error, "reaction must be one Unicode emoji.") }
+    target = activeTargetOf(deps)
+    if (!target) throw safeError("reaction target is unavailable outside an active Keet turn.")
+    if (target.groupId !== destination.groupId) throw safeError("reaction target belongs to a different Managed Destination.")
+    if (!validMessageId(target.messageId)) throw safeError("reaction target is unavailable outside an active Keet turn.")
+  }
   const core = ensureReady(deps)
+  let messageId: KeetMessageId | undefined
   try {
-    const messageId = await core.sendMessage(destination.groupId, record.text, destination.kind === "group" ? record.replyTo as KeetMessageId | undefined : undefined, signal)
-    if (signal.aborted) throw cancelled(signal)
-    if (!deps.isReady()) throw new Error("Keet bridge lost readiness; delivery could not be confirmed.")
+    messageId = await core.sendMessage(destination.groupId, record.text, destination.kind === "group" ? record.replyTo as KeetMessageId | undefined : undefined, signal)
     try { deps.onDestinationMessageSent?.(destination.groupId, messageId) } catch { /* receipt bookkeeping never changes delivery */ }
-    return { sent: true }
   } catch (error) {
     if (signal.aborted) throw cancelled(signal)
     if (error instanceof Error && error.message.startsWith("Keet bridge")) throw error
     throw operationError(error, "Keet message was not sent.")
+  }
+  if (!reactionRequested) return { sent: true }
+
+  // The text mutation is already confirmed. The reaction is a one-shot,
+  // best-effort decoration and can never turn that confirmed send into an
+  // error or trigger a retry. Re-read the bridge-owned target so a settled
+  // turn, cancellation, or a newer destination cannot authorize a stale
+  // mutation.
+  if (signal.aborted || !readyOf(deps)) return { sent: true, reacted: false }
+  const active = activeTargetOf(deps)
+  if (!active || active.groupId !== target!.groupId || !validMessageId(active.messageId) || !sameMessageId(active.messageId, target!.messageId)) return { sent: true, reacted: false }
+  try {
+    await core.addReaction(destination.groupId, target!.messageId, reaction!, signal)
+    if (signal.aborted || !readyOf(deps)) return { sent: true, reacted: false }
+    return { sent: true, reacted: true }
+  } catch {
+    return { sent: true, reacted: false }
   }
 }
 
@@ -252,9 +298,9 @@ export function createKeetToolDefinitions(deps: KeetToolDependencies): readonly 
   })
   const send = defineTool({
     name: KEET_SEND_MESSAGE,
-    description: "Send one plain-text message to the selected Managed Destination by exact groupName. Regular groups may use an exact replyTo; Managed DM sends are ordinary text without reply anchors.",
-    parameters: { groupName: { type: "string", required: true, description: "An exact groupName returned by keet_list_groups." }, text: { type: "string", required: true, description: "Non-empty plain text, at most 16,000 characters." }, replyTo: { type: "object", description: "Optional exact message ID from regular-group history; not valid for a Managed DM.", additionalProperties: false, properties: { deviceId: { type: "string", required: true }, seq: { type: "integer", required: true } } } },
-    output: { schema: { type: "object", additionalProperties: false, properties: { sent: { type: "boolean", const: true, required: true } } }, render: (_args, value) => renderText(value.sent ? "Keet message sent." : "Keet message was not sent.") },
+    description: "Send one non-empty plain-text message to the selected Managed Destination by exact groupName. Regular groups may use an exact replyTo; Managed DM sends are ordinary text without reply anchors. An optional reaction is one bounded Unicode emoji applied only to the current Keet trigger after text delivery.",
+    parameters: { groupName: { type: "string", required: true, description: "An exact groupName returned by keet_list_groups." }, text: { type: "string", required: true, description: "Non-empty plain text, at most 16,000 characters." }, replyTo: { type: "object", description: "Optional exact message ID from regular-group history; not valid for a Managed DM.", additionalProperties: false, properties: { deviceId: { type: "string", required: true }, seq: { type: "integer", required: true } } }, reaction: { type: "string", description: "Optional one bounded Unicode emoji for the current Keet trigger; picker shortcodes are not accepted." } },
+    output: { schema: { type: "object", additionalProperties: false, properties: { sent: { type: "boolean", const: true, required: true }, reacted: { type: "boolean", description: "Present only when a reaction was requested; false means text was sent but the decoration was not confirmed." } } }, render: (_args, value) => renderText(value.sent ? value.reacted === undefined ? "Keet message sent." : value.reacted ? "Keet message sent with reaction." : "Keet message sent; reaction was not added." : "Keet message was not sent.") },
     async execute(args, exec) { return sendMessage(scopedDeps, args, signalOf(exec)) },
   })
   return [list, members, read, send]
