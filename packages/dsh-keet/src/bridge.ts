@@ -439,7 +439,7 @@ export class KeetBridge {
       await this.recordImageFailure(state, record)
       return undefined
     }
-    const saveImages = store.saveImages
+    const saveImages = store.saveImages.bind(store)
     if (shutdownSignal.aborted) return undefined
 
     const admissionController = new AbortController()

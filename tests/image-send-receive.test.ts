@@ -238,7 +238,14 @@ describe("Keet DM image bridge", () => {
       { attachmentId: "a", mediaType: "image/png", bytes: PNG_1X1.byteLength, width: 1, height: 1 },
       { attachmentId: "b", mediaType: "image/png", bytes: PNG_1X1.byteLength, width: 1, height: 1 },
     ]
-    const attachments: KeetAttachmentStore = { saveImages: async (inputs) => { admitted.push(...inputs.map((input) => input.name ?? "")); return refs } }
+    const attachments = {
+      ready: true,
+      async saveImages(this: { ready: boolean }, inputs: readonly { name?: string }[]) {
+        if (!this.ready) throw new Error("attachment receiver was lost")
+        admitted.push(...inputs.map((input) => input.name ?? ""))
+        return refs
+      },
+    }
     const { core } = makeImageCore({ onWatch: (handler) => { deliver = handler } })
     const fixture = makeAgent(attachments)
     const bridge = new KeetBridge(bridgeDeps(core, fixture.agent))
