@@ -125,6 +125,20 @@ message data. Reads provide context without creating a group or independently
 starting a turn.
 _Avoid_: Room export, automatic catch-up
 
+**Inbound DM Image**:
+One or more supported raster images received together in a new Managed DM
+message, optionally with caption text. The complete message starts one Agent
+turn; image retrieval from older messages is not part of a Recent Destination
+Read.
+_Avoid_: Historical image read, group image trigger, one turn per image
+
+**Inbound DM Image Failure**:
+A Managed DM image message that cannot be completely downloaded and admitted.
+It produces one bounded sender notice and one non-triggering Destination
+Context Buffer record for the next successful DM turn; no failed image bytes
+enter the Active Conversation.
+_Avoid_: Partial image turn, silent failure, automatic retry
+
 **Managed Group Roster**:
 The bounded list of current members in a selected Managed Destination rendered
 to the Agent as display names only. The Bridge keeps stable Member IDs
@@ -155,6 +169,13 @@ Keet Reaction attached to the message that prompted it. The text is always
 delivered first; the reaction is a best-effort decoration and never replaces
 the response or causes a confirmed text send to be retried.
 _Avoid_: Standalone reaction response, arbitrary historical target, automatic toggle/removal
+
+**Explicit DM Image Send**:
+A supported raster image deliberately sent by an Agent tool to a Managed DM,
+selected by exact `groupName` and read only from within the Active
+Conversation workspace. It may carry a caption; completing a turn or creating
+an image in DSH does not send it automatically.
+_Avoid_: Automatic image reply, arbitrary host file, Managed Group image send
 
 **Keet reply relation**:
 An Explicit Destination Send to a Managed Group that references one specific

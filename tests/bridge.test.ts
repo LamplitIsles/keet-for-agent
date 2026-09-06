@@ -27,6 +27,8 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
       return [{ memberId: "bot", displayName: "Keet Bot" }, ...(groupId === dmGroupId ? [{ memberId: "peer", displayName: "Peer" }] : [{ memberId: "human", displayName: "Alice" }])]
     },
     readRecentMessages: async (groupId) => [{ ...message(1, "old self reply", { groupId }), senderId: "bot", senderLabel: "Keet Bot", messageId: { deviceId: "device-bot", seq: 1 } }],
+    readImage: async () => new Uint8Array([1]),
+    sendImage: async () => undefined,
     watchMessages: (_group, handler) => {
       options.onWatch?.(handler, _group)
       let ended = false

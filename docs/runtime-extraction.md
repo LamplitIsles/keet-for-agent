@@ -128,6 +128,33 @@ does not print a room ID; restart DSH afterward so the next canonical snapshot
 discovers the accepted DM. Pending requests and unsupported room records remain
 inactive.
 
+## Managed DM image boundary
+
+The bridge accepts live external PNG, JPEG, WebP, and GIF images in Managed
+DMs. It streams every image in one message through the pinned
+`readFileStream` RPC, then validates and saves the complete ordered batch with
+DSH's durable attachment service before starting one Agent turn. The turn
+contains the optional caption and durable image blocks; failed admission
+creates no image session event or turn, sends at most one bounded failure
+notice, and retains a non-triggering failure record for the next successful
+turn in that DM. Startup snapshots, self-authored messages, Managed Groups,
+historical reads, and `keet_read_recent_messages` never download image bytes.
+
+The explicit `keet_send_image` tool is DM-only. It reads one image through the
+bound DSH `ctx.fs` Active Conversation workspace filesystem, requires a path contained by that
+workspace, detects the format from validated bytes, preserves the source for
+the native `saveFileBlob`/`sendFile` lifecycle, and creates only a bounded
+preview. An optional caption is sent as adjacent ordinary text. URLs, outside
+workspace paths, unsupported or corrupt images, and oversized content fail
+before delivery; a caption failure after image delivery is reported as a
+bounded no-retry partial result. Images are never sent automatically after an
+Agent turn.
+
+These local fake-worker and Loader checks do not prove official-client image
+interoperability. No official-runtime image smoke is run without explicit
+authorization, so that compatibility and desktop/mobile rendering remain
+unverified for this feature.
+
 ## Opt-in official checks
 
 Normal checks use fakes and temporary directories. To run the disposable

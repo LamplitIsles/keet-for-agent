@@ -1,4 +1,4 @@
-import type { KeetCore, KeetMember, KeetMessage, KeetMessageId, KeetReactionSummary } from "./core-contract.js"
+import type { KeetCore, KeetImageFile, KeetImageMediaType, KeetMember, KeetMessage, KeetMessageId, KeetReactionSummary } from "./core-contract.js"
 import { MAX_CONTEXT_MESSAGE_CHARS, MAX_MESSAGE_TEXT, MAX_PROVENANCE_CHARS, MAX_PROMPT_CHARS } from "./constants.js"
 
 export interface KeetContextRecord {
@@ -8,6 +8,8 @@ export interface KeetContextRecord {
   readonly senderLabel: string
   readonly timestamp: number
   readonly text: string
+  /** Internal marker for one failed DM image admission; never a model handle. */
+  readonly imageFailure?: true
   /** Bridge-internal chat position; never rendered or returned by tools. */
   readonly chatIndex?: number
   readonly replyTo?: KeetMessageId
@@ -47,10 +49,13 @@ export function normalizeKeetRecord(message: KeetMessage, groupId: string): Keet
   if (!message || typeof message !== "object" || typeof groupId !== "string" || !groupId.trim() || message.groupId !== groupId) return undefined
   const messageId = normalizeProtocolMessageId(message.messageId)
   if (!messageId) return undefined
-  if (typeof message.senderId !== "string" || !message.senderId.trim() || typeof message.text !== "string" || !message.text.trim()) return undefined
+  if (typeof message.senderId !== "string" || !message.senderId.trim() || typeof message.text !== "string") return undefined
+  const images = normalizeProtocolImages(message.images)
+  if (message.images !== undefined && (!images || images.length === 0)) return undefined
+  if (!message.text.trim() && !images?.length) return undefined
   const raw = message as unknown as Record<string, unknown>
   const kind = raw.type ?? raw.messageType ?? raw.eventType
-  if (kind !== undefined && kind !== "text" && kind !== "ordinary" && kind !== "m.text") return undefined
+  if (kind !== undefined && kind !== "text" && kind !== "ordinary" && kind !== "m.text" && kind !== "file" && kind !== "image") return undefined
   if (raw.deleted === true || raw.edited === true || raw.isDeleted === true || raw.isEdit === true || raw.relatesTo !== undefined || raw["m.relates_to"] !== undefined) return undefined
   const replyTo = message.replyTo === undefined || message.replyTo === null ? undefined : normalizeProtocolMessageId(message.replyTo)
   if (message.replyTo !== undefined && message.replyTo !== null && !replyTo) return undefined
@@ -271,7 +276,7 @@ export function boundedMembers(members: readonly KeetMember[]): KeetDisplayMembe
 }
 
 export function isKeetCore(value: unknown): value is KeetCore {
-  return Boolean(value && typeof value === "object" && typeof (value as KeetCore).listMembers === "function" && typeof (value as KeetCore).readRecentMessages === "function" && typeof (value as KeetCore).sendMessage === "function" && typeof (value as KeetCore).addReaction === "function")
+  return Boolean(value && typeof value === "object" && typeof (value as KeetCore).listMembers === "function" && typeof (value as KeetCore).readRecentMessages === "function" && typeof (value as KeetCore).readImage === "function" && typeof (value as KeetCore).sendImage === "function" && typeof (value as KeetCore).sendMessage === "function" && typeof (value as KeetCore).addReaction === "function")
 }
 
 function escapeAttr(value: string): string { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/[\r\n\u2028\u2029]+/g, " ").slice(0, MAX_PROVENANCE_CHARS) }
@@ -291,7 +296,6 @@ function normalizeProtocolMessageId(value: unknown): KeetMessageId | undefined {
 function normalizeChatIndex(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < Number.MAX_SAFE_INTEGER ? value : undefined
 }
-
 function normalizeProtocolReactions(value: readonly KeetReactionSummary[] | undefined): readonly KeetReactionSummary[] | undefined {
   if (!Array.isArray(value)) return undefined
   const normalized: KeetReactionSummary[] = []
@@ -300,4 +304,30 @@ function normalizeProtocolReactions(value: readonly KeetReactionSummary[] | unde
     normalized.push({ emoji: Array.from(reaction.emoji).slice(0, MAX_PROVENANCE_CHARS).join(""), count: reaction.count, own: reaction.own })
   }
   return normalized.length ? normalized : undefined
+}
+
+function normalizeProtocolImages(values: readonly KeetImageFile[] | undefined): KeetImageFile[] | undefined {
+  if (values === undefined) return undefined
+  if (!Array.isArray(values) || values.length < 1 || values.length > 16) return undefined
+  const mediaTypes = new Set<KeetImageMediaType>(["image/png", "image/jpeg", "image/webp", "image/gif"])
+  const result: KeetImageFile[] = []
+  for (const value of values) {
+    if (!value || typeof value !== "object" || !mediaTypes.has(value.mediaType) || !validExternalImageFile(value.file)) return undefined
+    if (value.bytes !== undefined && (!Number.isSafeInteger(value.bytes) || value.bytes < 1 || value.bytes > 16 * 1024 * 1024)) return undefined
+    if (value.width !== undefined || value.height !== undefined) {
+      if (!Number.isSafeInteger(value.width) || !Number.isSafeInteger(value.height) || value.width < 1 || value.height < 1 || value.width > 20_000 || value.height > 20_000 || value.width * value.height > 100_000_000) return undefined
+    }
+    result.push(value)
+  }
+  return result
+}
+
+function validExternalImageFile(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  const pointer = (value as { pointer?: unknown }).pointer
+  if (!pointer || typeof pointer !== "object") return false
+  const externalBlob = (pointer as { externalBlob?: unknown }).externalBlob
+  if (!externalBlob || typeof externalBlob !== "object") return false
+  const record = externalBlob as { key?: unknown; blob?: unknown }
+  return record.key !== undefined && record.key !== null && record.blob !== undefined && record.blob !== null
 }

@@ -25,7 +25,11 @@ export const RPC_METHODS = {
   /** Native aggregate reaction mutation; the worker enforces room/message policy. */
   addReaction: 156,
   boot: 225,
+  /** Working pinned file lifecycle; addFile/addFileBlob are missing stubs. */
+  saveFileBlob: 171,
+  sendFile: 174,
+  readFileStream: 184,
 } as const
 
 export type RpcMethodName = keyof typeof RPC_METHODS
-export type RpcStreamMethodName = 'subscribeChatMessages'
+export type RpcStreamMethodName = 'subscribeChatMessages' | 'readFileStream'

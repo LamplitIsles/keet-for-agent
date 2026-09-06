@@ -78,6 +78,30 @@ rpc.register(156, {
     return { key: Buffer.alloc(32), length: 1 }
   },
 })
+rpc.register(171, {
+  request: any,
+  response: any,
+  onrequest: ([roomId, bytes, metadata]) => ({
+    metadata,
+    pointer: { externalBlob: { key: `fixture-${roomId}`, blob: Buffer.from(bytes ?? []) } },
+  }),
+})
+rpc.register(174, { request: any, response: any, onrequest: () => ({}) })
+rpc.register(184, {
+  request: any,
+  response: any,
+  dedup: true,
+  onstream: async (stream) => {
+    for await (const args of stream) {
+      const file = args?.[1]
+      const blob = file?.pointer?.externalBlob?.blob
+      const bytes = Buffer.isBuffer(blob) || blob instanceof Uint8Array ? Buffer.from(blob) : Buffer.alloc(0)
+      if (bytes.length) stream.write(bytes)
+      stream.end()
+      break
+    }
+  },
+})
 rpc.register(225, { request: any, response: any, onrequest: () => ({}) })
 
 let incoming = Buffer.alloc(0)

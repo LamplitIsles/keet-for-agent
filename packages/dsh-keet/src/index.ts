@@ -13,6 +13,8 @@ export const inject = [
   "tools",
   "systemPrompt",
   "commands",
+  "attachments",
+  "fs",
   "workspaceRegistry",
   "sessionController",
 ] as const
@@ -26,10 +28,14 @@ type HostContext = Context & {
     resolveAgent: KeetBridgeDependencies["resolveAgent"]
   }
   commands: NonNullable<KeetBridgeDependencies["commands"]>
+  attachments?: KeetBridgeDependencies["attachments"]
+  fs?: KeetBridgeDependencies["fs"]
 }
 
 export function apply(ctx: HostContext): void {
   const settings = ctx.settings.register(SETTINGS_NAMESPACE, KeetSettingsSchema, { applies: "restart" })
+  const attachments = capabilityOf<KeetBridgeDependencies["attachments"]>(ctx, "attachments")
+  const fs = capabilityOf<KeetBridgeDependencies["fs"]>(ctx, "fs")
   const bridgeDeps: KeetBridgeDependencies = {
     getSettings: () => settings.get(),
     workspaceRegistry: ctx.workspaceRegistry,
@@ -38,6 +44,8 @@ export function apply(ctx: HostContext): void {
     resolveAgent: async (id) => await ctx.sessionController.resolveAgent(id),
     coreFactory: async (options) => await KeetIntegrationCore.start(options),
     commands: ctx.commands,
+    ...(attachments ? { attachments } : {}),
+    ...(fs ? { fs } : {}),
     onError: () => { if (process.env.NODE_ENV !== "test") console.error("[dsh-keet] bridge operation failed") },
   }
   const bridge = new KeetBridge(bridgeDeps)
@@ -50,8 +58,9 @@ export function apply(ctx: HostContext): void {
 
 export { KeetBridge, bridgeRpcHandler }
 export type { KeetBridgeAgent, KeetBridgeDependencies, KeetBridgeReadiness, KeetBridgeReadinessState, KeetCommandService } from "./bridge.js"
-export { createKeetToolDefinitions, normalizeManagedDestinationName, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE } from "./keet-tools.js"
-export type { KeetToolDependencies, KeetListGroupsResult, KeetListMembersResult, KeetReadRecentMessagesResult, KeetSendMessageResult, KeetMemberResult, KeetGroupMessageResult, KeetDmMessageResult, ManagedDestination, ManagedDestinationSummary, ManagedDestinationKind, ActiveReactionTarget } from "./keet-tools.js"
+export { createKeetToolDefinitions, normalizeManagedDestinationName, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE, KEET_SEND_IMAGE } from "./keet-tools.js"
+export type { KeetToolDependencies, KeetListGroupsResult, KeetListMembersResult, KeetReadRecentMessagesResult, KeetSendMessageResult, KeetSendImageResult, KeetMemberResult, KeetGroupMessageResult, KeetDmMessageResult, ManagedDestination, ManagedDestinationSummary, ManagedDestinationKind, ActiveReactionTarget } from "./keet-tools.js"
+export type { KeetAttachmentStore, KeetImageAttachmentRef, KeetSaveImageAttachment, KeetWorkspaceFileSystem } from "./image-contract.js"
 export { KeetSettingsSchema } from "./settings.js"
 export { ensureKeetIdentityDataDir, resolveKeetRuntimeDir, resolveKeetRuntimePaths } from "./local-paths.js"
 export { decodeSettings, normalizeSettings, validateSettings } from "./settings-client.js"
@@ -63,3 +72,8 @@ export type { SessionInspectionLike, SessionEventLike, SessionHeaderLike, Worksp
 export { prepareAvatar, validatePreparedAvatar, AVATAR_VARIANT_SIZES, AVATAR_MAX_SOURCE_BYTES, AVATAR_MAX_VARIANT_BYTES, AVATAR_MAX_PIXELS } from "./avatar.js"
 
 export default { name, inject, apply }
+
+function capabilityOf<T = unknown>(context: unknown, name: string): T | undefined {
+  if (!context || (typeof context !== "object" && typeof context !== "function")) return undefined
+  try { return (context as Record<string, unknown>)[name] as T | undefined } catch { return undefined }
+}
