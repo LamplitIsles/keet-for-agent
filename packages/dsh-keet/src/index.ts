@@ -60,7 +60,7 @@ export { KeetBridge, bridgeRpcHandler }
 export type { KeetBridgeAgent, KeetBridgeDependencies, KeetBridgeReadiness, KeetBridgeReadinessState, KeetCommandService } from "./bridge.js"
 export { createKeetToolDefinitions, normalizeManagedDestinationName, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE, KEET_SEND_IMAGE } from "./keet-tools.js"
 export type { KeetToolDependencies, KeetListGroupsResult, KeetListMembersResult, KeetReadRecentMessagesResult, KeetSendMessageResult, KeetSendImageResult, KeetMemberResult, KeetGroupMessageResult, KeetDmMessageResult, ManagedDestination, ManagedDestinationSummary, ManagedDestinationKind, ActiveReactionTarget } from "./keet-tools.js"
-export type { KeetAttachmentStore, KeetImageAttachmentRef, KeetSaveImageAttachment, KeetWorkspaceFileSystem, KeetImageAttachmentBlock } from "./image-contract.js"
+export type { KeetAttachmentStore, KeetImageAttachmentRef, KeetSaveImageAttachment, KeetWorkspaceFileSystem } from "./image-contract.js"
 export { KeetSettingsSchema } from "./settings.js"
 export { ensureKeetIdentityDataDir, resolveKeetRuntimeDir, resolveKeetRuntimePaths } from "./local-paths.js"
 export { decodeSettings, normalizeSettings, validateSettings } from "./settings-client.js"

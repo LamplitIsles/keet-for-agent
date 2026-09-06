@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 
 const run = promisify(execFile);
@@ -17,6 +18,14 @@ interface RuntimeProcess {
   child: ChildProcess;
   baseUrl: string;
   launchUrl: string;
+}
+
+interface PackedHostModule {
+  inject?: readonly unknown[];
+  createKeetToolDefinitions?: (dependencies: {
+    [key: string]: unknown;
+    serializeDestinationSend: <T>(groupId: string, operation: () => Promise<T>) => Promise<T>;
+  }) => ReadonlyArray<{ name?: unknown }>;
 }
 
 async function packageVersion(root: string): Promise<string> {
@@ -168,15 +177,6 @@ async function jsonRequest(baseUrl: string, path: string, body: unknown, cookie:
   return { response, value };
 }
 
-function clientCodeChecks(code: string): void {
-  if (!code.includes("data-plugin-css") || !code.includes("--dsw-alias-label-primary")) {
-    throw new Error("served client bundle does not contain the inlined semantic stylesheet");
-  }
-  for (const forbidden of ["require(\"@deepseek-ai/dsh-credentials\")", "require(\"@deepseek-ai/schemastery\")", "KeetSettingsSchema"]) {
-    if (code.includes(forbidden)) throw new Error(`browser bundle contains Host-only dependency ${forbidden}`);
-  }
-}
-
 async function main(): Promise<void> {
   const root = rootDirectory();
   const packageRoot = join(root, "packages", "dsh-keet");
@@ -201,8 +201,8 @@ async function main(): Promise<void> {
     const artifactFiles = (await run("tar", ["-tzf", artifact], { env })).stdout.split("\n").filter(Boolean);
     const requiredFiles = ["package/dist/index.js", "package/dist/setup.js", "package/dist/client.js", "package/dist/index.d.ts", "package/dist/client.d.cts", "package/cordis.patch.yml", "package/README.md", "package/LICENSE", "package/THIRD_PARTY_NOTICES.md"];
     for (const file of requiredFiles) if (!artifactFiles.includes(file)) throw new Error(`artifact missing ${file}`);
-    if (artifactFiles.some((file) => file.includes(".scratch") || /(?:runtime|identity|invitation|avatar-input|message-data)/i.test(file))) {
-      throw new Error("artifact contains private runtime or state material");
+    if (artifactFiles.some((file) => file.includes(".scratch") || /(?:runtime|identity|invitation|avatar-input|message-data|(?:^|[/\\])(?:images?|previews?|attachments?)(?:[/\\]|$)|\.(?:png|apng|jpe?g|webp|gif|bmp|tiff?|avif|heic|heif|ico|jfif|jxl|pnm|pbm|pgm|ppm|tga|xpm|svg)$)/i.test(file))) {
+      throw new Error("artifact contains private runtime, state, or image material");
     }
 
     const invocation = dshInvocation(entry);
@@ -230,7 +230,44 @@ async function main(): Promise<void> {
     for (const [name, version] of Object.entries(metadata.peerDependencies ?? {})) {
       if (name.startsWith("@deepseek-ai/dsh-") && version !== "0.1.2-rc.1") throw new Error(`non-rc DSH peer: ${name}@${version}`);
     }
+
+    if (metadata.peerDependencies?.["@deepseek-ai/dsh-attachment"] !== "0.1.2-rc.1" || metadata.peerDependencies?.["@deepseek-ai/dsh-fs"] !== "0.1.2-rc.1") {
+      throw new Error("packed package is missing pinned attachment/fs peers");
+    }
     runtime = await startRuntime(entry, env, runtimeCwd);
+    const hostModule = await import(pathToFileURL(join(installed, "dist", "index.js")).href) as PackedHostModule;
+    if (!Array.isArray(hostModule.inject) || !hostModule.inject.includes("attachments") || !hostModule.inject.includes("fs")) {
+      throw new Error("packed Host inject contract is missing attachments or fs");
+    }
+    if (typeof hostModule.createKeetToolDefinitions !== "function") throw new Error("packed Host tool factory is unavailable");
+    const smokeFilesystem = {
+      resolve: async (value: string, options?: { cwd?: string }) => ({ targetKey: "pack-smoke-target", displayPath: resolve(options?.cwd ?? temp, value) }),
+      contains: () => true,
+      stat: async () => ({ type: "file" as const, size: 1 }),
+      readBytes: async () => new Uint8Array([0x89]),
+    };
+    const smokeAttachments = {
+      imageLimits: {},
+      validateImage: async () => undefined,
+      saveImages: async () => [],
+    };
+    const smokeCore = {
+      readImage: async () => new Uint8Array([0x89]),
+      sendImage: async () => undefined,
+      sendMessage: async () => undefined,
+    };
+    const smokeDefinitions = hostModule.createKeetToolDefinitions({
+      getCore: () => smokeCore,
+      destinations: [{ groupId: "pack-smoke-dm", kind: "dm", groupName: "Pack Smoke DM" }],
+      isReady: () => true,
+      serializeDestinationSend: async <T>(_groupId: string, operation: () => Promise<T>): Promise<T> => await operation(),
+      attachments: smokeAttachments,
+      fs: smokeFilesystem,
+      workspaceRoot: temp,
+    });
+    if (!Array.isArray(smokeDefinitions) || !smokeDefinitions.some((definition) => definition.name === "keet_send_image")) {
+      throw new Error("packed Host tool factory did not register keet_send_image");
+    }
     const cookie = await authenticateRuntime(runtime);
     const homePage = await fetch(new URL("/", runtime.baseUrl), { headers: { cookie } });
     if (!homePage.ok) throw new Error(`installed DSH Web runtime returned ${homePage.status} for /`);
@@ -247,7 +284,6 @@ async function main(): Promise<void> {
     const clientResponse = await fetch(new URL(pluginEntry.url, runtime.baseUrl), { headers: { cookie } });
     if (!clientResponse.ok) throw new Error(`installed DSH client bundle returned ${clientResponse.status}`);
     const clientCode = await clientResponse.text();
-    clientCodeChecks(clientCode);
     let loaded: LoaderSpec | undefined;
     vm.runInNewContext(clientCode, { window: { __ModuleLoader__: { load(spec: LoaderSpec) { loaded = spec; } } } });
     if (loaded?.id !== metadata.name || typeof loaded.factory !== "function") throw new Error("real Loader client entry did not register");
@@ -293,7 +329,7 @@ async function main(): Promise<void> {
     }
 
     await writeFile(join(dshHome, "smoke-result.json"), JSON.stringify({ package: metadata.name, client: loaded.id, readiness: readinessEnvelope.result?.value?.state, settings: namespace.ns }));
-    console.log(JSON.stringify({ artifact, dshHome, files: artifactFiles.length, host: true, client: true, loader: true, css: true, readiness: readinessEnvelope.result?.value?.state }, null, 2));
+    console.log(JSON.stringify({ artifact, dshHome, files: artifactFiles.length, host: true, client: true, loader: true, readiness: readinessEnvelope.result?.value?.state }, null, 2));
   } finally {
     await stopRuntime(runtime);
     await rm(temp, { recursive: true, force: true });

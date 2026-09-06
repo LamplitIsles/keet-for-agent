@@ -52,8 +52,3 @@ export interface KeetWorkspaceFileSystem {
   stat(target: KeetFileSystemTarget, signal?: AbortSignal): Promise<{ readonly type: "file" | "directory" | "other"; readonly size?: number } | undefined>
   readBytes(target: KeetFileSystemTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
 }
-
-export interface KeetImageAttachmentBlock {
-  readonly type: "image"
-  readonly attachment: KeetImageAttachmentRef
-}
