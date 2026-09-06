@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -577,6 +577,80 @@ describe("typed Keet Integration Core unit behavior", () => {
     const before = harness.state.calls.length
     await expect(harness.core.updateIdentityProfile({ avatar: oversized })).rejects.toThrow("too large or invalid")
     expect(harness.state.calls.length).toBe(before)
+  })
+
+  it("registers or updates a username and proves the requested lookup converged", async () => {
+    let registrationLookups = 0
+    const registration = makeMockCore({
+      handlers: {
+        checkUsername: () => true,
+        registerUsername: () => true,
+        lookupUsername: () => ++registrationLookups === 1 ? null : { memberId: "identity-self", username: "agent_name1", displayName: "Fixture Bot" },
+      },
+    })
+    await registration.core.setUsername("agent_name1")
+    expect(registration.state.calls.filter(({ name }) => ["checkUsername", "registerUsername", "updateUsername", "lookupUsername"].includes(name))).toEqual([
+      { name: "checkUsername", args: ["agent_name1"] },
+      { name: "registerUsername", args: ["agent_name1"] },
+      { name: "lookupUsername", args: ["agent_name1"] },
+      { name: "lookupUsername", args: ["agent_name1"] },
+    ])
+
+    const update = makeMockCore({
+      identity: { memberId: "identity-self", displayName: "Fixture Bot", username: "old_name1" },
+      handlers: {
+        checkUsername: () => true,
+        updateUsername: () => true,
+        lookupUsername: () => ({ memberId: "identity-self", username: "new_name2" }),
+      },
+    })
+    await update.core.setUsername("new_name2")
+    expect(update.state.calls.some(({ name, args }) => name === "updateUsername" && args[0] === "new_name2")).toBe(true)
+    expect(update.state.calls.some(({ name }) => name === "registerUsername")).toBe(false)
+  })
+
+  it("makes an exact current username idempotent without availability or mutation RPCs", async () => {
+    const harness = makeMockCore({
+      identity: { memberId: "identity-self", profile: { displayName: "Fixture Bot", username: "agent_name1" } },
+      handlers: { lookupUsername: () => ({ memberId: "identity-self", username: "agent_name1" }) },
+    })
+    await harness.core.setUsername("agent_name1")
+    expect(harness.state.calls.map(({ name }) => name)).toEqual(["getIdentity", "lookupUsername"])
+  })
+
+  it("fails closed for unavailable, malformed, rejected, and failed username operations", async () => {
+    const unavailable = makeMockCore({ handlers: { checkUsername: () => false } })
+    await expect(unavailable.core.setUsername("agent_name1")).rejects.toThrow("username is unavailable")
+    expect(unavailable.state.calls.some(({ name }) => name === "registerUsername")).toBe(false)
+
+    const malformedAvailability = makeMockCore({ handlers: { checkUsername: () => ({ available: true }) } })
+    await expect(malformedAvailability.core.setUsername("agent_name1")).rejects.toThrow("invalid username availability")
+
+    const rejected = makeMockCore({ handlers: { checkUsername: () => true, registerUsername: () => false } })
+    await expect(rejected.core.setUsername("agent_name1")).rejects.toThrow("did not accept")
+
+    const malformedLookup = makeMockCore({ handlers: { checkUsername: () => true, registerUsername: () => true, lookupUsername: () => ({ username: "agent_name1" }) } })
+    await expect(malformedLookup.core.setUsername("agent_name1")).rejects.toThrow("invalid username lookup")
+
+    const wrongOwner = makeMockCore({ handlers: { checkUsername: () => true, registerUsername: () => true, lookupUsername: () => ({ username: "agent_name1", memberId: "identity-other" }) } })
+    await expect(wrongOwner.core.setUsername("agent_name1")).rejects.toThrow("Keet username became unavailable")
+
+    const nativeFailure = makeMockCore({ handlers: { checkUsername: () => { throw new Error("sensitive registry detail") } } })
+    await expect(nativeFailure.core.setUsername("agent_name1")).rejects.toThrow("Keet operation failed")
+
+    const malformedIdentity = makeMockCore({ identity: { memberId: "identity-self", username: { bad: true } } })
+    await expect(malformedIdentity.core.setUsername("agent_name1")).rejects.toThrow("identity username is invalid")
+  })
+
+  it("bounds username convergence polling and reports timeout", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(60_001)
+    try {
+      const harness = makeMockCore({ handlers: { checkUsername: () => true, registerUsername: () => true, lookupUsername: () => null } })
+      await expect(harness.core.setUsername("agent_name1")).rejects.toThrow("did not become searchable before the timeout")
+      expect(harness.state.calls.filter(({ name }) => name === "lookupUsername")).toHaveLength(1)
+    } finally {
+      clock.mockRestore()
+    }
   })
 })
 

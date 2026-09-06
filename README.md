@@ -59,8 +59,8 @@ bash -lc '
 '
 ```
 
-Use the same stop/setup/restart pattern for `join`, `dm-requests`, and
-`dm-accept`. Operators using another service manager should stop and restart
+Use the same stop/setup/restart pattern for `join`, `username`, `dm-requests`,
+and `dm-accept`. Operators using another service manager should stop and restart
 the process that owns the identity directory by its equivalent mechanism.
 
 ## One-time onboarding
@@ -99,6 +99,25 @@ it with the new avatar because the underlying Keet profile update requires the
 name. It fails without changing the profile if the identity has no current
 display name. Setup has no chat, room creation, invitation creation, biography,
 or avatar-removal surface.
+
+Reserve the dedicated identity's globally searchable Keet username separately
+from its display name/profile:
+
+```sh
+dsh-keet-setup username --workspace /path/to/dsh-workspace \
+  --username agent_name1
+```
+
+A username is 3–64 characters, uses only Latin letters, digits, and underscore,
+and contains at least one letter and one digit. The command is idempotent only
+when the requested username exactly matches the current username. Otherwise it
+checks availability, submits the native registration or update, and reports
+success only after the requested name resolves to this identity's Member ID.
+Previously used names cannot be reused, including after a change, and the
+official client allows at most four changes after the initial registration.
+Registry failures are reported as a bounded generic setup error; no identity
+key is printed. A success result is one JSON line such as
+`{"ok":true,"operation":"username","username":"agent_name1"}`.
 
 To inspect and accept a human-sent DM request, use the setup executable:
 

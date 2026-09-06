@@ -2,7 +2,7 @@
 import { realpathSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { KeetIntegrationCore } from "@lamplitisles/keet-integration-core"
+import { KeetIntegrationCore, validateKeetUsername } from "@lamplitisles/keet-integration-core"
 import type { KeetCore, KeetCoreOptions, KeetPendingDmRequest, PreparedAvatar } from "./core-contract.js"
 import { prepareAvatar, validatePreparedAvatar } from "./avatar.js"
 import { resolveKeetRuntimePaths } from "./local-paths.js"
@@ -13,14 +13,17 @@ const MAX_NAME = 128
 const MAX_MEMBER_ID = 512
 
 export interface SetupArguments {
-  command: "join" | "profile" | "dm-requests" | "dm-accept"
+  command: "join" | "profile" | "dm-requests" | "dm-accept" | "username"
   workspaceDir: string
   displayName?: string
   avatarPath?: string
   memberId?: string
+  username?: string
 }
 
-type SetupCore = Pick<KeetCore, "close" | "joinInvitation" | "updateIdentityProfile" | "listPendingDmRequests" | "acceptDmRequest">
+type SetupCore = Pick<KeetCore, "close" | "joinInvitation" | "updateIdentityProfile" | "listPendingDmRequests" | "acceptDmRequest"> & {
+  setUsername(username: string, signal?: AbortSignal): Promise<void>
+}
 export interface SetupDependencies {
   coreFactory?: (options: KeetCoreOptions) => Promise<SetupCore>
   resolveRuntimePaths?: (workspaceDir: string) => Promise<{ runtimeDir: string; identityDataDir: string }>
@@ -45,6 +48,9 @@ export async function runSetup(argv: readonly string[], stdin = process.stdin, s
       if (parsed.command === "profile") {
         await core.updateIdentityProfile({ ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}), ...(avatar ? { avatar } : {}) })
         stdout.write(JSON.stringify({ ok: true, operation: "profile", ...(parsed.displayName !== undefined ? { displayName: parsed.displayName.trim() } : {}), ...(avatar ? { avatar: true } : {}) }) + "\n")
+      } else if (parsed.command === "username") {
+        await core.setUsername(parsed.username!)
+        stdout.write(JSON.stringify({ ok: true, operation: "username", username: parsed.username }) + "\n")
       } else if (parsed.command === "dm-requests") {
         const requests = await core.listPendingDmRequests()
         stdout.write(JSON.stringify({ ok: true, operation: "dm-requests", requests: requests.slice(0, 32).map(publicPendingRequest) }) + "\n")
@@ -70,19 +76,21 @@ function publicPendingRequest(request: KeetPendingDmRequest): Record<string, str
 
 export function parseArgs(argv: readonly string[]): SetupArguments {
   const [command, ...rest] = argv
-  if (command !== "join" && command !== "profile" && command !== "dm-requests" && command !== "dm-accept") throw new Error("command")
+  if (command !== "join" && command !== "profile" && command !== "dm-requests" && command !== "dm-accept" && command !== "username") throw new Error("command")
   let workspaceDir = ""
   let displayName: string | undefined
   let avatarPath: string | undefined
   let memberId: string | undefined
+  let username: string | undefined
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index]
     const value = rest[index + 1]
-    if ((flag === "--workspace" || flag === "--display-name" || flag === "--avatar" || flag === "--member-id") && value) {
+    if ((flag === "--workspace" || flag === "--display-name" || flag === "--avatar" || flag === "--member-id" || flag === "--username") && value) {
       if (flag === "--workspace") workspaceDir = value
       else if (flag === "--display-name") displayName = value
       else if (flag === "--avatar") avatarPath = value
-      else memberId = value
+      else if (flag === "--member-id") memberId = value
+      else username = value
       index += 1
       continue
     }
@@ -92,15 +100,19 @@ export function parseArgs(argv: readonly string[]): SetupArguments {
   if (command === "profile") {
     if (displayName !== undefined && (!displayName.trim() || displayName.length > MAX_NAME)) throw new Error("display name")
     if (avatarPath !== undefined && (!avatarPath.trim() || avatarPath.length > 4_096)) throw new Error("avatar")
-    if (memberId !== undefined) throw new Error("profile arguments")
+    if (memberId !== undefined || username !== undefined) throw new Error("profile arguments")
     if (displayName === undefined && avatarPath === undefined) throw new Error("profile fields")
   }
-  if (command === "join" && (displayName !== undefined || avatarPath !== undefined || memberId !== undefined)) throw new Error("join arguments")
-  if (command === "dm-requests" && (displayName !== undefined || avatarPath !== undefined || memberId !== undefined)) throw new Error("request arguments")
+  if (command === "join" && (displayName !== undefined || avatarPath !== undefined || memberId !== undefined || username !== undefined)) throw new Error("join arguments")
+  if (command === "dm-requests" && (displayName !== undefined || avatarPath !== undefined || memberId !== undefined || username !== undefined)) throw new Error("request arguments")
   if (command === "dm-accept") {
-    if (!memberId || !memberId.trim() || memberId.length > MAX_MEMBER_ID || displayName !== undefined || avatarPath !== undefined) throw new Error("member id")
+    if (!memberId || !memberId.trim() || memberId.length > MAX_MEMBER_ID || displayName !== undefined || avatarPath !== undefined || username !== undefined) throw new Error("member id")
   }
-  return { command, workspaceDir: path.resolve(workspaceDir), ...(displayName !== undefined ? { displayName } : {}), ...(avatarPath !== undefined ? { avatarPath } : {}), ...(memberId !== undefined ? { memberId: memberId.trim() } : {}) }
+  if (command === "username") {
+    if (displayName !== undefined || avatarPath !== undefined || memberId !== undefined || username === undefined) throw new Error("username arguments")
+    validateKeetUsername(username)
+  }
+  return { command, workspaceDir: path.resolve(workspaceDir), ...(displayName !== undefined ? { displayName } : {}), ...(avatarPath !== undefined ? { avatarPath } : {}), ...(memberId !== undefined ? { memberId: memberId.trim() } : {}), ...(username !== undefined ? { username } : {}) }
 }
 
 export async function readInvitation(stdin: NodeJS.ReadableStream): Promise<string> {

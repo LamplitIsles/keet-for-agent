@@ -18,6 +18,11 @@ export const RPC_METHODS = {
   updateIdentityProfile: 19,
   getDmRequestsByStatus: 152,
   acceptDmRequest: 154,
+  /** Global username registry lookup and mutations in the pinned worker. */
+  lookupUsername: 195,
+  registerUsername: 198,
+  updateUsername: 199,
+  checkUsername: 202,
   /** Native Managed DM read position; the worker enforces room/policy gates. */
   setUnreadAnchor: 218,
   /** Native Managed DM typing timestamp refresh; the worker enforces room gates. */

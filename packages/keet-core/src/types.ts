@@ -216,6 +216,8 @@ export interface KeetCore {
   updateDisplayName(displayName: string, signal?: AbortSignal): Promise<void>
   /** Update the complete attested profile; omitted fields are preserved. */
   updateIdentityProfile(profile: { readonly displayName?: string; readonly avatar?: PreparedAvatar }, signal?: AbortSignal): Promise<void>
+  /** Reserve or change the globally searchable username and await registry convergence. */
+  setUsername(username: string, signal?: AbortSignal): Promise<void>
   close(): Promise<void>
 }
 
