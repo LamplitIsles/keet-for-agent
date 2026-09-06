@@ -134,7 +134,32 @@ describe("Keet message protocol", () => {
     expect(rendered).not.toContain("message_id")
   })
 
-  it("preserves the trigger and ordinary transcript before dropping oldest reaction context", () => {
+  it("renders reaction targets as normalized Unicode prefixes with envelope escaping", () => {
+    const record = classifyTrigger({ ...base, mentions: ["bot"] }, identity, new Set())!
+    const boundaryCharacters = Array.from({ length: 49 }, (_, index) => String.fromCodePoint(0x4e00 + index))
+    const first48 = boundaryCharacters.slice(0, 48).join("")
+    const exact = renderKeetContextPrompt([record], record, {
+      reactionContext: [{ targetText: `  ${first48}  `, emoji: "👍", count: 1 }],
+    })
+    expect(exact).toContain(`${first48}\n</reaction>`)
+    expect(exact).not.toContain(`${first48}…`)
+
+    const omitted = renderKeetContextPrompt([record], record, {
+      reactionContext: [{ targetText: boundaryCharacters.join(""), emoji: "👍", count: 2 }],
+    })
+    expect(omitted).toContain(`${first48}…\n</reaction>`)
+    expect(omitted).not.toContain(boundaryCharacters[48]!)
+
+    const long = renderKeetContextPrompt([record], record, {
+      reactionContext: [{ targetText: `  first\n\tsecond <tag> & ${"界".repeat(48)}tail`, emoji: "👍", count: 2 }],
+    })
+    expect(long).toContain("first second &lt;tag&gt; &amp; 界界")
+    expect(long).toContain("…\n</reaction>")
+    expect(long).not.toContain("tail</reaction>")
+    expect(long).not.toContain("first\n")
+  })
+
+  it("preserves the trigger and ordinary transcript while fitting concise reaction context", () => {
     const records = Array.from({ length: 4 }, (_, index) => normalizeKeetRecord({
       ...base,
       messageId: { deviceId: "device", seq: index + 1 },
@@ -148,6 +173,6 @@ describe("Keet message protocol", () => {
     expect(rendered).toContain("latest trigger")
     expect(rendered).toContain("ordinary-0")
     expect(rendered).toContain("reaction context")
-    expect((rendered.match(/<reaction /g) ?? []).length).toBeLessThan(16)
+    expect((rendered.match(/<reaction /g) ?? []).length).toBe(16)
   })
 })

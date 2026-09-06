@@ -188,8 +188,14 @@ records retain canonical `{ device_id, seq }` provenance and the startup source
 `groupName`; DM prompts identify the source and sender display label but
 intentionally omit message IDs, reply relations, and sender IDs. All records are
 quoted, untrusted data. Human reactions to Integration-authored messages do not
-trigger a turn; changed aggregate reactions can appear once as bounded
-untrusted context on the next ordinary trigger for that same destination.
+trigger a turn. An aggregate reaction context receipt is delivered at most once
+for each exact target-message, emoji, and visible-count tuple, including across
+DSH restarts; a previously unseen count remains eligible. A canceled inbox
+removal does not consume its receipt, while removing and later re-adding the
+same tuple does not notify again. Reaction targets are whitespace-normalized
+prefixes of at most 48 Unicode code points, with one ellipsis only when content
+was omitted. These bounded summaries remain untrusted context on the next
+ordinary trigger for that same destination.
 Keet picker/custom wire tokens that match the bounded lowercase/digit/_+-
 grammar appear by colon-wrapped native names (for example `:heart:`); literal
 Unicode reactions remain unchanged. Whitespace, unsafe punctuation, and

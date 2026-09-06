@@ -159,6 +159,13 @@ function dmMessage(seq: number, text: string, extra: Partial<KeetMessage> = {}):
   return message(seq, text, { groupId: dmGroupId, ...extra })
 }
 
+function inboxEvents(messageValue: unknown, outcome?: "canceled"): Array<{ type: string; data: Record<string, unknown> }> {
+  return [
+    { type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, inserted: [messageValue] } },
+    { type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, removedCount: 1, inserted: [], ...(outcome ? { outcome } : {}) } },
+  ]
+}
+
 describe("Keet bridge", () => {
   it("initializes workspace-owned paths before onboarding has a joined room", async () => {
     let resolvedWorkspace: { path: string } | undefined
@@ -478,7 +485,7 @@ describe("Keet bridge", () => {
     await bridge.stop()
   })
 
-  it("keeps human reaction changes silent, delivers changed aggregate context once, and permits removal and re-addition", async () => {
+  it("keeps human reaction changes silent and consumes an exact aggregate tuple permanently", async () => {
     let deliver!: (message: KeetMessage) => void
     let currentReactions: KeetMessage["reactions"] = []
     const authored = (): KeetMessage => ({ ...message(1, "integration-authored", { messageId: { deviceId: "device-bot", seq: 1 }, senderId: "bot", senderLabel: "Keet Bot", ...(currentReactions ? { reactions: currentReactions } : {}) }) })
@@ -513,7 +520,7 @@ describe("Keet bridge", () => {
     currentReactions = [{ emoji: ":heart:", count: 2, own: false }]
     deliver(message(5, "re-add trigger", { mentions: ["bot"] }))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect((fixture.prompts[3] as any).content[0].text).toContain('emoji=":heart:" count="2"')
+    expect((fixture.prompts[3] as any).content[0].text).not.toContain('emoji=":heart:" count="2"')
     await bridge.stop()
   })
 
@@ -539,6 +546,140 @@ describe("Keet bridge", () => {
     await flushBridge()
     expect((fixture.prompts[1] as any).content[0].text).not.toContain("reaction context")
     await bridge.stop()
+  })
+
+  it("keeps every claimed receipt consumed after crossing the former 800-receipt boundary", async () => {
+    let deliver!: (message: KeetMessage) => void
+    let currentTarget = 1
+    const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+    core.readRecentMessages = async (groupId) => [{ ...message(currentTarget, `integration-authored-${currentTarget}`, {
+      groupId,
+      messageId: { deviceId: "device-bot", seq: currentTarget },
+      senderId: "bot",
+      senderLabel: "Keet Bot",
+      reactions: [{ emoji: "👍", count: 1, own: false }],
+    }) }]
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+
+    for (let index = 1; index <= 801; index += 1) {
+      currentTarget = index
+      deliver(message(1000 + index, `claim-${index}`, { mentions: ["bot"] }))
+      await flushBridge()
+    }
+    expect(fixture.prompts).toHaveLength(801)
+
+    currentTarget = 1
+    deliver(message(2000, "old tuple after boundary", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(802)
+    expect((fixture.prompts[801] as any).content[0].text).not.toContain('emoji="👍" count="1"')
+    await bridge.stop()
+  })
+
+  it("recovers claimed reaction receipts from archived sessions across restarts and allows a new count", async () => {
+    let deliver!: (message: KeetMessage) => void
+    let currentReactions: NonNullable<KeetMessage["reactions"]> = [{ emoji: ":heart:", count: 2, own: false }]
+    const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+    core.readRecentMessages = async (groupId) => [{ ...message(1, "integration-authored", {
+      groupId,
+      messageId: { deviceId: "device-bot", seq: 1 },
+      senderId: "bot",
+      senderLabel: "Keet Bot",
+      reactions: currentReactions,
+    }) }]
+
+    const firstFixture = makeAgent()
+    const firstBridge = new KeetBridge(deps(core, firstFixture.agent))
+    await firstBridge.start()
+    deliver(message(30, "first durable trigger", { mentions: ["bot"] }))
+    await flushBridge()
+    const firstRequest = firstFixture.prompts[0]
+    expect(JSON.stringify(firstRequest)).toContain("dshKeetReactionReceipts")
+    await firstBridge.stop()
+
+    const activeSession = { meta: { id: "active" }, events: [{ type: "user/message", time: 3, data: { source: { kind: "user" }, content: "active" } }] }
+    const archivedSession = { meta: { id: "archived" }, events: [
+      { type: "unrelated/event", data: { malformed: true } },
+      ...inboxEvents(firstRequest),
+      { type: "agent/inbox/spliced", data: { target: "next-turn", start: 20, removedCount: 1, inserted: [] } },
+    ] }
+    const secondFixture = makeAgent()
+    const secondBridge = new KeetBridge(deps(core, secondFixture.agent, { active: activeSession, archived: archivedSession }))
+    await secondBridge.start()
+    deliver(message(31, "unchanged after restart", { mentions: ["bot"] }))
+    await flushBridge()
+    expect((secondFixture.prompts[0] as any).content[0].text).not.toContain("reaction context")
+
+    currentReactions = [{ emoji: ":heart:", count: 3, own: false }]
+    deliver(message(32, "new count after restart", { mentions: ["bot"] }))
+    await flushBridge()
+    expect((secondFixture.prompts[1] as any).content[0].text).toContain('emoji=":heart:" count="3"')
+    const secondRequest = secondFixture.prompts[1]
+    await secondBridge.stop()
+
+    const thirdFixture = makeAgent()
+    const thirdBridge = new KeetBridge(deps(core, thirdFixture.agent, {
+      active: activeSession,
+      archived: { ...archivedSession, events: [...archivedSession.events, ...inboxEvents(secondRequest)] },
+    }))
+    await thirdBridge.start()
+    deliver(message(33, "same new count after second restart", { mentions: ["bot"] }))
+    await flushBridge()
+    expect((thirdFixture.prompts[0] as any).content[0].text).not.toContain("reaction context")
+    await thirdBridge.stop()
+  })
+
+  it("keeps a canceled persisted inbox removal eligible and suppresses reaction context after partial recovery failure", async () => {
+    let deliver!: (message: KeetMessage) => void
+    const core = fakeCore({ onWatch: (handler) => { deliver = handler } })
+    core.readRecentMessages = async (groupId) => [{ ...message(1, "integration-authored", {
+      groupId,
+      messageId: { deviceId: "device-bot", seq: 1 },
+      senderId: "bot",
+      senderLabel: "Keet Bot",
+      reactions: [{ emoji: "👍", count: 1, own: false }],
+    }) }]
+    const seedFixture = makeAgent()
+    const seedBridge = new KeetBridge(deps(core, seedFixture.agent))
+    await seedBridge.start()
+    deliver(message(34, "seed", { mentions: ["bot"] }))
+    await flushBridge()
+    const request = seedFixture.prompts[0]
+    await seedBridge.stop()
+
+    const canceledFixture = makeAgent()
+    const canceledBridge = new KeetBridge(deps(core, canceledFixture.agent, {
+      active: { meta: { id: "active" }, events: [{ type: "user/message", time: 1, data: { source: { kind: "user" }, content: "active" } }] },
+      archived: { meta: { id: "archived" }, events: inboxEvents(request, "canceled") },
+    }))
+    await canceledBridge.start()
+    deliver(message(35, "canceled remains eligible", { mentions: ["bot"] }))
+    await flushBridge()
+    expect((canceledFixture.prompts[0] as any).content[0].text).toContain('emoji="👍" count="1"')
+    await canceledBridge.stop()
+
+    let partialDeliver!: (message: KeetMessage) => void
+    const partialCore = fakeCore({ onWatch: (handler) => { partialDeliver = handler } })
+    partialCore.readRecentMessages = async (groupId, last, signal) => await core.readRecentMessages(groupId, last, signal)
+    const partialFixture = makeAgent()
+    const partialBase = deps(partialCore, partialFixture.agent, { active: { meta: { id: "active" }, events: [{ type: "user/message", time: 1, data: { source: { kind: "user" }, content: "active" } }] } })
+    const partialBridge = new KeetBridge({
+      ...partialBase,
+      workspaceRegistry: { get: () => ({ id: "workspace", path: "/workspace", sessionIds: ["active", "unreadable"] }), archivedSessionIds: new Set(["archived"]) },
+      inspectSession: async (id) => {
+        if (id === "unreadable") throw new Error("inspection failed")
+        return partialBase.inspectSession(id)
+      },
+    })
+    await partialBridge.start()
+    partialDeliver(message(36, "ordinary survives unavailable recovery", { mentions: ["bot"] }))
+    await flushBridge()
+    const partialPrompt = (partialFixture.prompts[0] as any).content[0].text as string
+    expect(partialPrompt).toContain("ordinary survives unavailable recovery")
+    expect(partialPrompt).not.toContain("reaction context")
+    await partialBridge.stop()
   })
 
   it("isolates reaction context per destination and keeps an unavailable refresh from suppressing text", async () => {

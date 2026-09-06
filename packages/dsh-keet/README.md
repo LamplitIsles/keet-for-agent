@@ -45,8 +45,13 @@ canonical message IDs and reply provenance while identifying the source with its
 startup `groupName`; DM prompts identify the source and sender label but omit
 message IDs and reply relations. Sender IDs never enter Agent prompts.
 Integration-authored messages and snapshot/history records never trigger. Human
-reactions to an Integration-authored message are silent; changed aggregate
-reactions may be included once as bounded, untrusted context on the next
+reactions to an Integration-authored message are silent. Aggregate reaction
+context is delivered at most once for each exact target-message, emoji, and
+visible-count tuple, including across DSH restarts; a new count remains eligible.
+A canceled inbox removal leaves its receipt eligible, while removing and later
+re-adding the same tuple does not notify again. Targets are whitespace-normalized
+prefixes of at most 48 Unicode code points, followed by one ellipsis only when
+content was omitted. These bounded summaries are untrusted context on the next
 ordinary trigger for that same destination. Keet picker/custom wire tokens that
 match the bounded lowercase/digit/_+- grammar use colon-wrapped native names
 such as `:heart:` in that context, while literal Unicode reactions remain

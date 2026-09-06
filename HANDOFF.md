@@ -34,7 +34,10 @@ streaming path, terminal failure, intentional cleanup, and identity locking.
 Mocks and the fake worker do not establish official-client interoperability;
 the opt-in official-runtime smokes remain the only such evidence.
 README.md, `packages/dsh-keet/README.md`, and `CONTEXT.md` describe the
-reaction-facing behavior, Managed Broadcast contract, and glossary. Explicit recent reads expose current
+reaction-facing behavior, including durable at-most-once aggregate context for
+an exact target/emoji/count tuple, canceled-removal and same-count re-addition
+semantics, and the concise 48-code-point target prefix. They also describe the
+Managed Broadcast contract and glossary. Explicit recent reads expose current
 edited text, while edited live updates never trigger turns. `AGENTS.md` owns
 build commands, safety constraints, official-smoke policy, and
 contributor/release workflow, including the scoped release-audit rule. The
@@ -89,10 +92,17 @@ reaction, cancellation, or lost readiness after text confirmation never retries
 or converts the tool into an error. Optional reactions are unavailable outside
 an active ordinary Keet turn, for `/compact`, stale/settled work, Broadcasts,
 or another destination. DM history and prompts omit sender/message/reply IDs,
-and DM sends are ordinary text. Human reactions never trigger a turn; changed
-aggregate reactions on Integration-authored messages are best-effort bounded
-context on the next ordinary trigger for that same destination, with no reactor
-or Member IDs.
+and DM sends are ordinary text. Human reactions never trigger a turn; aggregate
+reaction context on Integration-authored messages is best-effort bounded and
+delivered at most once for an exact target/emoji/count tuple across restarts.
+The Bridge replays DSH's durable `agent/inbox/spliced` events from every
+inspected workspace session as the restart source of truth; a failed session
+inspection disables only reaction context recovery for that run. The live
+receipt set remains a projection updated at the claim boundary.
+Canceled inbox removals leave a receipt eligible, while same-count removal and
+re-addition remains suppressed; targets are whitespace-normalized 48-code-point
+prefixes with an ellipsis only when omitted. No reactor or Member IDs enter
+context.
 `keet_send_image` is DM-only, accepts one PNG, JPEG,
 WebP, or GIF from the bound Active Conversation workspace, preserves the
 source bytes, and sends an optional caption as adjacent text. It rejects URLs,

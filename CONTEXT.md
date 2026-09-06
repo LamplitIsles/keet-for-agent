@@ -173,8 +173,14 @@ _Avoid_: Automatic reply, arbitrary-room send
 A native Unicode emoji or bounded Keet wire-shortcode reaction attached to one
 Keet message by a participant or assistant. Participant reactions are aggregate
 signals that can inform a later interaction in the same destination without
-starting one, and they do not imply reactor identity. Wire tokens are an
-untrusted inbound display form; outbound reactions remain Unicode emoji.
+starting one, and they do not imply reactor identity. Aggregate reaction
+context is delivered at most once for an exact target-message, emoji, and
+visible-count tuple, including across DSH restarts. A canceled inbox removal
+does not consume the receipt; removing and re-adding the same tuple remains
+suppressed, while a changed count is eligible once. The target is a
+whitespace-normalized prefix of at most 48 Unicode code points, with one
+ellipsis only when content was omitted. Wire tokens are an untrusted inbound
+display form; outbound reactions remain Unicode emoji.
 _Avoid_: Standalone response, sticker, reaction-triggered turn, reactor attribution
 
 **Reaction Response**:
