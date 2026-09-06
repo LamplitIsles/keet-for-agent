@@ -83,6 +83,7 @@ export interface KeetSubscription {
 }
 export interface InvitationInfo { readonly isRoomInvitation: true; readonly title?: string; readonly description?: string }
 export interface JoinResult { readonly groupId: string }
+export interface KeetUsernameResult { readonly status: "searchable" | "pending"; readonly submitted: boolean }
 
 export interface KeetCore {
   status(): Promise<KeetReadiness>

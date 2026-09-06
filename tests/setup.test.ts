@@ -64,7 +64,7 @@ describe("dsh-keet-setup", () => {
       Readable.from(["keet://chat/secret-token\n"]) as never, stdout.stream, stderr.stream,
       {
         resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-        coreFactory: async (options) => { receivedOptions = options as unknown as Record<string, unknown>; return { joinInvitation: async (invitation) => { calls.push(invitation); return { groupId: "group-result" } }, updateIdentityProfile: async () => undefined, setUsername: async () => undefined, listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined } },
+        coreFactory: async (options) => { receivedOptions = options as unknown as Record<string, unknown>; return { joinInvitation: async (invitation) => { calls.push(invitation); return { groupId: "group-result" } }, updateIdentityProfile: async () => undefined, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined } },
       },
     )
     expect(code).toBe(0)
@@ -85,7 +85,7 @@ describe("dsh-keet-setup", () => {
       Readable.from([]) as never, stdout.stream, output().stream,
       {
         resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-        coreFactory: async () => { started += 1; return { joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async (value) => { profile = value.displayName ?? "" }, setUsername: async () => undefined, listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined } },
+        coreFactory: async () => { started += 1; return { joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async (value) => { profile = value.displayName ?? "" }, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined } },
       },
     )
     expect(profileCode).toBe(0)
@@ -107,7 +107,7 @@ describe("dsh-keet-setup", () => {
       ["dm-requests", "--workspace", "/workspace"], Readable.from([]) as never, pendingOut.stream, output().stream,
       {
         resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-        coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async () => undefined, setUsername: async () => undefined, listPendingDmRequests: async () => [{ memberId: "peer", displayName: "Peer" }], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
+        coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async () => undefined, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [{ memberId: "peer", displayName: "Peer" }], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
       },
     )
     expect(pendingCode).toBe(0)
@@ -118,7 +118,7 @@ describe("dsh-keet-setup", () => {
       ["dm-accept", "--workspace", "/workspace", "--member-id", "peer"], Readable.from([]) as never, acceptedOut.stream, output().stream,
       {
         resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-        coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async () => undefined, setUsername: async () => undefined, listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
+        coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async () => undefined, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
       },
     )
     expect(acceptedCode).toBe(0)
@@ -136,7 +136,7 @@ describe("dsh-keet-setup", () => {
         coreFactory: async () => ({
           joinInvitation: async () => ({ groupId: "unused" }),
           updateIdentityProfile: async () => undefined,
-          setUsername: async (username) => { received = username },
+          setUsername: async (username) => { received = username; return { status: "searchable" as const, submitted: true } },
           listPendingDmRequests: async () => [],
           acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }),
           close: async () => { closes += 1 },
@@ -147,6 +147,30 @@ describe("dsh-keet-setup", () => {
     expect(received).toBe("agent_name1")
     expect(JSON.parse(stdout.value())).toEqual({ ok: true, operation: "username", username: "agent_name1" })
     expect(closes).toBe(1)
+
+    for (const submitted of [true, false]) {
+      const pendingOut = output()
+      const pendingErr = output()
+      const pending = await runSetup(
+        ["username", "--workspace", "/workspace", "--username", "agent_name1"], Readable.from([]) as never, pendingOut.stream, pendingErr.stream,
+        {
+          resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
+          coreFactory: async () => ({
+            joinInvitation: async () => ({ groupId: "unused" }),
+            updateIdentityProfile: async () => undefined,
+            setUsername: async () => ({ status: "pending" as const, submitted }),
+            listPendingDmRequests: async () => [],
+            acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }),
+            close: async () => { closes += 1 },
+          }),
+        },
+      )
+      expect(pending).toBe(1)
+      expect(JSON.parse(pendingOut.value())).toEqual({ ok: false, operation: "username", username: "agent_name1", status: "pending", submitted, retryable: true })
+      expect(pendingErr.value()).toBe("")
+      expect(pendingOut.value()).not.toContain("identity-self")
+    }
+    expect(closes).toBe(3)
 
     const failed = await runSetup(
       ["username", "--workspace", "/workspace", "--username", "agent_name2"], Readable.from([]) as never, output().stream, output().stream,
@@ -163,7 +187,7 @@ describe("dsh-keet-setup", () => {
       },
     )
     expect(failed).toBe(1)
-    expect(closes).toBe(2)
+    expect(closes).toBe(4)
   })
 
   it("runs an avatar-only profile update through the observable CLI contract", async () => {
@@ -178,7 +202,7 @@ describe("dsh-keet-setup", () => {
         {
           prepareAvatar: async (value) => { expect(value).toBe(avatarPath); return prepared },
           resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-          coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async (value) => { received = value }, setUsername: async () => undefined, listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
+          coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async (value) => { received = value }, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
         },
       )
       expect(code).toBe(0)
@@ -201,7 +225,7 @@ describe("dsh-keet-setup", () => {
         {
           prepareAvatar: async (value) => { expect(value).toBe(avatarPath); return prepared },
           resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-          coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async (value) => { received = value }, setUsername: async () => undefined, listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
+          coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async (value) => { received = value }, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
         },
       )
       expect(code).toBe(0)

@@ -122,6 +122,25 @@ square image rather than a pre-baked circle. Avatar-only updates preserve the
 current non-empty display name, and profile setup does not expose avatar
 removal.
 
+Reserve the identity's globally searchable username separately from its
+display name with the human-only setup command:
+
+```sh
+dsh-keet-setup username --workspace /path/to/dsh-workspace \
+  --username agent_name1
+```
+
+After local syntax and availability checks, setup submits the native
+registration or update and waits through the full 60-second lookup-convergence
+budget. It prints the existing success JSON only after the exact username
+resolves to this identity's Member ID. If the mutation was accepted but lookup
+is still pending, it exits 1 with one bounded JSON line such as
+`{"ok":false,"operation":"username","username":"agent_name1","status":"pending","submitted":true,"retryable":true}`.
+Retry the exact same username; `submitted: false` identifies the idempotent
+current-name verification path. Generic failures remain bounded and do not
+print identity keys. No background polling or alternate-name selection is
+created.
+
 To authorize a direct message, list bounded pending sender identities and
 accept one exact Member ID through the human-only setup commands. Acceptance
 does not print a room ID; restart DSH afterward so the next canonical snapshot

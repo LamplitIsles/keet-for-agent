@@ -6,6 +6,7 @@ export type {
   Invitation,
   CreateGroupOptions,
   JoinResult,
+  KeetUsernameResult,
   KeetCoreOptions,
   KeetMember,
   KeetMessage,

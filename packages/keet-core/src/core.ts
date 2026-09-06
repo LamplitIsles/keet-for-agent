@@ -7,6 +7,7 @@ import {
   type CreateGroupOptions,
   type KeetCore,
   type JoinResult,
+  type KeetUsernameResult,
   type KeetCoreOptions,
   type KeetMember,
   type KeetMessage,
@@ -37,7 +38,6 @@ const DEFAULT_PAIRING_TIMEOUT_MS = 60_000
 const MAX_DM_REQUESTS = 32
 const MAX_AVATAR_BYTES = 512 * 1024
 const MAX_USERNAME_LENGTH = 64
-const MAX_USERNAME_POLL = 32
 const DM_REQUEST_PENDING = 3
 // The bridge acknowledges `chatIndex + 1`, so the retained position must
 // leave one safe integer available for that read length.
@@ -563,26 +563,32 @@ export class KeetIntegrationCore implements KeetCore {
     this.#selfLabel = displayName
   }
 
-  async setUsername(username: string, signal?: AbortSignal): Promise<void> {
+  async setUsername(username: string, signal?: AbortSignal): Promise<KeetUsernameResult> {
     const requested = validateKeetUsername(username)
     ensureSignal(signal)
     const identity = await this.loadIdentity()
+    let submitted = false
     if (identity.username !== requested) {
       const available = await this.callWithSignal("checkUsername", [requested], signal)
       if (typeof available !== "boolean") throw publicError("Keet returned an invalid username availability result")
       if (!available) throw publicError("Keet username is unavailable")
 
       const operation = identity.username === undefined ? "registerUsername" : "updateUsername"
-      const submitted = await this.callWithSignal(operation, [requested], signal)
-      if (submitted !== true) throw publicError("Keet did not accept the username update")
+      const accepted = await this.callWithSignal(operation, [requested], signal)
+      if (accepted !== true) throw publicError("Keet did not accept the username update")
+      submitted = true
     }
 
     const deadline = Date.now() + this.#pairingTimeoutMs
-    for (let attempt = 0; attempt < MAX_USERNAME_POLL && Date.now() < deadline; attempt += 1) {
+    let backoff = 100
+    while (Date.now() < deadline) {
       ensureSignal(signal)
       const raw = await this.callWithSignal("lookupUsername", [requested], signal)
       if (raw === null) {
-        await delay(Math.min(100 * (attempt + 1), 1_000), signal)
+        const remaining = deadline - Date.now()
+        if (remaining <= 0) break
+        await delay(Math.min(backoff, remaining), signal)
+        backoff = Math.min(backoff + 100, 1_000)
         continue
       }
       if (!isRecord(raw) || Array.isArray(raw) || raw.username !== requested || typeof raw.memberId !== "string" || !raw.memberId.trim() || raw.memberId.length > MAX_MEMBER_ID) {
@@ -590,9 +596,9 @@ export class KeetIntegrationCore implements KeetCore {
       }
       if (raw.memberId !== identity.id) throw publicError("Keet username became unavailable")
       this.#selfUsername = requested
-      return
+      return { status: "searchable", submitted }
     }
-    throw publicError("Keet username did not become searchable before the timeout")
+    return { status: "pending", submitted }
   }
 
   async close(): Promise<void> {

@@ -115,9 +115,17 @@ checks availability, submits the native registration or update, and reports
 success only after the requested name resolves to this identity's Member ID.
 Previously used names cannot be reused, including after a change, and the
 official client allows at most four changes after the initial registration.
-Registry failures are reported as a bounded generic setup error; no identity
-key is printed. A success result is one JSON line such as
-`{"ok":true,"operation":"username","username":"agent_name1"}`.
+The command waits through the full 60-second registry convergence budget. A
+confirmed result is one JSON line such as
+`{"ok":true,"operation":"username","username":"agent_name1"}`. If the
+registry accepted a mutation but the exact lookup is still not searchable when
+the budget expires, setup exits 1 and emits only the bounded pending result
+`{"ok":false,"operation":"username","username":"agent_name1","status":"pending","submitted":true,"retryable":true}`.
+`submitted` is `false` when an exact current-name request was only verifying
+lookup convergence. Retry the exact same username; no alternate name or
+persistent background job is created. Unavailable, malformed, cancelled, and
+other registry failures retain the bounded generic setup error, and no
+identity key is printed.
 
 To inspect and accept a human-sent DM request, use the setup executable:
 

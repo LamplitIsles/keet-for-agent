@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { KeetIntegrationCore, validateKeetUsername } from "@lamplitisles/keet-integration-core"
-import type { KeetCore, KeetCoreOptions, KeetPendingDmRequest, PreparedAvatar } from "./core-contract.js"
+import type { KeetCore, KeetCoreOptions, KeetPendingDmRequest, KeetUsernameResult, PreparedAvatar } from "./core-contract.js"
 import { prepareAvatar, validatePreparedAvatar } from "./avatar.js"
 import { resolveKeetRuntimePaths } from "./local-paths.js"
 import { createKeetRuntimeOptions } from "./runtime-options.js"
@@ -22,7 +22,7 @@ export interface SetupArguments {
 }
 
 type SetupCore = Pick<KeetCore, "close" | "joinInvitation" | "updateIdentityProfile" | "listPendingDmRequests" | "acceptDmRequest"> & {
-  setUsername(username: string, signal?: AbortSignal): Promise<void>
+  setUsername(username: string, signal?: AbortSignal): Promise<KeetUsernameResult>
 }
 export interface SetupDependencies {
   coreFactory?: (options: KeetCoreOptions) => Promise<SetupCore>
@@ -49,7 +49,12 @@ export async function runSetup(argv: readonly string[], stdin = process.stdin, s
         await core.updateIdentityProfile({ ...(parsed.displayName !== undefined ? { displayName: parsed.displayName } : {}), ...(avatar ? { avatar } : {}) })
         stdout.write(JSON.stringify({ ok: true, operation: "profile", ...(parsed.displayName !== undefined ? { displayName: parsed.displayName.trim() } : {}), ...(avatar ? { avatar: true } : {}) }) + "\n")
       } else if (parsed.command === "username") {
-        await core.setUsername(parsed.username!)
+        const result = await core.setUsername(parsed.username!)
+        if (!isUsernameResult(result)) throw new Error("invalid username result")
+        if (result.status === "pending") {
+          stdout.write(JSON.stringify({ ok: false, operation: "username", username: parsed.username, status: "pending", submitted: result.submitted, retryable: true }) + "\n")
+          return 1
+        }
         stdout.write(JSON.stringify({ ok: true, operation: "username", username: parsed.username }) + "\n")
       } else if (parsed.command === "dm-requests") {
         const requests = await core.listPendingDmRequests()
@@ -72,6 +77,12 @@ export async function runSetup(argv: readonly string[], stdin = process.stdin, s
 
 function publicPendingRequest(request: KeetPendingDmRequest): Record<string, string> {
   return { memberId: request.memberId.slice(0, MAX_MEMBER_ID), ...(request.displayName ? { displayName: request.displayName.slice(0, MAX_MEMBER_ID) } : {}) }
+}
+
+function isUsernameResult(value: unknown): value is KeetUsernameResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const result = value as { status?: unknown; submitted?: unknown }
+  return (result.status === "searchable" || result.status === "pending") && typeof result.submitted === "boolean"
 }
 
 export function parseArgs(argv: readonly string[]): SetupArguments {

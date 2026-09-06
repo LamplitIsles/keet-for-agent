@@ -588,7 +588,7 @@ describe("typed Keet Integration Core unit behavior", () => {
         lookupUsername: () => ++registrationLookups === 1 ? null : { memberId: "identity-self", username: "agent_name1", displayName: "Fixture Bot" },
       },
     })
-    await registration.core.setUsername("agent_name1")
+    await expect(registration.core.setUsername("agent_name1")).resolves.toEqual({ status: "searchable", submitted: true })
     expect(registration.state.calls.filter(({ name }) => ["checkUsername", "registerUsername", "updateUsername", "lookupUsername"].includes(name))).toEqual([
       { name: "checkUsername", args: ["agent_name1"] },
       { name: "registerUsername", args: ["agent_name1"] },
@@ -604,7 +604,7 @@ describe("typed Keet Integration Core unit behavior", () => {
         lookupUsername: () => ({ memberId: "identity-self", username: "new_name2" }),
       },
     })
-    await update.core.setUsername("new_name2")
+    await expect(update.core.setUsername("new_name2")).resolves.toEqual({ status: "searchable", submitted: true })
     expect(update.state.calls.some(({ name, args }) => name === "updateUsername" && args[0] === "new_name2")).toBe(true)
     expect(update.state.calls.some(({ name }) => name === "registerUsername")).toBe(false)
   })
@@ -614,7 +614,7 @@ describe("typed Keet Integration Core unit behavior", () => {
       identity: { memberId: "identity-self", profile: { displayName: "Fixture Bot", username: "agent_name1" } },
       handlers: { lookupUsername: () => ({ memberId: "identity-self", username: "agent_name1" }) },
     })
-    await harness.core.setUsername("agent_name1")
+    await expect(harness.core.setUsername("agent_name1")).resolves.toEqual({ status: "searchable", submitted: false })
     expect(harness.state.calls.map(({ name }) => name)).toEqual(["getIdentity", "lookupUsername"])
   })
 
@@ -642,15 +642,49 @@ describe("typed Keet Integration Core unit behavior", () => {
     await expect(malformedIdentity.core.setUsername("agent_name1")).rejects.toThrow("identity username is invalid")
   })
 
-  it("bounds username convergence polling and reports timeout", async () => {
+  it("uses the full convergence deadline and reports submitted pending state", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(60_001)
     try {
       const harness = makeMockCore({ handlers: { checkUsername: () => true, registerUsername: () => true, lookupUsername: () => null } })
-      await expect(harness.core.setUsername("agent_name1")).rejects.toThrow("did not become searchable before the timeout")
+      await expect(harness.core.setUsername("agent_name1")).resolves.toEqual({ status: "pending", submitted: true })
       expect(harness.state.calls.filter(({ name }) => name === "lookupUsername")).toHaveLength(1)
     } finally {
       clock.mockRestore()
     }
+  })
+
+  it("converges after more than the old attempt cap without waiting on wall clock time", async () => {
+    let now = 0
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now)
+    const timers = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delayMs?: number) => {
+      now += Number(delayMs ?? 0)
+      callback()
+      return 0 as never
+    }) as unknown as typeof setTimeout)
+    try {
+      let lookups = 0
+      const harness = makeMockCore({ handlers: {
+        checkUsername: () => true,
+        registerUsername: () => true,
+        lookupUsername: () => ++lookups <= 33 ? null : { memberId: "identity-self", username: "agent_name1" },
+      } })
+      const result = harness.core.setUsername("agent_name1")
+      await expect(result).resolves.toEqual({ status: "searchable", submitted: true })
+      expect(lookups).toBe(34)
+    } finally {
+      timers.mockRestore()
+      clock.mockRestore()
+    }
+  })
+
+  it("cancels username convergence instead of converting cancellation to pending", async () => {
+    const controller = new AbortController()
+    const harness = makeMockCore({ handlers: {
+      checkUsername: () => true,
+      registerUsername: () => true,
+      lookupUsername: () => { controller.abort(); return null },
+    } })
+    await expect(harness.core.setUsername("agent_name1", controller.signal)).rejects.toThrow("cancelled")
   })
 })
 

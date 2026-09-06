@@ -155,8 +155,15 @@ for an incoming DM request. Names are 3–64 characters, contain a Latin letter
 and a digit, and otherwise contain only Latin letters, digits, or underscore.
 Exact current-name requests are idempotent. New requests fail closed on an
 unavailable or malformed registry response and return success only after the
-name resolves to the current Member ID. Previously used names remain reserved;
-the official client permits four changes after initial registration.
+name resolves to the current Member ID. The operation waits through the full
+60-second convergence budget. If a native mutation was accepted but the exact
+lookup is still pending, setup exits 1 with one bounded JSON result containing
+`ok: false`, `operation: "username"`, the requested `username`,
+`status: "pending"`, `submitted: true`, and `retryable: true`.
+`submitted: false` is used when an exact current-name request only verified
+lookup convergence. Retry the exact same name; there is no alternate-name or
+background polling behavior. Previously used names remain reserved; the
+official client permits four changes after initial registration.
 
 The artifact contains source-derived code, declarations, the client bundle,
 Cordis patch, license, and notices. Runtime assets and identity/group data are

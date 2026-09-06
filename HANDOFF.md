@@ -138,15 +138,22 @@ wrapped errors are bounded and redacted.
 
 The pinned worker exposes username RPCs 195–202. This implementation uses
 `checkUsername` (202), `registerUsername` (198) or `updateUsername` (199), then
-polls `lookupUsername` (195). Extracted 4.21.0 worker evidence shows availability
-is boolean, both mutations delegate to `userRegistry.update(name)` and return a
-submission boolean, and lookup returns `null` or an encoded user containing
-`memberId` and `username`. Core therefore accepts only exact booleans and an
-exact converged lookup; malformed results fail closed. Exact current-name input
-skips availability and mutation but still verifies lookup convergence. The
-registry retains five records per Member key (initial registration plus four
-changes), so prior names cannot be reused. No official-runtime username smoke
-was authorized, so official-client interoperability remains unverified.
+polls `lookupUsername` (195) until the configured 60-second deadline. Extracted
+4.21.0 worker evidence shows availability is boolean, both mutations delegate
+to `userRegistry.update(name)` and return a submission boolean, and lookup
+returns `null` or an encoded user containing `memberId` and `username`. Core
+therefore accepts only exact booleans and an exact converged lookup; malformed
+results and ownership conflicts fail closed. Its narrow result is
+`{ status: "searchable" | "pending", submitted: boolean }`; `submitted`
+records whether this call accepted a native mutation, while exact current-name
+input skips availability and mutation but still verifies lookup convergence.
+Setup keeps the confirmed success JSON unchanged. A deadline without exact
+lookup exits 1 with bounded `ok: false`, `status: "pending"`, `submitted`, and
+`retryable: true` facts so the operator can retry the exact same username; no
+background job or alternate name is created. The registry retains five records
+per Member key (initial registration plus four changes), so prior names cannot
+be reused. No official-runtime username smoke was authorized, so official-client
+interoperability remains unverified.
 
 The root `.scratch/` tree is intentionally ignored and includes active plans,
 deferred notes, and preserved archived local material. Do not add it to Git.
