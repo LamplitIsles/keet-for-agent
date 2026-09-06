@@ -5,7 +5,7 @@ import type { Context } from "@deepseek-ai/cordis"
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools"
 import { KeetIntegrationCore } from "@lamplitisles/keet-integration-core"
 import type { KeetCore, KeetCoreOptions, KeetMessage, KeetMessageId, KeetSubscription, ManagedGroup } from "./core-contract.js"
-import { CLASSIFICATION_STOP_TIMEOUT_MS, CONTEXT_BUFFER_LIMIT, DEFAULT_SETTINGS, DEDUPE_LIMIT, DM_TYPING_REFRESH_MS, MAX_MEMBER_JOIN_RECEIPTS, MEMBER_JOIN_POLL_INTERVAL_MS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES, type KeetSettings } from "./constants.js"
+import { CLASSIFICATION_STOP_TIMEOUT_MS, CONTEXT_BUFFER_LIMIT, DEFAULT_SETTINGS, DEDUPE_LIMIT, DM_TYPING_REFRESH_MS, MAX_INBOX_SPLICE_MESSAGES, MEMBER_JOIN_POLL_INTERVAL_MS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES, type KeetSettings } from "./constants.js"
 import { classifyTrigger, fitKeetReactionContext, messageIdKey, normalizeKeetRecord, renderKeetContextPrompt, renderKeetMemberJoinPrompt, type AdmittedKeetMessage, type KeetContextRecord, type KeetIdentity, type KeetReactionContext } from "./keet-protocol.js"
 import { createKeetToolDefinitions, normalizeManagedDestinationName, type ActiveReactionTarget, type ManagedDestination, type ManagedDestinationSummary } from "./keet-tools.js"
 import { createKeetRuntimeOptions, type KeetRuntimePaths } from "./runtime-options.js"
@@ -103,18 +103,15 @@ interface KeetMemberLike {
 }
 
 type RosterReceiptState = "pending" | "consumed" | "eligible"
-type KeetAdmissionReceiptKind = "message" | "member-join"
 interface KeetAdmissionReceipt {
-  readonly kind: KeetAdmissionReceiptKind
+  readonly kind: "member-join"
   readonly receipt: string
-  readonly groupId: string
-  readonly memberId?: string
+  readonly groupId: "roster"
 }
 
 /** Adapter-private metadata retained on the exact DSH user message. */
 const KEET_ADMISSION_METADATA_KEY = "dshKeet"
 const MAX_ADMISSION_METADATA_CHARS = 1_024
-let nextMessageAdmissionReceipt = 0
 
 const COMPACT_UNAVAILABLE = "The /compact command is unavailable."
 const MAX_REACTION_RECEIPTS_PER_MESSAGE = 128
@@ -512,7 +509,6 @@ export class KeetBridge {
   }
 
   private insertAdmissionReceipt(receipt: KeetAdmissionReceipt): void {
-    if (receipt.kind !== "member-join") return
     const key = rosterStateKey(receipt)
     if (!key) return
     const prior = this.rosterReceipts.get(key)
@@ -520,13 +516,11 @@ export class KeetBridge {
   }
 
   private consumeAdmissionReceipt(receipt: KeetAdmissionReceipt): void {
-    if (receipt.kind !== "member-join") return
     const key = rosterStateKey(receipt)
     if (key) this.rosterReceipts.set(key, "consumed")
   }
 
   private cancelAdmissionReceipt(receipt: KeetAdmissionReceipt): void {
-    if (receipt.kind !== "member-join") return
     const key = rosterStateKey(receipt)
     if (!key || this.rosterReceipts.get(key) === "consumed") return
     // Keep the observation eligible. The next successful poll may retry it
@@ -720,7 +714,7 @@ export class KeetBridge {
     const content: any[] = []
     for (const attachment of trigger.imageAttachments ?? []) content.push({ type: "image", attachment })
     content.push({ type: "text", text: contextText })
-    const receipt = trigger.receipt ?? (trigger.message ? messageAdmissionReceipt(trigger.destination.groupId, trigger.message.messageId) : undefined)
+    const receipt = trigger.receipt
     const request = createAdmissionUserMessage(content, receipt, reactionRefresh.pending)
     const pendingTurn: PendingKeetTurn = {
       requestId: String(request.id),
@@ -1074,18 +1068,7 @@ function rosterReceiptKey(groupId: string, memberId: string): string {
 }
 
 function rosterStateKey(receipt: KeetAdmissionReceipt): string {
-  if (receipt.memberId) return rosterReceiptKey(receipt.groupId, receipt.memberId)
-  return receipt.receipt.startsWith("member-join:") && receipt.receipt.length <= MAX_ADMISSION_METADATA_CHARS ? receipt.receipt : ""
-}
-
-function messageAdmissionReceipt(groupId: string, messageId: KeetMessageId): KeetAdmissionReceipt {
-  // Message receipts only identify the bridge-internal admission instance.
-  // They deliberately do not copy Keet room/message IDs into DM user-message
-  // JSON, where a diagnostic/session inspection could expose them to a model.
-  void groupId
-  void messageId
-  nextMessageAdmissionReceipt = (nextMessageAdmissionReceipt + 1) % 1_000_000_000
-  return { kind: "message", receipt: `message:${nextMessageAdmissionReceipt}`, groupId: "message" }
+  return receipt.groupId === "roster" && receipt.receipt.startsWith("member-join:") && receipt.receipt.length <= MAX_ADMISSION_METADATA_CHARS ? receipt.receipt : ""
 }
 
 function createAdmissionUserMessage(content: readonly unknown[], receipt: KeetAdmissionReceipt | undefined, reactionReceipts: readonly string[] = []): ReturnType<typeof createUserMessage> {
@@ -1107,20 +1090,10 @@ function receiptFromMessage(value: unknown): KeetAdmissionReceipt | undefined {
   if (metadata === undefined) return undefined
   if (!isRecord(metadata)) return undefined
   if (metadata.adapter !== undefined && metadata.adapter !== "dsh-keet") return undefined
-  const kind = metadata.kind
   const receipt = metadata.receipt
   const groupId = metadata.groupId
-  if ((kind !== "message" && kind !== "member-join") || typeof receipt !== "string" || !receipt.trim() || receipt.length > MAX_ADMISSION_METADATA_CHARS || typeof groupId !== "string" || !groupId.trim() || groupId.length > MAX_PROVENANCE_CHARS) return undefined
-  if (kind === "message") return { kind, receipt: receipt.slice(0, MAX_ADMISSION_METADATA_CHARS), groupId: groupId.trim().slice(0, MAX_PROVENANCE_CHARS) }
-  const memberId = metadata.memberId
-  if (memberId === undefined) {
-    if (groupId !== "roster" || !receipt.startsWith("member-join:")) return undefined
-    return { kind, receipt: receipt.slice(0, MAX_ADMISSION_METADATA_CHARS), groupId: "roster" }
-  }
-  if (typeof memberId !== "string" || !memberId.trim() || memberId.length > MAX_PROVENANCE_CHARS) return undefined
-  const key = rosterReceiptKey(groupId, memberId)
-  if (!key) return undefined
-  return { kind, receipt: key, groupId: groupId.trim().slice(0, MAX_PROVENANCE_CHARS), memberId: memberId.trim().slice(0, MAX_PROVENANCE_CHARS) }
+  if (metadata.kind !== "member-join" || typeof receipt !== "string" || !receipt.trim() || !receipt.startsWith("member-join:") || receipt.length > MAX_ADMISSION_METADATA_CHARS || groupId !== "roster") return undefined
+  return { kind: "member-join", receipt: receipt.slice(0, MAX_ADMISSION_METADATA_CHARS), groupId: "roster" }
 }
 
 function replayRosterReceipts(inspections: Iterable<SessionInspectionLike>): Map<string, RosterReceiptState> {
@@ -1136,14 +1109,14 @@ function replayRosterReceipts(inspections: Iterable<SessionInspectionLike>): Map
       const removedCount = event.data.removedCount === undefined ? 0 : event.data.removedCount
       const inserted = event.data.inserted
       const outcome = event.data.outcome
-      if ((targetValue !== "next-turn" && targetValue !== "next-step") || !Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(removedCount) || removedCount < 0 || !Array.isArray(inserted) || inserted.length > MAX_MEMBER_JOIN_RECEIPTS || (outcome !== undefined && outcome !== "canceled")) throw new Error("invalid inbox splice")
+      if ((targetValue !== "next-turn" && targetValue !== "next-step") || !Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(removedCount) || removedCount < 0 || !Array.isArray(inserted) || inserted.length > MAX_INBOX_SPLICE_MESSAGES || (outcome !== undefined && outcome !== "canceled")) throw new Error("invalid inbox splice")
       const target = targetValue as "next-turn" | "next-step"
       const queue = inbox[target]
-      if (start > queue.length || start + removedCount > queue.length || queue.length + inserted.length - removedCount > MAX_MEMBER_JOIN_RECEIPTS) throw new Error("invalid inbox splice")
+      if (start > queue.length || start + removedCount > queue.length || queue.length + inserted.length - removedCount > MAX_INBOX_SPLICE_MESSAGES) throw new Error("invalid inbox splice")
       const removed = queue.slice(start, start + removedCount)
       for (const message of removed) {
         const receipt = receiptFromMessage(message)
-        if (!receipt || receipt.kind !== "member-join") continue
+        if (!receipt) continue
         const key = rosterStateKey(receipt)
         if (!key) continue
         if (outcome === "canceled") {
@@ -1153,12 +1126,11 @@ function replayRosterReceipts(inspections: Iterable<SessionInspectionLike>): Map
       queue.splice(start, removedCount, ...inserted)
       for (const message of inserted) {
         const receipt = receiptFromMessage(message)
-        if (!receipt || receipt.kind !== "member-join") continue
+        if (!receipt) continue
         const key = rosterStateKey(receipt)
         if (!key) continue
         if (receipts.get(key) !== "consumed") receipts.set(key, "pending")
       }
-      if (receipts.size > MAX_MEMBER_JOIN_RECEIPTS) throw new Error("inbox receipt history exceeds bounds")
     }
   }
   return receipts

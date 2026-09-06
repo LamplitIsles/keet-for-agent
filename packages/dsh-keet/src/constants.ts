@@ -15,8 +15,8 @@ export const CLASSIFICATION_STOP_TIMEOUT_MS = 100
 export const DM_TYPING_REFRESH_MS = 4_000
 /** Bridge-owned roster observation cadence; not a user-facing setting. */
 export const MEMBER_JOIN_POLL_INTERVAL_MS = 10_000
-/** Maximum number of durable roster receipts retained by one bridge run. */
-export const MAX_MEMBER_JOIN_RECEIPTS = 4_096
+/** Maximum number of messages accepted in one durable inbox projection. */
+export const MAX_INBOX_SPLICE_MESSAGES = 4_096
 
 export interface KeetSettings {
   workspaceId: string

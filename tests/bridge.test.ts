@@ -1491,6 +1491,43 @@ describe("Keet bridge", () => {
     }
   })
 
+  it("replays more than the former receipt threshold on restart and keeps roster polling available", async () => {
+    vi.useFakeTimers()
+    try {
+      const receiptCount = 4_097
+      const events: any[] = [{ type: "user/message", time: 1, data: { source: { kind: "user" }, content: "hello" } }]
+      for (let index = 0; index < receiptCount; index += 1) {
+        const receipt = `member-join:${index.toString(16).padStart(64, "0")}`
+        const message = {
+          id: `member-join-${index}`,
+          source: { kind: "user" },
+          content: [{ type: "text", text: "Member Join" }],
+          dshKeet: { adapter: "dsh-keet", kind: "member-join", receipt, groupId: "roster" },
+        }
+        events.push({ type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, inserted: [message] } })
+        events.push({ type: "agent/inbox/spliced", data: { target: "next-turn", start: 0, removedCount: 1, inserted: [] } })
+      }
+
+      let roster: KeetMember[] = [{ memberId: "bot", displayName: "Keet Bot" }]
+      const fixture = makeAgent()
+      const core = fakeCore({ membersFor: () => roster })
+      const restarted = new KeetBridge(deps(core, fixture.agent, { prior: { meta: { id: "prior" }, events } }))
+      await restarted.start()
+      await flushBridge()
+      expect(restarted.readiness.state).toBe("ready")
+      expect(fixture.prompts).toHaveLength(0)
+
+      roster = [...roster, { memberId: "member-carol", displayName: "Carol" }]
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushBridge()
+      expect(fixture.prompts).toHaveLength(1)
+      expect(JSON.stringify(fixture.prompts[0])).toContain("Carol")
+      await restarted.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("keeps mention and verified-reply triggers without a status display name", async () => {
     let deliver!: (message: KeetMessage) => void
     const fixture = makeAgent()
