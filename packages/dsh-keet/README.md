@@ -121,6 +121,7 @@ onboarding supports the following operations:
 dsh-keet-setup dm-requests --workspace /path/to/workspace
 dsh-keet-setup dm-accept --workspace /path/to/workspace --member-id <peer-member-id>
 dsh-keet-setup profile --workspace /path/to/workspace --avatar /path/to/avatar.png
+dsh-keet-setup username --workspace /path/to/workspace --username agent_name1
 ```
 
 Each setup operation needs exclusive ownership of the workspace identity.
@@ -147,6 +148,15 @@ circular display mask. For an avatar-only CLI update, Core reads the current
 non-empty display name and resends it with the avatar as required by Keet; the
 operation fails if no current name exists. Avatar removal is not a v1
 operation.
+
+The human-only `username` operation is distinct from `profile`: it reserves or
+changes the globally unique registry name that makes this identity searchable
+for an incoming DM request. Names are 3–64 characters, contain a Latin letter
+and a digit, and otherwise contain only Latin letters, digits, or underscore.
+Exact current-name requests are idempotent. New requests fail closed on an
+unavailable or malformed registry response and return success only after the
+name resolves to the current Member ID. Previously used names remain reserved;
+the official client permits four changes after initial registration.
 
 The artifact contains source-derived code, declarations, the client bundle,
 Cordis patch, license, and notices. Runtime assets and identity/group data are

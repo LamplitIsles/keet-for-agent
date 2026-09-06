@@ -22,7 +22,8 @@ _Avoid_: Published runtime, bundled dependency
 A thin host-specific interface over the Integration Core. The first Adapter is
 the DSH Keet Bridge; MCP, OpenClaw, Hermes, and a general CLI adapter are later
 work. The setup executable is intentionally narrower than a general CLI and
-only performs human onboarding, DM request acceptance, and profile updates.
+only performs human onboarding, searchable-username reservation, DM request
+acceptance, and profile updates.
 _Avoid_: Independent client implementation
 
 **Managed Group**:
@@ -189,10 +190,20 @@ _Avoid_: Plain follow-up, quoted-text imitation
 **Group Onboarding**:
 The one-time human operation that consumes an invitation to join the
 integration identity to a Keet group and persists that identity. A human may
-separately list and accept pending DM requests and update the identity profile.
-Normal Agent tools never create, accept, or reveal invitation/request material;
-DSH restarts to discover newly authorized destinations.
+separately reserve a searchable username, list and accept pending DM requests,
+and update the identity profile. Normal Agent tools never create, accept, or
+reveal invitation/request material; DSH restarts to discover newly authorized
+destinations.
 _Avoid_: Agent invitation tool, automatic group creation
+
+**Searchable Keet Username**:
+The human-managed, globally unique registry reservation that lets another Keet
+human find the dedicated Integration Identity and initiate a DM request. It is
+not the display name or profile. The setup CLI invokes the Integration Core's
+syntax validation, availability admission, native register/update selection,
+and bounded lookup convergence; the bridge, Agent tools, settings, and model
+context do not expose username mutation.
+_Avoid_: Display name, Agent-editable username, contact alias
 
 **Integration Identity Profile**:
 The human-managed display name and optional avatar of the dedicated Keet

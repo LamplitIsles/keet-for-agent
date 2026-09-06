@@ -36,6 +36,8 @@ const MAX_POLL = 32
 const DEFAULT_PAIRING_TIMEOUT_MS = 60_000
 const MAX_DM_REQUESTS = 32
 const MAX_AVATAR_BYTES = 512 * 1024
+const MAX_USERNAME_LENGTH = 64
+const MAX_USERNAME_POLL = 32
 const DM_REQUEST_PENDING = 3
 // The bridge acknowledges `chatIndex + 1`, so the retained position must
 // leave one safe integer available for that read length.
@@ -71,6 +73,7 @@ export class KeetIntegrationCore implements KeetCore {
   readonly #pairingTimeoutMs: number
   #selfId: string | undefined
   #selfLabel: string | undefined
+  #selfUsername: string | undefined
   #closed = false
 
   constructor(options: KeetCoreOptions | KeetSidecar) {
@@ -560,28 +563,71 @@ export class KeetIntegrationCore implements KeetCore {
     this.#selfLabel = displayName
   }
 
+  async setUsername(username: string, signal?: AbortSignal): Promise<void> {
+    const requested = validateKeetUsername(username)
+    ensureSignal(signal)
+    const identity = await this.loadIdentity()
+    if (identity.username !== requested) {
+      const available = await this.callWithSignal("checkUsername", [requested], signal)
+      if (typeof available !== "boolean") throw publicError("Keet returned an invalid username availability result")
+      if (!available) throw publicError("Keet username is unavailable")
+
+      const operation = identity.username === undefined ? "registerUsername" : "updateUsername"
+      const submitted = await this.callWithSignal(operation, [requested], signal)
+      if (submitted !== true) throw publicError("Keet did not accept the username update")
+    }
+
+    const deadline = Date.now() + this.#pairingTimeoutMs
+    for (let attempt = 0; attempt < MAX_USERNAME_POLL && Date.now() < deadline; attempt += 1) {
+      ensureSignal(signal)
+      const raw = await this.callWithSignal("lookupUsername", [requested], signal)
+      if (raw === null) {
+        await delay(Math.min(100 * (attempt + 1), 1_000), signal)
+        continue
+      }
+      if (!isRecord(raw) || Array.isArray(raw) || raw.username !== requested || typeof raw.memberId !== "string" || !raw.memberId.trim() || raw.memberId.length > MAX_MEMBER_ID) {
+        throw publicError("Keet returned an invalid username lookup result")
+      }
+      if (raw.memberId !== identity.id) throw publicError("Keet username became unavailable")
+      this.#selfUsername = requested
+      return
+    }
+    throw publicError("Keet username did not become searchable before the timeout")
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
     await this.sidecar.close()
   }
 
-  private async loadIdentity(): Promise<{ id: string; label?: string }> {
+  private async loadIdentity(): Promise<{ id: string; label?: string; username?: string }> {
     if (this.#selfId) return {
       id: this.#selfId,
       ...(this.#selfLabel ? { label: this.#selfLabel } : {}),
+      ...(this.#selfUsername ? { username: this.#selfUsername } : {}),
     }
     try {
       const raw = await this.sidecar.call("getIdentity", [])
       if (isRecord(raw)) {
+        const profile = raw.profile && isRecord(raw.profile) ? raw.profile : undefined
         this.#selfId = firstString(raw.memberId, raw.identityId, raw.id, raw.publicKey)
-        this.#selfLabel = firstString(raw.displayName, raw.profile && isRecord(raw.profile) ? raw.profile.displayName : undefined)
+        this.#selfLabel = firstString(raw.displayName, profile?.displayName)
+        const username = raw.username ?? profile?.username
+        if (username !== undefined) {
+          if (typeof username !== "string" || !username || username.length > MAX_USERNAME_LENGTH) throw publicError("Keet identity username is invalid")
+          this.#selfUsername = username
+        }
       }
-    } catch { throw publicError("Keet identity is unavailable") }
+    } catch (error) {
+      if (error instanceof Error && error.message === "Keet identity username is invalid") throw error
+      throw publicError("Keet identity is unavailable")
+    }
     if (!this.#selfId) throw publicError("Keet identity is unavailable")
     return {
       id: this.#selfId,
       ...(this.#selfLabel ? { label: this.#selfLabel } : {}),
+      ...(this.#selfUsername ? { username: this.#selfUsername } : {}),
     }
   }
 
@@ -610,6 +656,16 @@ export class KeetIntegrationCore implements KeetCore {
       throw publicError("Keet operation failed")
     }
   }
+}
+
+export function validateKeetUsername(username: string): string {
+  if (typeof username !== "string" || username.length < 3 || username.length > MAX_USERNAME_LENGTH) {
+    throw publicError("username must be between 3 and 64 characters")
+  }
+  if (!/^[A-Za-z0-9_]+$/.test(username) || !/[A-Za-z]/.test(username) || !/[0-9]/.test(username)) {
+    throw publicError("username must contain a Latin letter and digit and use only Latin letters, digits, or underscore")
+  }
+  return username
 }
 
 export function validateAdmission(options: KeetCoreOptions): void {

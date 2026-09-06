@@ -13,8 +13,9 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
   admission, normalized room/group/member/message values (including bounded
   aggregate reaction summaries and image descriptors), canonical room-list DM
   resolution, subscriptions, text/native-image sends, image reads, native
-  reaction add (RPC 156), onboarding, and profile update. Core also owns the
-  single Unicode reaction validator.
+  reaction add (RPC 156), onboarding, profile update, and globally searchable
+  username registration/update with bounded lookup convergence. Core also owns
+  the single Unicode reaction validator and username syntax validator.
 - `packages/dsh-keet/src/` owns the DSH Host bridge, Managed Destination tools
   (including optional reaction decoration on `keet_send_message`), setup
   executable, settings schema/client, and protocol rendering.
@@ -24,7 +25,7 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
 - `docs/runtime-extraction.md` is the operator guide for the private runtime.
 
 Core test boundary: Integration Core normalization, policy, orchestration,
-DM convergence, onboarding, profile, cancellation, native image stream and
+DM convergence, onboarding, profile, username, cancellation, native image stream and
 file-lifecycle handling tests
 use a real but unstarted `KeetSidecar` whose consumed methods are replaced by
 a test-local scripted seam. The fake worker is reserved for the small fd-3
@@ -93,9 +94,12 @@ no-retry partial delivery. Normalized duplicate names fail selected operations
 closed before Core access, with ambiguous sends confirming that no message was
 sent.
 Setup is human-only: `join` reads exactly one invitation URL from stdin,
+`username` reserves or changes the globally unique searchable registry name,
 `dm-requests` lists bounded sender identities, `dm-accept` accepts one exact
 pending sender, and `profile` can independently update display name and a
-prepared avatar. Join and DM acceptance results do not expose room IDs;
+prepared avatar. Username is not profile data at the product interface and is
+not exposed through bridge/model tools or settings. Join and DM acceptance
+results do not expose room IDs;
 restart DSH after either operation so the next startup snapshot can admit the
 destination.
 
@@ -131,6 +135,18 @@ Only Linux x86-64 with Keet 4.21.0, `@holepunchto/keet-core` 4.21.5, and ABI
 writable state under `<workspace>/.dsh/dsh-keet/identity`. Keep both outside
 package artifacts and never use live state in tests. Sidecar diagnostics and
 wrapped errors are bounded and redacted.
+
+The pinned worker exposes username RPCs 195–202. This implementation uses
+`checkUsername` (202), `registerUsername` (198) or `updateUsername` (199), then
+polls `lookupUsername` (195). Extracted 4.21.0 worker evidence shows availability
+is boolean, both mutations delegate to `userRegistry.update(name)` and return a
+submission boolean, and lookup returns `null` or an encoded user containing
+`memberId` and `username`. Core therefore accepts only exact booleans and an
+exact converged lookup; malformed results fail closed. Exact current-name input
+skips availability and mutation but still verifies lookup convergence. The
+registry retains five records per Member key (initial registration plus four
+changes), so prior names cannot be reused. No official-runtime username smoke
+was authorized, so official-client interoperability remains unverified.
 
 The root `.scratch/` tree is intentionally ignored and includes active plans,
 deferred notes, and preserved archived local material. Do not add it to Git.
