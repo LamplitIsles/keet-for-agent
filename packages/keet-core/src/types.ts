@@ -45,6 +45,18 @@ export interface KeetMessageId {
   readonly seq: number
 }
 
+/**
+ * A bounded aggregate reaction digest attached to an ordinary message.
+ * Reactor identities are deliberately not part of the reusable Core contract.
+ */
+export interface KeetReactionSummary {
+  /** Unicode emoji or a colon-wrapped bounded Keet wire shortcode. */
+  readonly emoji: string
+  readonly count: number
+  /** True when the Integration Identity is one of the reacting members. */
+  readonly own: boolean
+}
+
 export interface KeetMember {
   readonly memberId: string
   readonly displayName: string
@@ -69,6 +81,7 @@ export interface KeetMessage {
   readonly chatIndex?: number
   readonly mentions?: readonly string[]
   readonly replyTo?: KeetMessageId
+  readonly reactions?: readonly KeetReactionSummary[]
 }
 
 export interface ManagedGroup {
@@ -155,6 +168,8 @@ export interface KeetCore {
   setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void>
   /** Publish one native Managed DM typing timestamp refresh. */
   updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void>
+  /** Add one native Unicode emoji reaction to an exact message. */
+  addReaction(groupId: string, messageId: KeetMessageId, reaction: string, signal?: AbortSignal): Promise<void>
   sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal): Promise<KeetMessageId | undefined>
   inspectInvitation(invitation: string, signal?: AbortSignal): Promise<InvitationInfo>
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>

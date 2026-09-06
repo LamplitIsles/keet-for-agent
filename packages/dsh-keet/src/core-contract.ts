@@ -8,6 +8,14 @@ export interface KeetMessageId {
   readonly seq: number
 }
 
+export interface KeetReactionSummary {
+  /** Unicode emoji or a colon-wrapped bounded Keet wire shortcode. */
+  readonly emoji: string
+  readonly count: number
+  /** True when the Integration Identity applied this reaction. */
+  readonly own: boolean
+}
+
 export interface KeetMember {
   readonly memberId: string
   readonly displayName: string
@@ -38,6 +46,7 @@ export interface KeetMessage {
   readonly chatIndex?: number
   readonly mentions?: readonly string[]
   readonly replyTo?: KeetMessageId
+  readonly reactions?: readonly KeetReactionSummary[]
 }
 
 export interface KeetReadiness { readonly state: "ready"; readonly appVersion: string; readonly coreVersion: string; readonly abi: number; readonly swarming: boolean; readonly identityId: string; readonly displayName?: string }
@@ -63,6 +72,8 @@ export interface KeetCore {
   setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void>
   /** Publish one native Managed DM typing timestamp refresh. */
   updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void>
+  /** Native reaction mutation against one exact canonical message. */
+  addReaction(groupId: string, messageId: KeetMessageId, reaction: string, signal?: AbortSignal): Promise<void>
   sendMessage(groupId: string, text: string, replyTo?: KeetMessageId, signal?: AbortSignal): Promise<KeetMessageId | undefined>
   inspectInvitation(invitation: string, signal?: AbortSignal): Promise<InvitationInfo>
   joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult>

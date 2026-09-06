@@ -1,4 +1,4 @@
-export { KeetIntegrationCore, validateAdmission } from "./core.js"
+export { KeetIntegrationCore, validateAdmission, validateKeetReaction } from "./core.js"
 export { KeetSidecar } from "./sidecar.js"
 export { KEET_COMPATIBILITY, KEET_NATIVE_ADDON_COUNT, validateKeetCompatibility } from "./types.js"
 export type {
@@ -10,6 +10,7 @@ export type {
   KeetMember,
   KeetMessage,
   KeetMessageId,
+  KeetReactionSummary,
   KeetReadiness,
   KeetRuntimeManifest,
   KeetSubscription,

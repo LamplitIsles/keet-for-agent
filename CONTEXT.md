@@ -136,9 +136,25 @@ _Avoid_: Account directory, membership history
 A plain-text message deliberately sent by an Agent tool to one discovered
 destination selected by its exact returned `groupName`. Regular-group sends
 may carry one exact canonical `replyTo` target; Managed DM sends are ordinary
-text and reject reply anchors. Completing an Agent turn does not itself send
-anything to Keet.
+text and reject reply anchors. A send may optionally decorate the current Keet
+trigger with one native reaction after the text is delivered. Completing an
+Agent turn does not itself send anything to Keet.
 _Avoid_: Automatic reply, arbitrary-room send
+
+**Keet Reaction**:
+A native Unicode emoji or bounded Keet wire-shortcode reaction attached to one
+Keet message by a participant or assistant. Participant reactions are aggregate
+signals that can inform a later interaction in the same destination without
+starting one, and they do not imply reactor identity. Wire tokens are an
+untrusted inbound display form; outbound reactions remain Unicode emoji.
+_Avoid_: Standalone response, sticker, reaction-triggered turn, reactor attribution
+
+**Reaction Response**:
+A written response sent through the explicit destination tool with an optional
+Keet Reaction attached to the message that prompted it. The text is always
+delivered first; the reaction is a best-effort decoration and never replaces
+the response or causes a confirmed text send to be retried.
+_Avoid_: Standalone reaction response, arbitrary historical target, automatic toggle/removal
 
 **Keet reply relation**:
 An Explicit Destination Send to a Managed Group that references one specific

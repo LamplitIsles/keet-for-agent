@@ -107,4 +107,47 @@ describe("Keet message protocol", () => {
     expect(normalizeKeetRecord({ ...base, replyTo: { deviceId: "", seq: -1 } } as never, "group")).toBeUndefined()
     expect(classifyTrigger({ ...base, mentions: "bot" as never }, identity, new Set())?.trigger).toBe(false)
   })
+
+  it("keeps bounded normalized reaction summaries reusable while hiding malformed entries", () => {
+    const record = normalizeKeetRecord({
+      ...base,
+      reactions: [
+        { emoji: "👍🏽", count: 3, own: false },
+        { emoji: "❤️", count: 1, own: true },
+        { emoji: "not emoji", count: 2, own: "false" },
+        { emoji: "😀", count: 0, own: false },
+      ] as never,
+    }, "group")!
+    expect(record.reactions).toEqual([
+      { emoji: "👍🏽", count: 3, own: false },
+      { emoji: "❤️", count: 1, own: true },
+    ])
+    const rendered = renderKeetContextPrompt([record], record, {
+      groupName: "Main group",
+      reactionContext: [{ targetText: "agent-authored", emoji: "👍🏽", count: 2 }],
+    })
+    expect(rendered).toContain("reaction context")
+    expect(rendered).toContain('source group name="Main group"')
+    expect(rendered).toContain('emoji="👍🏽" count="2"')
+    expect(rendered).toContain("agent-authored")
+    expect(rendered).not.toContain("device-alice")
+    expect(rendered).not.toContain("message_id")
+  })
+
+  it("preserves the trigger and ordinary transcript before dropping oldest reaction context", () => {
+    const records = Array.from({ length: 4 }, (_, index) => normalizeKeetRecord({
+      ...base,
+      messageId: { deviceId: "device", seq: index + 1 },
+      text: index === 3 ? "latest trigger" : `ordinary-${index}`,
+    }, "group")!)
+    const rendered = renderKeetContextPrompt(records, records[3]!, {
+      groupName: "Main group",
+      reactionContext: Array.from({ length: 16 }, (_, index) => ({ targetText: `reaction-${index}-${"x".repeat(1_100)}`, emoji: "😀", count: index + 1 })),
+    })
+    expect(rendered.length).toBeLessThanOrEqual(16_000)
+    expect(rendered).toContain("latest trigger")
+    expect(rendered).toContain("ordinary-0")
+    expect(rendered).toContain("reaction context")
+    expect((rendered.match(/<reaction /g) ?? []).length).toBeLessThan(16)
+  })
 })

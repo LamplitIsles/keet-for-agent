@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { KeetSidecarStatus, KeetSidecarLog } from "../packages/keet-core/src/sidecar.js"
-import { KeetIntegrationCore, KeetSidecar, validateAdmission, type PreparedAvatar, type ManagedGroup } from "../packages/keet-core/src/index.js"
+import { KeetIntegrationCore, KeetSidecar, validateAdmission, validateKeetReaction, type PreparedAvatar, type ManagedGroup } from "../packages/keet-core/src/index.js"
 import type { RpcMethodName } from "../packages/keet-core/src/rpc-methods.js"
 import { classifyTrigger } from "../packages/dsh-keet/src/keet-protocol.js"
 
@@ -290,6 +290,95 @@ describe("typed Keet Integration Core unit behavior", () => {
     expect(classifyTrigger(history[0]!, { memberId: "identity-self", displayName: "Fixture Bot" }, new Set())?.triggerKind).toBe("mention")
   })
 
+  it("normalizes the official reaction digest, own reactions, and malformed-entry bounds", async () => {
+    const digest = {
+      digest: {
+        reactions: [
+          { text: "👍🏽", count: 3 },
+          { text: "❤️", count: 1 },
+          { text: "not a reaction", count: 7 },
+          { text: "😀", count: 0 },
+          ...["😃", "😄", "😅", "😆", "😉", "😊", "😋", "😎", "😍", "😘", "🥰", "😗", "😙", "😚", "🙂", "🤗", "🤩", "🤔", "🤨", "😐", "😑", "😶", "🙄", "😏", "😣", "😥", "😮", "🤐", "😯", "😪"].map((text) => ({ text, count: 1 })),
+        ],
+      },
+      mine: ["❤️"],
+    }
+    const harness = makeMockCore({ messages: [{
+      roomId: "group-test",
+      messageId: { deviceId: "device-alice", seq: 20 },
+      senderId: "member-alice",
+      senderName: "Alice",
+      timestamp: 1,
+      type: "text",
+      text: "reacted message",
+      reactions: digest,
+    }] })
+    const history = await harness.core.readRecentMessages("group-test", 50)
+    expect(history[0]?.reactions).toEqual(expect.arrayContaining([
+      { emoji: "❤️", count: 1, own: true },
+    ]))
+    expect(history[0]?.reactions).toHaveLength(16)
+    expect(history[0]?.reactions?.some((reaction) => reaction.emoji === "not a reaction" || reaction.count < 1)).toBe(false)
+    expect(history[0]?.text).toBe("reacted message")
+  })
+
+  it("normalizes bounded Keet wire shortcodes without relaxing outbound emoji validation", async () => {
+    const harness = makeMockCore({ messages: [{
+      roomId: "group-test",
+      messageId: { deviceId: "device-alice", seq: 21 },
+      senderId: "member-alice",
+      senderName: "Alice",
+      timestamp: 1,
+      type: "text",
+      text: "Keet wire shortcode reactions",
+      reactions: {
+        digest: { reactions: [
+          { text: "heart", count: 2, latest: [] },
+          { text: "+1", count: 1, latest: [] },
+          { text: "keet_laughs", count: 1, latest: [] },
+          { text: "not a reaction", count: 1, latest: [] },
+          { text: "heart!", count: 1, latest: [] },
+          { text: "heart:alt", count: 1, latest: [] },
+        ] },
+        mine: ["+1", "bad!"],
+      },
+    }] })
+
+    const history = await harness.core.readRecentMessages("group-test", 50)
+    expect(history[0]?.reactions).toEqual([
+      { emoji: ":+1:", count: 1, own: true },
+      { emoji: ":heart:", count: 2, own: false },
+      { emoji: ":keet_laughs:", count: 1, own: false },
+    ])
+    expect(() => validateKeetReaction("heart")).toThrow("reaction must be exactly one Unicode emoji")
+  })
+
+  it("accepts representative composed emoji graphemes and rejects text, multiples, and oversized input", () => {
+    for (const value of ["👍", "👍🏽", "🇹🇼", "1️⃣", "❤️", "👩‍💻", "🧑‍🤝‍🧑"]) {
+      expect(validateKeetReaction(value)).toBe(value)
+    }
+    for (const value of ["", " hello", "hello", ":thumbsup:", "👍👍", "a‍😀", "😀🏽", "❤️🏽", "😀‍😀", "♥︎", "©", "😀".repeat(70)]) {
+      expect(() => validateKeetReaction(value)).toThrow(/reaction must be exactly one|bounded/)
+    }
+  })
+
+  it("validates and dispatches add-reaction through RPC 156 with cancellation and result checks", async () => {
+    const calls: unknown[][] = []
+    const harness = makeMockCore({ handlers: {
+      addReaction: (args) => { calls.push(args); return { key: Buffer.alloc(32), length: 1 } },
+    } })
+    await harness.core.addReaction("group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽")
+    expect(calls).toEqual([["group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽"]])
+    await expect(harness.core.addReaction("group-test", { deviceId: "", seq: 1 }, "👍🏽")).rejects.toThrow("valid Keet message ID")
+    const invalid = makeMockCore({ handlers: { addReaction: () => ({ ok: false }) } })
+    await expect(invalid.core.addReaction("group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽")).rejects.toThrow("invalid reaction result")
+    const cancelled = makeMockCore({ handlers: { addReaction: () => new Promise(() => undefined) } })
+    const controller = new AbortController()
+    const pending = cancelled.core.addReaction("group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽", controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toThrow("cancelled")
+  })
+
   it("normalizes room kinds, compact metadata, members, and duplicate records", async () => {
     const harness = makeMockCore({
       groups: [
@@ -500,6 +589,8 @@ describe("Keet Integration Core fd-3 process contracts", () => {
         expect.objectContaining({ messageId: { deviceId: "device-self", seq: 2 }, text: "initial self" }),
       ]))
       await expect(core.readRecentMessages("group-test", 0)).rejects.toThrow("1 to 50")
+      await expect(core.addReaction("group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽")).resolves.toBeUndefined()
+      expect((await core.readRecentMessages("group-test", 50)).some((message) => message.reactions?.length)).toBe(false)
       const rendered = JSON.stringify(logs)
       expect(rendered).not.toContain(data)
       expect(logs.map((entry) => entry.event)).toContain("sidecar.worker-output-discarded")

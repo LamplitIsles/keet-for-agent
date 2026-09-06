@@ -143,7 +143,14 @@ new ordinary external DM text starts one serialized Agent turn. Group prompt
 records retain canonical `{ device_id, seq }` provenance and the startup source
 `groupName`; DM prompts identify the source and sender display label but
 intentionally omit message IDs, reply relations, and sender IDs. All records are
-quoted, untrusted data.
+quoted, untrusted data. Human reactions to Integration-authored messages do not
+trigger a turn; changed aggregate reactions can appear once as bounded
+untrusted context on the next ordinary trigger for that same destination.
+Keet picker/custom wire tokens that match the bounded lowercase/digit/_+-
+grammar appear by colon-wrapped native names (for example `:heart:`); literal
+Unicode reactions remain unchanged. Whitespace, unsafe punctuation, and
+arbitrary prose are omitted; the grammar is forward-compatible display
+normalization, not an authenticity assertion.
 
 When a Managed DM turn (including `/compact`) actually begins, the bridge marks
 the triggering message read at its normalized chat index plus one and publishes
@@ -175,12 +182,20 @@ destination tools:
   regular groups include stable message IDs and optional reply targets, while
   DM results omit sender/message/reply IDs;
 - `keet_send_message`: one non-empty text message up to 16,000 characters.
-  Regular groups may use an exact `{ deviceId, seq }` reply target; successful
-  sends return only `{ sent: true }`; DM sends are ordinary text and reject
-  `replyTo`. After a successful send in the current turn, the injected Agent
-  policy requires the final DSH response to be exactly `✓`, because the sent
-  content is already visible in Keet. Without a successful send, the Agent
-  responds normally.
+  Regular groups may use an exact `{ deviceId, seq }` reply target; DM sends are
+  ordinary text and reject `replyTo`. An optional `reaction` is one bounded
+  Unicode emoji applied only to the exact message that triggered the active
+  ordinary Keet turn. Text is sent first and a requested reaction is
+  best-effort: text-only success returns `{ sent: true }`, while a requested
+  reaction returns `{ sent: true, reacted: true|false }`. A failed reaction
+  never retries or turns a confirmed text send into a tool error.
+
+After any confirmed `keet_send_message` text delivery, the injected Agent
+policy requires the final DSH response to be exactly `✓`, whether or not its
+optional reaction was confirmed. Without a successful delivery, the Agent
+responds normally. Outbound reactions accept Unicode emoji only; bounded Keet
+wire shortcodes such as `heart` appear only as colon-wrapped inbound context
+labels such as `:heart:`.
 
 Destination names are captured once per DSH restart from bounded titles (line
 separators become spaces). Selectors trim input but otherwise match exactly and

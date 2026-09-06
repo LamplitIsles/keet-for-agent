@@ -28,6 +28,13 @@ through the real DSH Loader in a disposable DSH home. It is the v1 local/link
 or tarball operator path. There is no publication, registry, or release
 workflow, and nothing may be pushed from this task.
 
+## Git and release audit
+
+For this already-public repository, scope ordinary follow-up PR audits to the
+changed diff and files; use a whole-history or broad publish audit only for
+first publication, an explicit user request, or concrete evidence of sensitive
+artifact or history risk.
+
 Official runtime tests are high-cost operator checks. Run them only when the
 user explicitly requests an official-runtime smoke in the current task; the
 opt-in environment variables enable execution but do not grant permission.

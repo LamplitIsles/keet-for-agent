@@ -10,9 +10,12 @@ DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sid
 ## Source of truth
 
 - `packages/keet-core/src/` owns the typed sidecar lifecycle, pinned runtime
-  admission, normalized room/group/member/message values, canonical room-list
-  DM resolution, subscriptions, sends, onboarding, and profile update.
-- `packages/dsh-keet/src/` owns the DSH Host bridge, Managed Destination tools, setup
+  admission, normalized room/group/member/message values (including bounded
+  aggregate reaction summaries), canonical room-list DM resolution,
+  subscriptions, text sends, native reaction add (RPC 156), onboarding, and
+  profile update. Core also owns the single Unicode reaction validator.
+- `packages/dsh-keet/src/` owns the DSH Host bridge, Managed Destination tools
+  (including optional reaction decoration on `keet_send_message`), setup
   executable, settings schema/client, and protocol rendering.
 - `tests/` uses fake workers and test-owned temporary paths for ordinary gates.
 - `scripts/pack-smoke.ts` verifies the actual packed tarball through the
@@ -27,10 +30,14 @@ process contract suite: admission, one representative startup/RPC path, one
 streaming path, terminal failure, intentional cleanup, and identity locking.
 Mocks and the fake worker do not establish official-client interoperability;
 the opt-in official-runtime smokes remain the only such evidence.
-README.md and AGENTS.md remain unchanged because this is a maintainer-only
-test architecture cleanup: user/operator behavior, commands, and test-safety
-conventions are unchanged. No domain glossary entry or ADR is needed for this
-reversible seam change.
+README.md, `packages/dsh-keet/README.md`, and `CONTEXT.md` describe the
+reaction-facing behavior and glossary. `AGENTS.md` owns build commands, safety
+constraints, official-smoke policy, and contributor/release workflow, including
+the scoped release-audit rule. Runtime extraction/setup documentation remains
+unchanged because reactions require no operator configuration or additional
+private runtime files. Inbound reaction normalization preserves literal Unicode
+and wraps bounded Keet wire shortcodes (for example `heart` as `:heart:`);
+outbound reaction validation remains Unicode-only.
 
 ## Product boundary
 
@@ -44,9 +51,10 @@ groups keep mention, current-label, and verified-reply triggers; every new
 ordinary external DM text triggers one serialized Agent turn. Destination
 buffers and subscriptions are isolated, each injected context names its
 restart-scoped source `groupName`, and the Agent's final text remains in DSH
-unless `keet_send_message` is explicitly called. After a successful send in a
-turn, the injected policy reduces the final DSH response to the exact `✓`
-acknowledgement so the already-delivered Keet content is not duplicated.
+unless an explicit delivery tool is called. After a confirmed text send in a
+turn (with an optional reaction decoration), the injected policy reduces the
+final DSH response to the exact `✓` acknowledgement so the already-delivered
+Keet content is not duplicated.
 
 The tools are `keet_list_groups`, `keet_list_members`,
 `keet_read_recent_messages`, and `keet_send_message`. The first lists all
@@ -54,10 +62,21 @@ discovered destinations as `{ groupName, kind }`; the other three require an
 exact returned `groupName` (trimmed, case-sensitive, and restart-scoped).
 Regular history preserves canonical message IDs and optional reply provenance,
 while roster results contain only display names and send results contain only
-delivery success. DM history and prompts omit sender/message/reply IDs, and DM
-sends are ordinary text. Normalized duplicate names fail selected operations
-closed before Core access, with ambiguous sends confirming that no message was
-sent.
+bounded delivery booleans. `keet_send_message` always requires non-empty text and may
+optionally attach one native Unicode emoji to the current Keet trigger; the
+bridge supplies that Message ID internally. It sends text first, then attempts
+the reaction once as a best-effort decoration. Text-only success returns
+`{ sent: true }`; a requested reaction returns `{ sent: true, reacted: true }`
+or `{ sent: true, reacted: false }`. A failed reaction, cancellation, or lost
+readiness after text confirmation never retries or converts the tool into an
+error. Optional reactions are unavailable outside an active ordinary Keet turn,
+for `/compact`, stale/settled work, or another destination. DM history and
+prompts omit sender/message/reply IDs, and DM sends are ordinary text. Human
+reactions never trigger a turn; changed aggregate reactions on
+Integration-authored messages are best-effort bounded context on the next
+ordinary trigger for that same destination, with no reactor or Member IDs.
+Normalized duplicate names fail selected operations closed before Core access,
+with ambiguous sends confirming that no message was sent.
 Setup is human-only: `join` reads exactly one invitation URL from stdin,
 `dm-requests` lists bounded sender identities, `dm-accept` accepts one exact
 pending sender, and `profile` can independently update display name and a
@@ -92,8 +111,7 @@ wrapped errors are bounded and redacted.
 
 The root `.scratch/` tree is intentionally ignored and includes active plans,
 deferred notes, and preserved archived local material. Do not add it to Git.
-Do not push this branch. Before any future owner-authorized push, audit every
-committed tree for private artifacts and sensitive path disclosure.
+Do not push this branch. Release-audit scope is defined in `AGENTS.md`.
 
 ## Gates
 
