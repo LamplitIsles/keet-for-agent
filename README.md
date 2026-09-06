@@ -19,6 +19,12 @@ pnpm build
 pnpm pack-smoke
 ```
 
+`pnpm check` composes the independent `pnpm typecheck` and `pnpm lint`
+commands. Typechecking uses the pinned TypeScript 7 compiler; linting uses
+Oxlint's type-aware correctness engine with `typescript/unbound-method`
+required. The package build uses tsdown with native TypeScript 7 declarations;
+there is one compiler generation.
+
 For a local/link or tarball installation, use the DSH CLI's normal plugin
 installer. The tarball is an npm-shaped local artifact only; this project has
 no publication or release workflow.

@@ -240,8 +240,8 @@ describe("Keet DM image bridge", () => {
     ]
     const attachments = {
       ready: true,
-      async saveImages(this: { ready: boolean }, inputs: readonly { name?: string }[]) {
-        if (!this.ready) throw new Error("attachment receiver was lost")
+      async saveImages(this: KeetAttachmentStore, inputs: readonly { name?: string }[]) {
+        if (!(this as KeetAttachmentStore & { ready: boolean }).ready) throw new Error("attachment receiver was lost")
         admitted.push(...inputs.map((input) => input.name ?? ""))
         return refs
       },

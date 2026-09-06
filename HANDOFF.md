@@ -206,3 +206,14 @@ identity data, downloaded images, and transient previews remain outside source
 and package artifacts. No official-runtime image interoperability smoke was
 authorized for this change, so official-client image compatibility is
 unverified.
+
+The development toolchain has one compiler generation: TypeScript 7.0.2. The
+normal `pnpm check` gate composes `pnpm typecheck` (`tsc --noEmit`) with
+`pnpm lint`, which runs Oxlint 1.81.0 through the native
+`oxlint-tsgolint` type-aware engine and requires `typescript/unbound-method`.
+The separate Oxlint `--type-check` mode and style/formatting policy are not
+enabled. The package build uses tsdown 0.23.0 with the explicit native `tsgo`
+declaration generator; its bounded config ports the existing CSS load hook and
+preserves the Node ESM, browser CJS, and `client.d.cts` artifact contract.
+No Keet domain language changed, so `CONTEXT.md` and the ADR set need no update
+for this reversible tooling migration.

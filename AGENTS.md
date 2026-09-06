@@ -14,6 +14,14 @@ process. Tests use only fake workers, fixtures, and fresh test-owned temporary
 directories; they never inspect or modify live identities, credentials, groups,
 invitations, or services.
 
+The workspace uses one TypeScript compiler generation: TypeScript 7.0.2. The
+normal `pnpm check` gate composes `pnpm typecheck` (`tsc --noEmit`) and
+`pnpm lint` (Oxlint 1.81.0 with the native `oxlint-tsgolint` type-aware engine).
+The lint configuration keeps the default correctness rules and requires
+`typescript/unbound-method`; it does not enable Oxlint's separate
+`--type-check` mode or style/formatting policy. `pnpm build` uses tsdown 0.23.0
+and its explicit native `tsgo` declaration generator.
+
 Before claiming a capability works, run the smallest complete local gates:
 
 ```sh

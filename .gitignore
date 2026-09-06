@@ -10,8 +10,9 @@
 !/package.json
 !/pnpm-lock.yaml
 !/pnpm-workspace.yaml
+!/.oxlintrc.json
 !/tsconfig.json
-!/tsup.config.ts
+!/tsdown.config.ts
 !/vitest.config.ts
 !/packages/
 !/packages/**

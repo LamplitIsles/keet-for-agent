@@ -32,7 +32,7 @@ export interface KeetAttachmentStore {
     readonly mediaTypes?: readonly KeetImageMediaType[]
   }
   validateImage?(input: KeetSaveImageAttachment): Promise<void>
-  saveImages?(inputs: readonly KeetSaveImageAttachment[]): Promise<readonly KeetImageAttachmentRef[]>
+  saveImages?(this: KeetAttachmentStore, inputs: readonly KeetSaveImageAttachment[]): Promise<readonly KeetImageAttachmentRef[]>
 }
 
 /** Stable target shape returned by the DSH `ctx.fs` service. */

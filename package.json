@@ -5,8 +5,9 @@
   "type": "module",
   "packageManager": "pnpm@11.22.0",
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "pnpm typecheck && pnpm lint",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint --type-aware packages tests scripts tsdown.config.ts vitest.config.ts",
     "test": "vitest run tests",
     "build": "pnpm --filter @lamplitisles/dsh-keet build",
     "pack-smoke": "tsx scripts/pack-smoke.ts",
@@ -41,11 +42,13 @@
     "@types/react": "18.3.18",
     "@types/react-test-renderer": "18.0.7",
     "lightningcss": "^1.33.0",
+    "oxlint": "1.81.0",
+    "oxlint-tsgolint": "7.0.2001",
     "react": "18.3.1",
     "react-test-renderer": "18.3.1",
-    "tsup": "^8.5.1",
+    "tsdown": "0.23.0",
     "tsx": "^4.23.12",
-    "typescript": "5.7.3",
+    "typescript": "7.0.2",
     "vitest": "^4.1.11"
   },
   "dependencies": {
