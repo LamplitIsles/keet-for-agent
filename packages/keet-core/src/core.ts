@@ -287,7 +287,9 @@ export class KeetIntegrationCore implements KeetCore {
     if (!Array.isArray(raw)) throw publicError("Keet returned an invalid message list")
     const messages: KeetMessage[] = []
     for (const value of raw) {
-      const message = normalizeMessage(value, id)
+      // Bounded explicit reads expose the worker's current edited text; live
+      // subscriptions select edit suppression explicitly below.
+      const message = normalizeMessage(value, id, { allowEdited: true })
       if (!message) continue
       messages.push(message)
     }
@@ -448,7 +450,7 @@ export class KeetIntegrationCore implements KeetCore {
           if (closed) break
           const records = Array.isArray(value) ? value : [value]
           const normalized = records.flatMap((record) => {
-            const message = normalizeMessage(record, id)
+            const message = normalizeMessage(record, id, { allowEdited: false })
             return message ? [message] : []
           })
           if (!initialized) {
@@ -771,7 +773,11 @@ function normalizeReactionSummaries(value: RawRecord): readonly KeetReactionSumm
     .map((reaction) => Object.freeze(reaction)))
 }
 
-function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefined {
+interface NormalizeMessageOptions {
+  readonly allowEdited?: boolean
+}
+
+function normalizeMessage(value: unknown, groupId: string, normalizeOptions: NormalizeMessageOptions): KeetMessage | undefined {
   if (!isRecord(value)) return undefined
   const nestedMessage = isRecord(value.message) ? value.message : undefined
   const nestedContent = isRecord(value.content) ? value.content : undefined
@@ -789,7 +795,8 @@ function normalizeMessage(value: unknown, groupId: string): KeetMessage | undefi
   if (rawGroupId && rawGroupId !== groupId) return undefined
   const kind = firstString(value.type, value.messageType, value.eventType, nestedMessage?.type, nestedContent?.type, nestedContent?.msgtype)
   if (kind && !["text", "ordinary", "m.text", "file", "image"].includes(kind)) return undefined
-  if (value.deleted === true || value.edited === true || value.isDeleted === true || value.isEdit === true || chat?.edited === true) return undefined
+  const edited = value.edited === true || value.isEdit === true || chat?.edited === true
+  if (value.deleted === true || value.isDeleted === true || (edited && !normalizeOptions.allowEdited)) return undefined
   if (isRecord(value.relatesTo) || isRecord(value["m.relates_to"])) return undefined
   const rawId = value.messageId ?? value.id ?? value.oplog ?? value.key ?? value
   const messageId = normalizeMessageId(rawId) ?? normalizeMessageId(value)

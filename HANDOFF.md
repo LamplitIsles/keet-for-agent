@@ -33,10 +33,11 @@ streaming path, terminal failure, intentional cleanup, and identity locking.
 Mocks and the fake worker do not establish official-client interoperability;
 the opt-in official-runtime smokes remain the only such evidence.
 README.md, `packages/dsh-keet/README.md`, and `CONTEXT.md` describe the
-reaction-facing behavior and glossary. `AGENTS.md` owns build commands, safety
-constraints, official-smoke policy, and contributor/release workflow, including
-the scoped release-audit rule. The public and package READMEs also document the
-DM-only image lifecycle, explicit
+reaction-facing behavior and glossary. Explicit recent reads expose current
+edited text, while edited live updates never trigger turns. `AGENTS.md` owns
+build commands, safety constraints, official-smoke policy, and
+contributor/release workflow, including the scoped release-audit rule. The
+public and package READMEs also document the DM-only image lifecycle, explicit
 workspace-contained send tool, DSH durable attachment admission, text-only
 recent reads, and the fact that official-client image interoperability remains
 unverified. `CONTEXT.md` defines Inbound DM Image, Inbound DM Image Failure,
@@ -67,9 +68,10 @@ The tools are `keet_list_groups`, `keet_list_members`,
 first lists all
 discovered destinations as `{ groupName, kind }`; the remaining tools require an
 exact returned `groupName` (trimmed, case-sensitive, and restart-scoped).
-Regular history preserves canonical message IDs and optional reply provenance,
-while roster results contain only display names and send results contain only
-bounded delivery booleans. `keet_send_message` always requires non-empty text and may
+Regular history preserves canonical message IDs, optional reply provenance, and
+the current text of valid edited records; live edited updates remain suppressed.
+Roster results contain only display names and send results contain only bounded
+delivery booleans. `keet_send_message` always requires non-empty text and may
 optionally attach one native Unicode emoji to the current Keet trigger; the
 bridge supplies that Message ID internally. It sends text first, then attempts
 the reaction once as a best-effort decoration. Text-only success returns

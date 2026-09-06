@@ -121,8 +121,9 @@ _Avoid_: Agent presence, delivery guarantee, group activity
 A bounded retrieval of recent plain-text messages from one discovered
 destination. Regular-group results include canonical message IDs and reply
 targets and sender display labels; DM results include only display labels and
-message data. Reads provide context without creating a group or independently
-starting a turn.
+message data. Valid edited records expose their current text in explicit reads;
+edited live updates remain suppressed and never independently start a turn.
+Reads provide context without creating a group or independently starting a turn.
 _Avoid_: Room export, automatic catch-up
 
 **Inbound DM Image**:

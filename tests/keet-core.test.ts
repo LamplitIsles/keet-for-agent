@@ -242,6 +242,10 @@ function officialMessages(): unknown[] {
       message: { text: "conflicting official reply", replyTo: { deviceId: "device-other", seq: 3 } },
       chat: { text: "conflicting official reply", edited: false, mentions: [] },
     },
+    { timestamp: 7, memberId: "member-alice", id: { deviceId: "device-alice", seq: 14 }, deleted: true, text: "deleted official record", type: "text" },
+    { timestamp: 8, memberId: "member-alice", id: { deviceId: "device-alice", seq: 15 }, text: "unsupported official record", type: "system" },
+    { timestamp: 9, memberId: "member-alice", id: { deviceId: "device-alice", seq: 16 }, text: "x".repeat(16_001), type: "text" },
+    { timestamp: 10, memberId: "member-alice", id: { deviceId: "device-alice", seq: 17 }, text: "relation-only official record", type: "text", relatesTo: { event: "reaction" } },
   ]
 }
 
@@ -285,6 +289,13 @@ describe("typed Keet Integration Core unit behavior", () => {
       text: "official mention",
       chatIndex: 17,
       mentions: ["identity-self"],
+    }, {
+      messageId: { deviceId: "device-alice", seq: 12 },
+      groupId: "group-test",
+      senderId: "member-alice",
+      senderLabel: "Official Alice",
+      timestamp: 5,
+      text: "edited official record",
     }])
     expect(history[0]).not.toHaveProperty("replyTo")
     expect(classifyTrigger(history[0]!, { memberId: "identity-self", displayName: "Fixture Bot" }, new Set())?.triggerKind).toBe("mention")
@@ -439,6 +450,7 @@ describe("typed Keet Integration Core unit behavior", () => {
     expect(received).toEqual([])
     harness.emit([{ roomId: "group-test", messageId: { deviceId: "device-alice", seq: 1 }, senderId: "member-alice", text: "duplicate", timestamp: 3, type: "text" }])
     harness.emit([{ roomId: "group-test", messageId: { deviceId: "device-system", seq: 5 }, senderId: "system", text: "live ignored", timestamp: 3, type: "system" }])
+    harness.emit([{ roomId: "group-test", id: { deviceId: "device-alice", seq: 6 }, memberId: "member-alice", message: { text: "edited live" }, chat: { text: "edited live", edited: true }, timestamp: 3, type: "text" }])
     harness.emit([{ roomId: "group-test", messageId: { deviceId: "device-alice", seq: 3 }, senderId: "member-alice", text: "first", timestamp: 4, type: "text" }])
     harness.emit([{ roomId: "group-test", messageId: { deviceId: "device-alice", seq: 4 }, senderId: "member-alice", text: "second", timestamp: 5, type: "text" }])
     await new Promise((resolve) => setTimeout(resolve, 0))

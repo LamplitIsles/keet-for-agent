@@ -201,8 +201,9 @@ destination tools:
 - `keet_list_members`: at most 128 deterministic current display names (Member
   IDs remain Bridge-owned);
 - `keet_read_recent_messages`: 1–50 chronological bounded plain-text records;
-  regular groups include stable message IDs and optional reply targets, while
-  DM results omit sender/message/reply IDs;
+  valid edited records expose their current text in explicit reads, while an
+  edit never triggers an Agent turn. Regular groups include stable message IDs
+  and optional reply targets, while DM results omit sender/message/reply IDs;
 - `keet_send_message`: one non-empty text message up to 16,000 characters.
   Regular groups may use an exact `{ deviceId, seq }` reply target; DM sends are
   ordinary text and reject `replyTo`. An optional `reaction` is one bounded

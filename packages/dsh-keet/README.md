@@ -81,8 +81,10 @@ Call `keet_list_groups` first. The remaining tools require an exact returned
   returned only as `{ groupName, kind }`;
 - `keet_list_members` — current bounded roster of display names only;
 - `keet_read_recent_messages` — 1–50 chronological ordinary text records;
-  regular-group records retain canonical message IDs and optional reply targets,
-  while DM records omit all message/reply IDs;
+  valid edited records expose their current text in explicit reads, while an
+  edit never triggers an Agent turn. Regular-group records retain canonical
+  message IDs and optional reply targets, while DM records omit all
+  message/reply IDs;
 - `keet_send_message` — explicit bounded text delivery. Regular groups accept
   an exact `{ deviceId, seq }` reply target; DM sends are ordinary text and
   reject `replyTo`. An optional `reaction` is one bounded Unicode emoji applied
