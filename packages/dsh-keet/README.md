@@ -23,9 +23,9 @@ rooms whose peer is not pending become Managed DMs. Unknown or incomplete
 rooms, pending requests, and duplicate room records are excluded. A
 pending-snapshot failure fails startup closed. An empty eligible set is valid,
 so onboarding can be completed before a later restart. Managed Broadcasts are
-read/proactive-text destinations only: they have no bridge state, subscription,
-inbound Agent trigger, context buffer, typing/read activity, roster lookup,
-image send, reply anchor, or reaction decoration. The native Keet Core
+destinations for reading history and sending text or images. They have no
+bridge state, subscription, inbound Agent trigger, context buffer, typing/read activity, roster lookup,
+reply anchor or reaction decoration. The native Keet Core
 adjudicates every post from current permission; a rejected post is a bounded
 safe send failure with no retry.
 Failure text is bounded and does not include invitations or worker-private
@@ -123,14 +123,14 @@ Call `keet_list_groups` first. The remaining tools require an exact returned
   success returns `{ sent: true }`, while a requested reaction returns
   `{ sent: true, reacted: true|false }`. A failed reaction never retries or
   turns a confirmed text send into a tool error.
-- `keet_send_image` — DM-only delivery of one PNG, JPEG, WebP, or GIF read via
+- `keet_send_image` — delivery to any Managed Destination of one PNG, JPEG, WebP, or GIF read via
   the bound DSH `ctx.fs` Active Conversation workspace filesystem. The path must
   remain inside that workspace; URLs, unsupported/corrupt/oversized content,
-  Managed Groups, unknown names, and ambiguous names are rejected before
+  unknown names and ambiguous names are rejected before
   delivery. Source bytes are preserved for native Keet delivery and a bounded
   preview is used only for presentation. Native records use the Official
   `externalBlob.id` plus `blob` descriptor. An optional caption follows as one
-  adjacent ordinary DM text send. Complete success returns only `{ sent: true }`;
+  adjacent ordinary text send. Complete success returns only `{ sent: true }`;
   if the image succeeds but the caption fails, the bounded error says the image
   was delivered and must not be retried. Nothing is sent automatically after a
   turn or image creation.

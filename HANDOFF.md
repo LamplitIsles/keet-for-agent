@@ -41,14 +41,14 @@ Managed Broadcast contract and glossary. Explicit recent reads expose current
 edited text, while edited live updates never trigger turns. `AGENTS.md` owns
 build commands, safety constraints, official-smoke policy, and
 contributor/release workflow, including the scoped release-audit rule. The
-public and package READMEs also document the DM-only image lifecycle, explicit
-workspace-contained send tool, DSH durable attachment admission, text-only
+public and package READMEs also document the DM-only inbound image lifecycle,
+outbound image sends, the explicit workspace-contained send tool, DSH durable attachment admission, text-only
 recent reads, and the fact that official-client image interoperability remains
 unverified. `CONTEXT.md` defines Inbound DM Image, Inbound DM Image Failure,
-and Explicit DM Image Send. Inbound reaction normalization preserves literal
+and Explicit Destination Image Send. Inbound reaction normalization preserves literal
 Unicode and wraps bounded Keet wire shortcodes (for example `heart` as
 `:heart:`); outbound reaction validation remains Unicode-only. No ADR is needed;
-the DM-only and text-history boundaries are specified and reversible.
+the inbound DM-only and text-history boundaries are specified and reversible.
 
 ## Product boundary
 
@@ -60,9 +60,9 @@ groups. Pending DM requests, unknown room types, incomplete DMs, and duplicate
 room records are excluded; a pending-snapshot failure fails startup closed.
 Regular groups keep mention, current-label, and verified-reply triggers; every
 new ordinary external DM text triggers one serialized Agent turn. Managed
-Broadcasts are listing/read/proactive-text destinations only: they have no
-Bridge state, subscription, context buffer, inbound trigger, typing/read
-activity, roster, image, reply-anchor, or reaction path. The native worker
+Broadcasts support listing, reading history, and sending text or images. They
+have no Bridge state, subscription, context buffer, inbound trigger, typing/read
+activity, roster, reply-anchor, or reaction path. The native worker
 adjudicates every post from current permissions. Group/DM destination buffers
 and subscriptions are isolated, each injected context names its restart-scoped
 source `groupName`, and the Agent's final text remains in DSH unless an
@@ -93,8 +93,8 @@ rejected. `keet_send_message` always requires non-empty text, may natively
 mention exact current display names in a regular Group (resolved internally to
 unique current Member IDs; missing/ambiguous names fail before send), and may optionally
 attach one native Unicode emoji to the current Keet trigger for a regular Group
-or DM; the bridge supplies that Message ID internally. Managed Broadcast sends
-are plain text only and reject reply anchors and reactions. Text is sent first,
+or DM; the bridge supplies that Message ID internally. Managed Broadcast text sends
+reject reply anchors and reactions. Text is sent first,
 then an eligible reaction is attempted once as a best-effort decoration.
 Text-only success returns `{ sent: true }`; a requested reaction returns
 `{ sent: true, reacted: true }` or `{ sent: true, reacted: false }`. A failed
@@ -113,7 +113,7 @@ Canceled inbox removals leave a receipt eligible, while same-count removal and
 re-addition remains suppressed; targets are whitespace-normalized 48-code-point
 prefixes with an ellipsis only when omitted. No reactor or Member IDs enter
 context.
-`keet_send_image` is DM-only, accepts one PNG, JPEG,
+`keet_send_image` supports all Managed Destinations and accepts one PNG, JPEG,
 WebP, or GIF from the bound Active Conversation workspace, preserves the
 source bytes, and sends an optional caption as adjacent text. It rejects URLs,
 outside-workspace paths, malformed/corrupt content, and unsupported formats
@@ -247,7 +247,7 @@ enabled. The package build uses tsdown 0.23.0 with the explicit native `tsgo`
 declaration generator; its bounded config ports the existing CSS load hook and
 preserves the Node ESM, browser CJS, and `client.d.cts` artifact contract.
 The Managed Broadcast domain language changed in this slice, so `CONTEXT.md`,
-the root/package READMEs, and this handoff now describe its read/proactive-text
-boundary. `AGENTS.md` was inspected and needs no update: contributor workflow,
+the root/package READMEs, and this handoff now describe its history reads and proactive
+text/image sends. `AGENTS.md` was inspected and needs no update: contributor workflow,
 commands, safety rules, and official-smoke opt-in policy are unchanged. No ADR
 is needed because this is a reversible adapter capability extension.

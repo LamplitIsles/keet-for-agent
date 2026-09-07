@@ -168,9 +168,9 @@ Managed Groups, joined `Broadcast` rooms are Managed Broadcasts, and complete
 `DirectMessage` rooms whose peer is not pending are Managed DMs. Pending
 requests, unknown or incomplete records, and duplicate room IDs are excluded;
 failure to obtain the pending snapshot fails startup closed without admitting a
-DM. A Managed Broadcast is read/proactive-text only: it has no bridge state,
-subscription, inbound trigger, context buffer, typing/read activity, roster,
-image, reply, or reaction path. The native Keet Core decides each post from
+DM. A Managed Broadcast supports reading history and sending text or images.
+It has no bridge state, subscription, inbound trigger, context buffer, typing/read activity, roster,
+reply or reaction path. The native Keet Core decides each post from
 the identity's current permission, so a non-moderator rejection is surfaced as
 an ordinary safe send failure without retrying.
 
@@ -242,17 +242,17 @@ expiry or another download, validation, or storage failure destroys the active
 stream, starts no turn, and publishes no image reference. When possible the
 bridge sends one short failure notice and retains one non-triggering failure
 record for the next successful turn in that DM, so later messages continue.
-Group images, self-authored images, startup snapshots, and historical reads do
+Incoming group images, self-authored images, snapshots, and historical reads do
 no image work. `keet_read_recent_messages` remains strictly plain-text-only.
 
 The explicit `keet_send_image` tool sends one supported image to an exact
-Managed DM by reading a workspace-contained path through the bound DSH `ctx.fs`
+Managed Destination by reading a workspace-contained path through DSH `ctx.fs`
 Active Conversation filesystem. It rejects URLs, outside-workspace paths, corrupt or
 unsupported content, and oversized images. Source bytes are preserved for the
 native Keet file send; the pinned worker's `externalBlob.id` plus `blob`
 descriptor is used for the native file record, and a bounded preview is
 generated only for presentation.
-An optional caption is sent as one adjacent ordinary DM text message. A fully
+An optional caption is sent as one adjacent ordinary text message. A fully
 successful call returns `{ sent: true }`; if the image is delivered but its
 caption fails, the tool reports a bounded error that says not to retry. Images
 are never sent automatically when an Agent turn completes or creates an image.
@@ -285,7 +285,7 @@ destination tools:
   failed reaction never retries or turns a confirmed text send into a tool
   error.
 - `keet_send_image`: one workspace-contained PNG, JPEG, WebP, or GIF to an
-  exact Managed DM, optionally followed by an adjacent caption. The tool is
+  exact Managed Destination, optionally followed by an adjacent caption. The tool is
   available when the host composes the Active Conversation filesystem service;
   inbound image admission additionally requires DSH's attachment service. It
   returns only `{ sent: true }` on complete success.

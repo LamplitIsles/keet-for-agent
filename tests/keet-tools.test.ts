@@ -177,8 +177,6 @@ describe("Managed Destination Keet tools", () => {
     expect(sends).toBe(1)
     await expect(tools[3]!.execute({ groupName: "Announcements", text: "reply", replyTo: target }, exec())).rejects.toThrow("do not support replyTo")
     await expect(tools[3]!.execute({ groupName: "Announcements", text: "react", reaction: "📣" }, exec())).rejects.toThrow("do not support reactions")
-    const image = tools.find((tool) => tool.name === "keet_send_image")!
-    await expect(image.execute({ groupName: "Announcements", path: "notice.png" }, exec())).rejects.toThrow("only for Managed DMs")
     expect(sends).toBe(1)
 
     let rejectedSends = 0

@@ -353,15 +353,15 @@ describe("Keet DM image bridge", () => {
 })
 
 describe("keet_send_image", () => {
-  it("reads inside the workspace, preserves source bytes, and sends one adjacent caption", async () => {
+  it.each(["dm", "group", "broadcast"] as const)("reads inside the workspace, preserves source bytes, and sends one adjacent caption to %s", async (destinationKind) => {
     const root = await mkdtemp(path.join(tmpdir(), "keet-image-tool-"))
     try {
       const source = path.join(root, "image.png")
       await writeFile(source, PNG_1X1)
       const sent: Array<{ kind: "image" | "text"; value: unknown }> = []
-      const core = makeImageCore({ sendImage: async (_groupId, image) => { sent.push({ kind: "image", value: image }) }, sendMessage: async (_groupId, text) => { sent.push({ kind: "text", value: text }); return { deviceId: "bot", seq: 1 } } }).core
+      const core = makeImageCore({ sendImage: async (groupId, image) => { expect(groupId).toBe("dm-room"); sent.push({ kind: "image", value: image }) }, sendMessage: async (groupId, text) => { expect(groupId).toBe("dm-room"); sent.push({ kind: "text", value: text }); return { deviceId: "bot", seq: 1 } } }).core
       const fs = targetFilesystem(root)
-      const tools = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "dm-room", kind: "dm", groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: { validateImage: async () => undefined } })
+      const tools = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "dm-room", kind: destinationKind, groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: { validateImage: async () => undefined } })
       const tool = tools.find((definition) => definition.name === KEET_SEND_IMAGE)!
       await expect(tool.execute({ groupName: "Peer DM", path: "image.png", caption: "shown" }, { signal: new AbortController().signal } as never)).resolves.toEqual({ sent: true })
       expect(sent.map(({ kind }) => kind)).toEqual(["image", "text"])
@@ -450,7 +450,7 @@ describe("keet_send_image", () => {
     }
   })
 
-  it("reports image delivery when the adjacent caption fails and never retries", async () => {
+  it.each(["dm", "group", "broadcast"] as const)("reports image delivery to %s when the adjacent caption fails and never retries", async (destinationKind) => {
     const root = await mkdtemp(path.join(tmpdir(), "keet-image-partial-"))
     try {
       await writeFile(path.join(root, "image.png"), PNG_1X1)
@@ -458,7 +458,7 @@ describe("keet_send_image", () => {
       let captions = 0
       const core = makeImageCore({ sendImage: async () => { images += 1 }, sendMessage: async () => { captions += 1; throw new Error("caption failed") } }).core
       const fs = targetFilesystem(root)
-      const tool = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "dm-room", kind: "dm", groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
+      const tool = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "dm-room", kind: destinationKind, groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
       await expect(tool.execute({ groupName: "Peer DM", path: "image.png", caption: "shown" }, { signal: new AbortController().signal } as never)).rejects.toThrow(/image was delivered/i)
       expect(images).toBe(1)
       expect(captions).toBe(1)
@@ -467,13 +467,32 @@ describe("keet_send_image", () => {
     }
   })
 
-  it("rejects groups and unknown destinations before filesystem access", async () => {
+  it("surfaces a native Broadcast image permission rejection without caption or retry", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "keet-image-permission-"))
+    try {
+      await writeFile(path.join(root, "image.png"), PNG_1X1)
+      let images = 0
+      let captions = 0
+      const core = makeImageCore({
+        sendImage: async (groupId) => { expect(groupId).toBe("broadcast"); images += 1; throw new Error("MODERATORS_ONLY") },
+        sendMessage: async () => { captions += 1; return { deviceId: "bot", seq: 1 } },
+      }).core
+      const tool = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "broadcast", kind: "broadcast", groupName: "Announcements" }], isReady: () => true, workspaceRoot: root, fs: targetFilesystem(root), serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
+      await expect(tool.execute({ groupName: "Announcements", path: "image.png", caption: "shown" }, { signal: new AbortController().signal } as never)).rejects.toThrow("Keet image was not sent.")
+      expect(images).toBe(1)
+      expect(captions).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects unknown destinations before filesystem access", async () => {
     let reads = 0
     const fs: KeetWorkspaceFileSystem = { resolve: async (value, options) => ({ targetKey: value, displayPath: path.resolve(options?.cwd ?? "/workspace", value) }), contains: () => true, stat: async () => ({ type: "file", size: PNG_1X1.byteLength }), readBytes: async () => { reads += 1; return PNG_1X1 } }
-    const destinations: ManagedDestination[] = [{ groupId: "group", kind: "group", groupName: "Group" }]
+    const destinations: ManagedDestination[] = [{ groupId: "broadcast", kind: "broadcast", groupName: "Broadcast" }]
     const tool = createKeetToolDefinitions({ getCore: () => makeImageCore().core, destinations, isReady: () => true, fs, workspaceRoot: "/workspace", serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)
     expect(tool).toBeDefined()
-    await expect(tool!.execute({ groupName: "Group", path: "image.png" }, { signal: new AbortController().signal } as never)).rejects.toThrow("only for Managed DMs")
+    await expect(tool!.execute({ groupName: "Unknown", path: "image.png" }, { signal: new AbortController().signal } as never)).rejects.toThrow("not an allowed Managed Destination")
     expect(reads).toBe(0)
   })
 

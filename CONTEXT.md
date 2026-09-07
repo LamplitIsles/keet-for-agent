@@ -29,17 +29,17 @@ _Avoid_: Independent client implementation
 **Managed Group**:
 A pre-existing Keet `Default` room, already joined by the bridge identity, that
 one DSH Keet Bridge discovers at startup and exposes to its Active
-Conversation. Agents can read, reply to, and proactively send plain-text
-messages in that group; destination tools select it by the exact startup
+Conversation. Agents can read, reply to, and proactively send text or images
+in that group; destination tools select it by the exact startup
 `groupName`, never by an arbitrary room ID.
 _Avoid_: Approved Room, arbitrary room, adapter-created group
 
 **Managed Broadcast**:
 A pre-existing Keet `Broadcast` room, already joined by the bridge identity,
 that the DSH Keet Bridge discovers at startup. Agents can read its plain-text
-history and proactively publish plain-text posts, but its inbound messages do
+history and proactively publish text or images, but its inbound messages do
 not trigger Agent turns or accept reply relations. It has no Bridge state,
-subscription, context buffer, typing/read activity, roster, image, or reaction
+subscription, context buffer, typing/read activity, roster, or reaction
 path; the Official Keet Core decides each posting attempt from the identity's
 current native permission, so rejected posts are surfaced without retry.
 _Avoid_: Managed Group, role-cached broadcast, arbitrary room
@@ -215,12 +215,12 @@ delivered first; the reaction is a best-effort decoration and never replaces
 the response or causes a confirmed text send to be retried.
 _Avoid_: Standalone reaction response, arbitrary historical target, automatic toggle/removal
 
-**Explicit DM Image Send**:
-A supported raster image deliberately sent by an Agent tool to a Managed DM,
+**Explicit Destination Image Send**:
+A supported raster image deliberately sent by an Agent tool to a Managed Destination,
 selected by exact `groupName` and read only from within the Active
 Conversation workspace. It may carry a caption; completing a turn or creating
 an image in DSH does not send it automatically.
-_Avoid_: Automatic image reply, arbitrary host file, Managed Group image send
+_Avoid_: Automatic image reply, arbitrary host file
 
 **Keet reply relation**:
 An Explicit Destination Send to a Managed Group that references one specific

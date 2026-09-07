@@ -308,7 +308,6 @@ async function sendImage(deps: KeetToolDependencies, args: unknown, signal: Abor
   if (signal.aborted) throw cancelled(signal)
   const record = args && typeof args === "object" ? args as { groupName?: unknown; path?: unknown; caption?: unknown } : {}
   const destination = destinationOf(deps, record.groupName, "send-image")
-  if (destination.kind !== "dm") throw safeError("keet_send_image is available only for Managed DMs.")
   if (typeof record.path !== "string" || !record.path.trim() || record.path.length > 4_096) throw safeError("path must be a workspace-contained image path.")
   if (record.caption !== undefined && (typeof record.caption !== "string" || record.caption.length > MAX_MESSAGE_TEXT)) throw safeError("caption must be at most 16,000 characters.")
   const caption = typeof record.caption === "string" && record.caption.trim() ? record.caption : undefined
@@ -509,9 +508,9 @@ export function createKeetToolDefinitions(deps: KeetToolDependencies): readonly 
   const image = scopedDeps.fs
     ? defineTool({
       name: KEET_SEND_IMAGE,
-      description: "Send one supported PNG, JPEG, WebP, or GIF from the Active Conversation workspace to an exact Managed DM, optionally followed by one caption text message. This never sends to a Managed Group or retries a partial delivery.",
+      description: "Send one supported PNG, JPEG, WebP, or GIF from the Active Conversation workspace to an exact Managed Group, Managed Broadcast, or Managed DM, optionally followed by one caption text message. The native Keet Core decides posting permission; partial deliveries are never retried.",
       parameters: {
-        groupName: { type: "string", required: true, description: "An exact Managed DM groupName returned by keet_list_groups." },
+        groupName: { type: "string", required: true, description: "An exact Managed Group, Managed Broadcast, or Managed DM groupName returned by keet_list_groups." },
         path: { type: "string", required: true, description: "A workspace-contained image path; URLs and paths outside the Active Conversation workspace are rejected." },
         caption: { type: "string", description: "Optional bounded plain-text caption sent immediately after the image." },
       },
