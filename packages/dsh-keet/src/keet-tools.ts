@@ -53,8 +53,8 @@ export interface KeetDmMessageResult {
 
 export interface KeetToolDependencies {
   getCore: () => KeetCore | undefined
-  /** Immutable bridge-owned allowlist. */
-  destinations: readonly ManagedDestination[]
+  /** Current bridge-owned allowlist; newly admitted destinations appear live. */
+  getDestinations: () => readonly ManagedDestination[]
   isReady: () => boolean
   /** Bridge-owned receipt hook used to recognize later native replies. */
   onDestinationMessageSent?: (groupId: string, messageId: KeetMessageId | undefined) => void
@@ -123,7 +123,9 @@ function snapshotDestinations(destinations: readonly ManagedDestination[]): read
 }
 
 function destinationsOf(deps: KeetToolDependencies): readonly ManagedDestination[] {
-  return deps.destinations
+  let destinations: readonly ManagedDestination[] = []
+  try { destinations = deps.getDestinations() } catch { destinations = [] }
+  return snapshotDestinations(destinations)
 }
 
 function destinationOf(deps: KeetToolDependencies, groupNameValue: unknown, operation: "members" | "read" | "send" | "send-image"): ManagedDestination {
@@ -468,14 +470,14 @@ function messageSchema(): any {
 }
 
 export function createKeetToolDefinitions(deps: KeetToolDependencies): readonly ToolDefinition[] {
-  const scopedDeps: KeetToolDependencies = { ...deps, destinations: snapshotDestinations(deps.destinations) }
+  const scopedDeps: KeetToolDependencies = deps
   const list = defineTool({
     name: KEET_LIST_GROUPS,
-    description: "List every restart-scoped Managed Group, Managed Broadcast, and Managed DM discovered from the joined-room snapshot. Use an exact returned groupName with the other Keet tools.",
+    description: "List every currently admitted Managed Group, Managed Broadcast, and Managed DM, including destinations added through human settings while this bridge is running. Use an exact returned groupName with the other Keet tools.",
     parameters: {},
     output: {
       schema: { type: "object", additionalProperties: false, properties: { groups: { type: "array", required: true, items: { type: "object", additionalProperties: false, properties: { groupName: { type: "string", required: true }, kind: { type: "string", required: true } } } } } },
-      render: (_args, value) => renderText(value.groups?.length ? value.groups.map((group) => `${escapeRendererText(String(group.groupName))} (${escapeRendererText(String(group.kind))})`).join("\n") : "No discovered Managed Destinations are ready."),
+      render: (_args, value) => renderText(value.groups?.length ? value.groups.map((group) => `${escapeRendererText(String(group.groupName))} (${escapeRendererText(String(group.kind))})`).join("\n") : "No admitted Managed Destinations are ready."),
     },
     async execute(_args, exec) { return listGroups(scopedDeps, signalOf(exec)) },
   })

@@ -21,7 +21,7 @@ export const inject = [
 
 type HostContext = Context & {
   connection: { rpc: { handle: (channel: string, handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) => () => Promise<void> } }
-  settings: { register: (namespace: string, schema: unknown, options?: unknown) => { get(): unknown } }
+  settings: { register: (namespace: string, schema: unknown, options?: unknown) => { get(): unknown; watch: (callback: (next: unknown, previous: unknown) => void) => () => void } }
   workspaceRegistry: KeetBridgeDependencies["workspaceRegistry"]
   sessionController: {
     inspect: (sessionId: string, signal?: AbortSignal) => Promise<unknown>
@@ -38,6 +38,7 @@ export function apply(ctx: HostContext): void {
   const fs = capabilityOf<KeetBridgeDependencies["fs"]>(ctx, "fs")
   const bridgeDeps: KeetBridgeDependencies = {
     getSettings: () => settings.get(),
+    watchSettings: (callback) => settings.watch(callback),
     workspaceRegistry: ctx.workspaceRegistry,
     resolveRuntimePaths: async (workspace) => await resolveKeetRuntimePaths(workspace.path),
     inspectSession: async (id) => await ctx.sessionController.inspect(id) as any,
@@ -57,11 +58,12 @@ export function apply(ctx: HostContext): void {
 }
 
 export { KeetBridge, bridgeRpcHandler }
-export type { KeetBridgeAgent, KeetBridgeDependencies, KeetBridgeReadiness, KeetBridgeReadinessState, KeetCommandService } from "./bridge.js"
+export type { KeetBridgeAgent, KeetBridgeDependencies, KeetBridgeReadiness, KeetBridgeReadinessState, KeetCommandService, KeetMemberJoinGroup, KeetOnboardingAdmittedResult, KeetOnboardingListResult, KeetOnboardingMutation, KeetOnboardingMutationResult, KeetOnboardingOperation, KeetOnboardingPartialResult, KeetPendingDmRequestView } from "./bridge.js"
 export { createKeetToolDefinitions, normalizeManagedDestinationName, KEET_LIST_GROUPS, KEET_LIST_MEMBERS, KEET_READ_RECENT_MESSAGES, KEET_SEND_MESSAGE, KEET_SEND_IMAGE } from "./keet-tools.js"
 export type { KeetToolDependencies, KeetListGroupsResult, KeetListMembersResult, KeetReadRecentMessagesResult, KeetSendMessageResult, KeetSendImageResult, KeetMemberResult, KeetGroupMessageResult, KeetDmMessageResult, ManagedDestination, ManagedDestinationSummary, ManagedDestinationKind, ActiveReactionTarget } from "./keet-tools.js"
 export type { KeetAttachmentStore, KeetImageAttachmentRef, KeetSaveImageAttachment, KeetWorkspaceFileSystem } from "./image-contract.js"
 export { KeetSettingsSchema } from "./settings.js"
+export { RPC_CHANNEL, RPC_ENDPOINT, RPC_ONBOARDING_ENDPOINT, SETTINGS_NAMESPACE } from "./constants.js"
 export { ensureKeetIdentityDataDir, resolveKeetRuntimeDir, resolveKeetRuntimePaths } from "./local-paths.js"
 export { decodeSettings, normalizeSettings, validateSettings } from "./settings-client.js"
 export type { KeetSettings } from "./constants.js"

@@ -244,6 +244,122 @@
   font-weight: 600;
 }
 
+.memberJoinSettings {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding-top: 4px;
+}
+
+.triggerName {
+  flex: 1;
+  min-width: 0;
+}
+
+.triggerStatus {
+  color: var(--dsw-alias-state-success-primary);
+  font-size: 12px;
+}
+
+.onboarding {
+  display: flex;
+  flex-direction: column;
+}
+
+.actionRow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.actionRow .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.primaryAction,
+.secondaryAction {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  padding: 5px 12px;
+  color: var(--dsw-alias-label-secondary);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.primaryAction {
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-3);
+  border-color: transparent;
+}
+
+.primaryAction:disabled,
+.secondaryAction:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.primaryAction:focus-visible,
+.secondaryAction:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.actionStatus {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.requestList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.request {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.requestIdentity {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.identityHint {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.requestActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .card,
   .chevron {

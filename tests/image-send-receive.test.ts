@@ -361,7 +361,7 @@ describe("keet_send_image", () => {
       const sent: Array<{ kind: "image" | "text"; value: unknown }> = []
       const core = makeImageCore({ sendImage: async (groupId, image) => { expect(groupId).toBe("dm-room"); sent.push({ kind: "image", value: image }) }, sendMessage: async (groupId, text) => { expect(groupId).toBe("dm-room"); sent.push({ kind: "text", value: text }); return { deviceId: "bot", seq: 1 } } }).core
       const fs = targetFilesystem(root)
-      const tools = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "dm-room", kind: destinationKind, groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: { validateImage: async () => undefined } })
+      const tools = createKeetToolDefinitions({ getCore: () => core, getDestinations: () => [{ groupId: "dm-room", kind: destinationKind, groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: { validateImage: async () => undefined } })
       const tool = tools.find((definition) => definition.name === KEET_SEND_IMAGE)!
       await expect(tool.execute({ groupName: "Peer DM", path: "image.png", caption: "shown" }, { signal: new AbortController().signal } as never)).resolves.toEqual({ sent: true })
       expect(sent.map(({ kind }) => kind)).toEqual(["image", "text"])
@@ -390,7 +390,7 @@ describe("keet_send_image", () => {
       }
       const sent: PreparedKeetImage[] = []
       const core = makeImageCore({ sendImage: async (_groupId, image) => { sent.push(image) } }).core
-      const tool = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "dm-room", kind: "dm", groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
+      const tool = createKeetToolDefinitions({ getCore: () => core, getDestinations: () => [{ groupId: "dm-room", kind: "dm", groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
       await expect(tool.execute({ groupName: "Peer DM", path: "image.png" }, { signal: new AbortController().signal } as never)).resolves.toEqual({ sent: true })
       expect(sent).toHaveLength(1)
       expect(Buffer.from(sent[0]!.bytes)).toEqual(PNG_1X1)
@@ -458,7 +458,7 @@ describe("keet_send_image", () => {
       let captions = 0
       const core = makeImageCore({ sendImage: async () => { images += 1 }, sendMessage: async () => { captions += 1; throw new Error("caption failed") } }).core
       const fs = targetFilesystem(root)
-      const tool = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "dm-room", kind: destinationKind, groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
+      const tool = createKeetToolDefinitions({ getCore: () => core, getDestinations: () => [{ groupId: "dm-room", kind: destinationKind, groupName: "Peer DM" }], isReady: () => true, workspaceRoot: root, fs, serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
       await expect(tool.execute({ groupName: "Peer DM", path: "image.png", caption: "shown" }, { signal: new AbortController().signal } as never)).rejects.toThrow(/image was delivered/i)
       expect(images).toBe(1)
       expect(captions).toBe(1)
@@ -477,7 +477,7 @@ describe("keet_send_image", () => {
         sendImage: async (groupId) => { expect(groupId).toBe("broadcast"); images += 1; throw new Error("MODERATORS_ONLY") },
         sendMessage: async () => { captions += 1; return { deviceId: "bot", seq: 1 } },
       }).core
-      const tool = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "broadcast", kind: "broadcast", groupName: "Announcements" }], isReady: () => true, workspaceRoot: root, fs: targetFilesystem(root), serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
+      const tool = createKeetToolDefinitions({ getCore: () => core, getDestinations: () => [{ groupId: "broadcast", kind: "broadcast", groupName: "Announcements" }], isReady: () => true, workspaceRoot: root, fs: targetFilesystem(root), serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)!
       await expect(tool.execute({ groupName: "Announcements", path: "image.png", caption: "shown" }, { signal: new AbortController().signal } as never)).rejects.toThrow("Keet image was not sent.")
       expect(images).toBe(1)
       expect(captions).toBe(0)
@@ -490,7 +490,7 @@ describe("keet_send_image", () => {
     let reads = 0
     const fs: KeetWorkspaceFileSystem = { resolve: async (value, options) => ({ targetKey: value, displayPath: path.resolve(options?.cwd ?? "/workspace", value) }), contains: () => true, stat: async () => ({ type: "file", size: PNG_1X1.byteLength }), readBytes: async () => { reads += 1; return PNG_1X1 } }
     const destinations: ManagedDestination[] = [{ groupId: "broadcast", kind: "broadcast", groupName: "Broadcast" }]
-    const tool = createKeetToolDefinitions({ getCore: () => makeImageCore().core, destinations, isReady: () => true, fs, workspaceRoot: "/workspace", serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)
+    const tool = createKeetToolDefinitions({ getCore: () => makeImageCore().core, getDestinations: () => destinations, isReady: () => true, fs, workspaceRoot: "/workspace", serializeDestinationSend, attachments: {} }).find((definition) => definition.name === KEET_SEND_IMAGE)
     expect(tool).toBeDefined()
     await expect(tool!.execute({ groupName: "Unknown", path: "image.png" }, { signal: new AbortController().signal } as never)).rejects.toThrow("not an allowed Managed Destination")
     expect(reads).toBe(0)
@@ -500,7 +500,7 @@ describe("keet_send_image", () => {
     let reads = 0
     const { core } = makeImageCore({ readImage: async () => { reads += 1; return PNG_1X1 } })
     core.readRecentMessages = async () => [imageMessage("dm-room", 1, "historical caption", [imageFile("old")])]
-    const tool = createKeetToolDefinitions({ getCore: () => core, destinations: [{ groupId: "dm-room", kind: "dm", groupName: "Peer DM" }], isReady: () => true, serializeDestinationSend }).find((definition) => definition.name === "keet_read_recent_messages")!
+    const tool = createKeetToolDefinitions({ getCore: () => core, getDestinations: () => [{ groupId: "dm-room", kind: "dm", groupName: "Peer DM" }], isReady: () => true, serializeDestinationSend }).find((definition) => definition.name === "keet_read_recent_messages")!
     await expect(tool.execute({ groupName: "Peer DM", last: 10 }, { signal: new AbortController().signal } as never)).resolves.toMatchObject({ messages: [{ text: "historical caption" }] })
     expect(reads).toBe(0)
   })

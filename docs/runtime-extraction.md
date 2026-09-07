@@ -93,25 +93,48 @@ directory permissions. One sidecar process owns it through an exclusive
 nonblocking kernel lock on the persistent mode-0600 `.keet-sidecar.lock` file;
 concurrent use is rejected immediately. Ownership follows the open descriptor,
 so the kernel releases it after an abnormal process death. The file is not a
-stale PID record and must never be deleted manually. Stop the running bridge
-before invoking setup, then restart it after the operation.
-Run the human-only setup command from the root README:
+stale PID record and must never be deleted manually.
+
+Room access is authorized from the running settings card. When readiness is
+`Ready` or `Unbound`, open the card, paste one `keet://chat/<token>` invitation
+into the transient Invitation field, and choose `Join`. Open the Pending DM
+Request section to load bounded sender labels, use `Refresh` when needed, and
+choose `Accept` for the exact human-selected request. The bridge re-reads and
+fully initializes each resulting destination before publishing it to the
+current tools; a restart is not required. A connected `Unbound` bridge remains
+unbound if it has no existing DSH conversation, but can still admit a room.
+
+The running bridge must remain the sole Core owner for these settings actions.
+Do not invoke a second sidecar with invitation or DM-request data. The
+invitation is not persisted or logged, and pending request selectors and room
+IDs remain bridge-owned. If native authorization succeeds but admission fails,
+the settings card offers an admission-only retry and does not repeat the native
+mutation. Newly admitted groups and DMs establish their baseline before
+publication, so historical and pre-intake messages never trigger turns.
+
+Member Join Trigger is a separate live setting for ordinary Managed Groups. The
+card lists each currently managed group and stores its enabled state under the
+selected workspace and stable native group identity; missing preferences are
+off. DMs and Broadcasts have no toggle. Enabling a group starts a fresh roster
+baseline, so arrivals during the disabled period are not replayed. Disabling
+suppresses queued Member Join work without interrupting a turn already running.
+The fixed ten-second roster poll runs only while at least one ordinary group is
+enabled. These preferences apply without restarting DSH and do not change the
+ordinary group mention/reply triggers.
+
+The remaining human-only setup commands are for profile or username changes.
+Stop the running bridge before invoking either command, then restart it after
+the operation. For a systemd user service, use the wrapper from the root
+README. For example:
 
 ```sh
-printf '%s\n' "$INVITATION" | dsh-keet-setup join \
-  --workspace /path/to/dsh-workspace
 dsh-keet-setup profile \
   --workspace /path/to/dsh-workspace \
   --display-name "Keet Assistant"
 ```
 
-The join command uses the official `getLinkInfo` and `startPairingRoom` flow,
-waits within a bound, and prints one bounded success result without a room ID.
-Invitation input is never accepted through argv or environment variables and
-never appears in logs or DSH settings. Do not delete existing identity data on
-a failed join. Restart DSH after joining so the next startup snapshot can
-discover the new `Default` room. The human-only profile operation can also
-prepare an avatar from a local PNG, JPEG, or WebP:
+`dsh-keet-setup` does not join rooms or list/accept DM requests. The profile
+operation can also prepare an avatar from a local PNG, JPEG, or WebP:
 
 ```sh
 dsh-keet-setup profile \
@@ -146,12 +169,6 @@ current-name verification path. Generic failures remain bounded and do not
 print identity keys. No background polling or alternate-name selection is
 created.
 
-To authorize a direct message, list bounded pending sender identities and
-accept one exact Member ID through the human-only setup commands. Acceptance
-does not print a room ID; restart DSH afterward so the next canonical snapshot
-discovers the accepted DM. Pending requests and unsupported room records remain
-inactive.
-
 ## Managed DM image boundary
 
 The bridge accepts live external PNG, JPEG, WebP, and GIF images in Managed
@@ -166,7 +183,7 @@ record for the next successful turn in that DM, so later messages are not
 blocked. Startup snapshots, self-authored messages, Managed Groups,
 historical reads, and `keet_read_recent_messages` never download image bytes.
 
-The explicit `keet_send_image` tool is DM-only. It reads one image through the
+The explicit `keet_send_image` tool supports every Managed Destination. It reads one image through the
 bound DSH `ctx.fs` Active Conversation workspace filesystem, requires a path contained by that
 workspace, detects the format from validated bytes, preserves the source for
 the native `saveFileBlob`/`sendFile` lifecycle (the Official pointer is

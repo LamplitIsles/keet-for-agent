@@ -21,24 +21,27 @@ _Avoid_: Published runtime, bundled dependency
 **Adapter**:
 A thin host-specific interface over the Integration Core. The first Adapter is
 the DSH Keet Bridge; MCP, OpenClaw, Hermes, and a general CLI adapter are later
-work. The setup executable is intentionally narrower than a general CLI and
-only performs human onboarding, searchable-username reservation, DM request
-acceptance, and profile updates.
+work. The settings card performs live human room onboarding; the setup
+executable is intentionally narrower than a general CLI and only performs
+searchable-username reservation and profile updates.
 _Avoid_: Independent client implementation
 
 **Managed Group**:
 A pre-existing Keet `Default` room, already joined by the bridge identity, that
-one DSH Keet Bridge discovers at startup and exposes to its Active
-Conversation. Agents can read, reply to, and proactively send text or images
-in that group; destination tools select it by the exact startup
-`groupName`, never by an arbitrary room ID.
+one DSH Keet Bridge discovers at startup or admits through human settings while
+running and exposes to its Active Conversation. Agents can read, reply to, and
+proactively send text or images in that group; destination tools select it by
+the exact admission-time `groupName`, never by an arbitrary room ID. Its Member
+Join Trigger is independently opt-in through settings and is off when no
+workspace/group preference exists.
 _Avoid_: Approved Room, arbitrary room, adapter-created group
 
 **Managed Broadcast**:
 A pre-existing Keet `Broadcast` room, already joined by the bridge identity,
-that the DSH Keet Bridge discovers at startup. Agents can read its plain-text
-history and proactively publish text or images, but its inbound messages do
-not trigger Agent turns or accept reply relations. It has no Bridge state,
+that the DSH Keet Bridge discovers at startup or admits through human settings
+while running. Agents can read its plain-text history and proactively publish
+text or images, but its inbound messages do not trigger Agent turns or accept
+reply relations. It has no Bridge state,
 subscription, context buffer, typing/read activity, roster, or reaction
 path; the Official Keet Core decides each posting attempt from the identity's
 current native permission, so rejected posts are surfaced without retry.
@@ -47,24 +50,27 @@ _Avoid_: Managed Group, role-cached broadcast, arbitrary room
 **Managed DM**:
 An accepted complete one-to-one Keet room typed `DirectMessage`, discovered in
 the canonical joined-room list when its peer is absent from the bounded pending
-request snapshot. It shares the Integration Identity and Active Conversation
-with every Managed Group and Managed Broadcast. Every new ordinary external DM text triggers a turn;
+request snapshot or admitted through human settings while the bridge is
+running. It shares the Integration Identity and Active Conversation with every
+Managed Group and Managed Broadcast. Every new ordinary external DM text triggers a turn;
 DM prompts and history omit canonical message IDs and reply relations.
 _Avoid_: contact request, arbitrary private room, Agent-created DM
 
 **Managed Destination**:
-One entry in the bridge's immutable startup allowlist: every joined `Default`
-room, joined `Broadcast` room, and accepted complete `DirectMessage` admitted
-from the bounded snapshot. `keet_list_groups` returns these entries as an exact
-`groupName` and `kind`; the other Keet tools require that exact returned name.
+One entry in the bridge's run-scoped allowlist: every joined `Default` room,
+joined `Broadcast` room, and accepted complete `DirectMessage` admitted from
+the bounded startup snapshot or by a human settings action. `keet_list_groups`
+returns these entries as an exact `groupName` and `kind`; the other Keet tools
+require that exact returned name.
 _Avoid_: all joined rooms, implicit target, arbitrary destination
 
 **Managed Destination Name**:
 The bounded, single-line name captured from a destination title when the bridge
-starts. Leading/trailing whitespace is trimmed and record-breaking line
-separators become spaces. Selectors trim their input, then compare this
-restart-scoped snapshot exactly and case-sensitively. Equal names are ambiguous
-and fail selected operations closed.
+starts or when a human settings action admits it. Leading/trailing whitespace
+is trimmed and record-breaking line separators become spaces. Selectors trim
+their input, then compare the bridge-run collection exactly and
+case-sensitively. Equal names are ambiguous and fail selected operations
+closed.
 _Avoid_: alias, fuzzy name, live rename, group ID
 
 **Single-session multiplexing**:
@@ -82,13 +88,16 @@ Managed DM records expose no message or reply IDs.
 _Avoid_: sender ID in prompts, roster Member ID, send receipt Message ID
 
 **DSH Keet Bridge**:
-The DSH Adapter that discovers joined/accepted Managed Destinations, carries
-their new messages into one Active Conversation, and gives that conversation
-explicit-destination Keet tools backed by the Integration Core.
+The DSH Adapter that discovers or live-admits joined/accepted Managed
+Destinations, carries their new messages into one Active Conversation, and gives
+that conversation explicit-destination Keet tools backed by the Integration
+Core.
 _Avoid_: MCP server, Keet client implementation
 
 **Active Conversation**:
-The existing DSH conversation selected from the configured workspace when the DSH Keet Bridge starts. The bridge keeps that conversation for its lifetime and never creates or switches it.
+The existing DSH conversation selected from the configured workspace when the DSH
+Keet Bridge starts. The bridge keeps that conversation for its lifetime and
+never creates or switches it; live onboarding uses the same conversation.
 _Avoid_: Keet conversation, configured session
 
 **Destination Context Buffer**:
@@ -129,19 +138,27 @@ _Avoid_: literal `@name` text as a substitute, Member ID tool arguments
 
 **Member Join Trigger**:
 A bridge-owned observation that a Member ID appears in a regular Managed Group
-roster after the first successful ten-second poll baseline. It carries only a
-bounded, untrusted display name and source `groupName` into one serialized
-Agent turn. Startup, missed-between-poll, failed-read, self, DM, Broadcast, and
-leave/rejoin observations do not trigger; a claimed `(group, member)` receipt
-remains consumed across DSH restarts.
+roster after the first successful ten-second poll baseline for that admitted
+group. It is opt-in independently for each ordinary group: the settings card
+stores a durable preference under the workspace and stable native group ID,
+and an absent preference is off. DMs and Broadcasts have no preference. It
+carries only a bounded, untrusted display name and source `groupName` into one
+serialized Agent turn. A live preference change takes effect without restart;
+enabling establishes a fresh baseline, so arrivals while disabled are not
+replayed, and disabling does not interrupt a turn already running. Startup/
+admission-baseline members, missed-between-poll, failed-read, self, DM,
+Broadcast, and leave/rejoin observations do not trigger; a claimed `(group,
+member)` receipt remains consumed across DSH restarts.
 _Avoid_: native membership event, startup catch-up, automatic welcome, Member ID in a prompt
 
 **Durable Inbox Receipt**:
 The adapter-private identifier attached to one DSH user message for admission.
 DSH `agent/inbox/spliced` insertion makes a roster receipt pending; a
 non-canceled removal consumes it, while `outcome: "canceled"` leaves it
-eligible. Incomplete workspace-session inspection suppresses roster intake for
-that bridge run without stopping ordinary message triggers.
+eligible. A preference-driven cancellation of a queued Member Join turn is
+suppressed rather than retried when that group is enabled again. Incomplete
+workspace-session inspection suppresses roster intake for that bridge run
+without stopping ordinary message triggers.
 _Avoid_: plugin receipt database, exactly-once Keet delivery, outbound send receipt
 
 **DM Activity Signal**:
@@ -186,7 +203,7 @@ with device details, presence, historical membership, and identity secrets.
 _Avoid_: Account directory, membership history
 
 **Explicit Destination Send**:
-A plain-text message deliberately sent by an Agent tool to one discovered
+A plain-text message deliberately sent by an Agent tool to one admitted
 destination selected by its exact returned `groupName`. Regular-group sends
 may carry one exact canonical `replyTo` target; Managed DM sends are ordinary
 text and reject reply anchors. A send may optionally decorate the current Keet
@@ -231,13 +248,25 @@ smoke.
 _Avoid_: Plain follow-up, quoted-text imitation
 
 **Group Onboarding**:
-The one-time human operation that consumes an invitation to join the
-integration identity to a Keet group and persists that identity. A human may
-separately reserve a searchable username, list and accept pending DM requests,
-and update the identity profile. Normal Agent tools never create, accept, or
-reveal invitation/request material; DSH restarts to discover newly authorized
-destinations.
-_Avoid_: Agent invitation tool, automatic group creation
+The human settings operation that consumes an invitation to join the
+Integration Identity to a Keet group while the DSH Keet Bridge is running. The
+invitation is transient, and successful native joining is followed by admission
+of the fully initialized destination into the current bridge and Agent tools.
+The new destination starts with new messages only; its historical snapshot is
+not replayed. Normal Agent tools never create or reveal invitation material.
+_Avoid_: Agent invitation tool, automatic group creation, restart-required join
+
+**Pending DM Request**:
+A request from another Keet identity to open a direct conversation with the
+Integration Identity, awaiting a human's acceptance. It is not a Managed DM.
+_Avoid_: Agent approval request, accepted DM, group invitation
+
+**DM Request Acceptance**:
+The human decision to accept one Pending DM Request on behalf of the
+Integration Identity. Acceptance authorizes the direct conversation; the
+request itself is not an Agent instruction. The settings card submits the exact
+hidden peer selector and admits the resulting DM into the running bridge.
+_Avoid_: Automatic acceptance, Agent consent, group onboarding
 
 **Searchable Keet Username**:
 The human-managed, globally unique registry reservation that lets another Keet

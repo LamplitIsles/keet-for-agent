@@ -55,35 +55,43 @@ the inbound DM-only and text-history boundaries are specified and reversible.
 The bridge discovers every joined `Default` or `Broadcast` room and every
 accepted complete `DirectMessage` room from one bounded startup snapshot, then
 binds all admitted destinations to one existing DSH conversation selected from
-the configured workspace. It never creates or switches conversations or
-groups. Pending DM requests, unknown room types, incomplete DMs, and duplicate
-room records are excluded; a pending-snapshot failure fails startup closed.
+the configured workspace. While running, the human settings card can extend
+that collection by joining an invited room or accepting one exact Pending DM
+Request. It never creates or switches conversations or groups. Pending DM
+requests, unknown room types, incomplete DMs, and duplicate room records are
+excluded; a pending-snapshot failure fails startup closed.
 Regular groups keep mention, current-label, and verified-reply triggers; every
 new ordinary external DM text triggers one serialized Agent turn. Managed
 Broadcasts support listing, reading history, and sending text or images. They
 have no Bridge state, subscription, context buffer, inbound trigger, typing/read
 activity, roster, reply-anchor, or reaction path. The native worker
 adjudicates every post from current permissions. Group/DM destination buffers
-and subscriptions are isolated, each injected context names its restart-scoped
+and subscriptions are isolated, each injected context names its admission-time
 source `groupName`, and the Agent's final text remains in DSH unless an
 explicit delivery tool is called. After a confirmed text send in a turn (with
 an optional reaction decoration), the injected policy reduces the final DSH
 response to the exact `✓` acknowledgement so the already-delivered Keet
 content is not duplicated.
-While ready, regular Managed Groups use a fixed ten-second roster poll. The
-first successful read is the startup baseline; later additions excluding the
-Integration Identity produce one bounded Member Join turn per group/member
-pair. Member Join prompts contain only an untrusted display name and source
-`groupName`, have no message/reply/image/activity/reaction capability, and use
-DSH inbox splice receipts for at-most-once suppression across restarts. Failed
-session inspection suppresses roster observation for that run while ordinary
-message intake continues.
+While ready, enabled regular Managed Groups use a fixed ten-second roster poll.
+Member Join Trigger is durable, opt-in independently per ordinary group through
+the settings card, and defaults off when no workspace/stable-group preference
+exists; DMs and Broadcasts have no toggle. The first successful read for each
+enabled admitted group is its startup or admission baseline; later additions
+excluding the Integration Identity produce one bounded Member Join turn per
+group/member pair. Enabling applies live and resets that group's baseline, so
+disabled-period arrivals do not replay; disabling suppresses queued observations
+without interrupting a turn already running. Member Join prompts contain only
+an untrusted display name and source `groupName`, have no
+message/reply/image/activity/reaction capability, and use DSH inbox splice
+receipts for at-most-once suppression across restarts. Failed session inspection
+suppresses roster observation for that run while ordinary message intake
+continues.
 
 The tools are `keet_list_groups`, `keet_list_members`,
 `keet_read_recent_messages`, `keet_send_message`, and `keet_send_image`. The
-first lists all
-discovered destinations as `{ groupName, kind }`; the remaining tools require an
-exact returned `groupName` (trimmed, case-sensitive, and restart-scoped).
+first lists all admitted destinations as `{ groupName, kind }`; the remaining
+tools require an exact returned `groupName` (trimmed, case-sensitive, and
+stable for the bridge run).
 Regular Group history preserves canonical message IDs, optional reply
 provenance, and the current text of valid edited records; Managed Broadcast
 history preserves canonical message IDs but omits reply provenance. Live edited
@@ -121,19 +129,22 @@ before native delivery; image-success/caption-failure is reported as a bounded
 no-retry partial delivery. Normalized duplicate names fail selected operations
 closed before Core access, with ambiguous sends confirming that no message was
 sent.
-Setup is human-only: `join` reads exactly one invitation URL from stdin,
-`username` reserves or changes the globally unique searchable registry name,
-`dm-requests` lists bounded sender identities, `dm-accept` accepts one exact
-pending sender, and `profile` can independently update display name and a
-prepared avatar. Username is not profile data at the product interface and is
-not exposed through bridge/model tools or settings. Join and DM acceptance
-results do not expose room IDs;
-restart DSH after either operation so the next startup snapshot can admit the
-destination.
+Room onboarding is human-only through the running settings card. `Join` accepts
+one transient invitation, while `Pending DM Request` listing and exact `Accept`
+actions expose only bounded display labels and identity hints; the hidden
+selectors and room IDs remain bridge-owned. A confirmed native action is
+followed by canonical room re-read and full destination initialization before
+publication. A partial result retains an admission-only retry and never repeats
+the confirmed native mutation. `dsh-keet-setup` now only handles the independent
+profile and globally searchable username operations, which still require
+exclusive identity ownership. Username is not profile data and is not exposed
+through bridge/model tools or settings.
 
 A workspace with no eligible destinations is a valid connected state. When an
 Agent is bound, readiness and tools are available with an empty destination
-list until a later restart after onboarding.
+list; a human can add a destination live even from the `Unbound` state. A newly
+admitted group or DM publishes only after its history baseline and subscription
+are established, so historical and pre-intake messages never trigger turns.
 
 While active Managed DM work is running, the bridge publishes best-effort
 native activity: the triggering message is marked read at chat index plus one,

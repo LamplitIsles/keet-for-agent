@@ -5,7 +5,7 @@ import path from "node:path"
 import { Readable } from "node:stream"
 import { pathToFileURL } from "node:url"
 import { describe, expect, it } from "vitest"
-import { isDirectExecution, parseArgs, readInvitation, runSetup } from "../packages/dsh-keet/src/setup.js"
+import { isDirectExecution, parseArgs, runSetup } from "../packages/dsh-keet/src/setup.js"
 import { AVATAR_MAX_SOURCE_BYTES } from "../packages/dsh-keet/src/avatar.js"
 import type { PreparedAvatar } from "../packages/dsh-keet/src/core-contract.js"
 
@@ -32,14 +32,10 @@ describe("dsh-keet-setup", () => {
   })
 
   it("accepts only narrow setup arguments and never invitation argv", () => {
-    expect(parseArgs(["join", "--workspace", "/workspace"])).toMatchObject({ command: "join", workspaceDir: "/workspace" })
     expect(parseArgs(["profile", "--workspace", "/workspace", "--display-name", "Keet Bot"])).toMatchObject({ command: "profile", workspaceDir: "/workspace", displayName: "Keet Bot" })
     expect(parseArgs(["profile", "--workspace", "/workspace", "--avatar", "/tmp/avatar.png"])).toMatchObject({ command: "profile", avatarPath: "/tmp/avatar.png" })
-    expect(parseArgs(["dm-requests", "--workspace", "/workspace"])).toMatchObject({ command: "dm-requests" })
-    expect(parseArgs(["dm-accept", "--workspace", "/workspace", "--member-id", "peer"])).toMatchObject({ command: "dm-accept", memberId: "peer" })
     expect(parseArgs(["username", "--workspace", "/workspace", "--username", "agent_name1"])).toEqual({ command: "username", workspaceDir: "/workspace", username: "agent_name1" })
-    expect(() => parseArgs(["join", "--workspace", "/workspace", "keet://chat/secret"])).toThrow()
-    expect(() => parseArgs(["join", "--runtime-dir", "/runtime"])).toThrow()
+    for (const removed of [["join", "--workspace", "/workspace"], ["dm-requests", "--workspace", "/workspace"], ["dm-accept", "--workspace", "/workspace", "--member-id", "peer"]]) expect(() => parseArgs(removed)).toThrow()
     expect(() => parseArgs(["profile", "--workspace", "/workspace", "--display-name", "   "])).toThrow()
     expect(() => parseArgs(["profile", "--workspace", "/workspace"])).toThrow()
     for (const username of ["agent_name", "1234", "a-1", " a1", "a1 ", "a1", `a1${"x".repeat(63)}`]) {
@@ -48,35 +44,7 @@ describe("dsh-keet-setup", () => {
     expect(() => parseArgs(["username", "--workspace", "/workspace", "--username", "agent1", "--member-id", "peer"])).toThrow()
   })
 
-  it("requires exactly one bounded room invitation on stdin", async () => {
-    await expect(readInvitation(Readable.from(["keet://chat/token\n"]))).resolves.toBe("keet://chat/token")
-    await expect(readInvitation(Readable.from(["keet://chat/one\nkeet://chat/two\n"]))).rejects.toThrow()
-    await expect(readInvitation(Readable.from(["https://example.invalid/token"]))).rejects.toThrow()
-  })
-
-  it("joins through the injected Core and prints one redacted machine result", async () => {
-    const calls: string[] = []
-    let receivedOptions: Record<string, unknown> | undefined
-    const stdout = output()
-    const stderr = output()
-    const code = await runSetup(
-      ["join", "--workspace", "/workspace"],
-      Readable.from(["keet://chat/secret-token\n"]) as never, stdout.stream, stderr.stream,
-      {
-        resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-        coreFactory: async (options) => { receivedOptions = options as unknown as Record<string, unknown>; return { joinInvitation: async (invitation) => { calls.push(invitation); return { groupId: "group-result" } }, updateIdentityProfile: async () => undefined, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined } },
-      },
-    )
-    expect(code).toBe(0)
-    expect(calls).toEqual(["keet://chat/secret-token"])
-    expect(stdout.value().trim().split("\n")).toHaveLength(1)
-    expect(JSON.parse(stdout.value())).toEqual({ ok: true, operation: "join" })
-    expect(stdout.value()).not.toContain("secret-token")
-    expect(stderr.value()).toBe("")
-    expect(receivedOptions).toMatchObject({ executablePath: "/runtime/bare", bundlePath: "/runtime/core-worker.bundle", dataPath: "/identity", appVersion: "4.21.0", expectedCoreVersion: "4.21.5", expectedAbi: 35 })
-  })
-
-  it("updates only the display name for profile and does not start Core for malformed join input", async () => {
+  it("updates only the display name for profile", async () => {
     const stdout = output()
     let profile = ""
     let started = 0
@@ -93,36 +61,6 @@ describe("dsh-keet-setup", () => {
     expect(profile).toBe("  Agent  ")
     expect(stdout.value()).toContain('"operation":"profile"')
 
-    const invalidOut = output(); const invalidErr = output(); let invalidStarted = 0
-    const invalidCode = await runSetup(["join", "--workspace", "/workspace"], Readable.from(["not an invitation"]) as never, invalidOut.stream, invalidErr.stream, { coreFactory: async () => { invalidStarted += 1; throw new Error("must not start") } })
-    expect(invalidCode).toBe(1)
-    expect(invalidStarted).toBe(0)
-    expect(invalidOut.value()).toBe("")
-    expect(invalidErr.value()).not.toContain("not an invitation")
-  })
-
-  it("lists and accepts pending DMs through redacted machine results", async () => {
-    const pendingOut = output()
-    const pendingCode = await runSetup(
-      ["dm-requests", "--workspace", "/workspace"], Readable.from([]) as never, pendingOut.stream, output().stream,
-      {
-        resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-        coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async () => undefined, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [{ memberId: "peer", displayName: "Peer" }], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
-      },
-    )
-    expect(pendingCode).toBe(0)
-    expect(JSON.parse(pendingOut.value())).toEqual({ ok: true, operation: "dm-requests", requests: [{ memberId: "peer", displayName: "Peer" }] })
-    expect(pendingOut.value()).not.toContain("private-room")
-    const acceptedOut = output()
-    const acceptedCode = await runSetup(
-      ["dm-accept", "--workspace", "/workspace", "--member-id", "peer"], Readable.from([]) as never, acceptedOut.stream, output().stream,
-      {
-        resolveRuntimePaths: async () => ({ runtimeDir: "/runtime", identityDataDir: "/identity" }),
-        coreFactory: async () => ({ joinInvitation: async () => ({ groupId: "unused" }), updateIdentityProfile: async () => undefined, setUsername: async () => ({ status: "searchable" as const, submitted: false }), listPendingDmRequests: async () => [], acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }), close: async () => undefined }),
-      },
-    )
-    expect(acceptedCode).toBe(0)
-    expect(JSON.parse(acceptedOut.value())).toEqual({ ok: true, operation: "dm-accept", memberId: "peer" })
   })
 
   it("sets a username through Core, prints a bounded result, and always closes Core", async () => {

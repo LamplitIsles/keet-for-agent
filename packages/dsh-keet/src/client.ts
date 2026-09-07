@@ -7,7 +7,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-slots"
 import type {} from "@deepseek-ai/dsh-client-ui-workspace/client"
 import { keetLocale } from "./client/labels.js"
 import { KeetSettingsCard, type WorkspaceSource } from "./client/settings-card.js"
-import { RPC_CHANNEL, RPC_ENDPOINT, SETTINGS_NAMESPACE, type KeetSettings } from "./constants.js"
+import { RPC_CHANNEL, RPC_ENDPOINT, RPC_ONBOARDING_ENDPOINT, SETTINGS_NAMESPACE, type KeetSettings } from "./constants.js"
 import { decodeSettings } from "./settings-client.js"
 import type { KeetLocaleKey } from "./client/labels.js"
 
@@ -38,6 +38,9 @@ function createReadinessApi(connection: Pick<ConnectionHandle, "rpc">) {
   return {
     async get(signal?: AbortSignal): Promise<unknown> {
       return connection.rpc.call(RPC_CHANNEL, RPC_ENDPOINT, {}, signal)
+    },
+    async onboarding(payload: unknown, signal?: AbortSignal): Promise<unknown> {
+      return connection.rpc.call(RPC_CHANNEL, RPC_ONBOARDING_ENDPOINT, payload, signal)
     },
   }
 }

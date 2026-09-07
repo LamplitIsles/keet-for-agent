@@ -92,7 +92,7 @@ export function classifyTrigger(
 
 export interface KeetPromptOptions {
   readonly kind?: "group" | "dm"
-  /** Canonical startup snapshot used to attribute this context. */
+  /** Canonical destination admission snapshot used to attribute this context. */
   readonly groupName?: string
   /** Opportunistic aggregate reactions on Integration-authored messages. */
   readonly reactionContext?: readonly KeetReactionContext[]

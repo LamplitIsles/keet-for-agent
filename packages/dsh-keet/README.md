@@ -2,7 +2,8 @@
 
 This local DSH plugin discovers every joined Keet `Default` or `Broadcast` room
 and accepted complete `DirectMessage` room in one existing DeepSeek Harness
-conversation. It targets DSH `0.1.2-rc.1` and the
+conversation, and can admit additional rooms through human settings actions
+while the bridge is running. It targets DSH `0.1.2-rc.1` and the
 official Keet compatibility tuple documented in the workspace runtime guide.
 
 Build the package with pnpm and Node.js and install the resulting directory or tarball in a
@@ -15,14 +16,15 @@ npm pack ./packages/dsh-keet --pack-destination .local
 dsh plugin --profile web add .local/lamplitisles-dsh-keet-0.1.0.tgz
 ```
 
-The plugin has one restart-scoped setting: the DSH workspace. At startup the
-bridge reads one bounded canonical joined-room snapshot and one bounded
-pending-request snapshot. Joined `Default` rooms become Managed Groups, joined
-`Broadcast` rooms become Managed Broadcasts, and complete `DirectMessage`
-rooms whose peer is not pending become Managed DMs. Unknown or incomplete
-rooms, pending requests, and duplicate room records are excluded. A
-pending-snapshot failure fails startup closed. An empty eligible set is valid,
-so onboarding can be completed before a later restart. Managed Broadcasts are
+The plugin has one saved, restart-scoped setting: the DSH workspace, plus
+durable live Member Join Trigger preferences keyed by workspace and stable
+ordinary-group ID. At startup the bridge reads one bounded canonical joined-room
+snapshot and one bounded pending-request snapshot. Joined `Default` rooms become
+Managed Groups, joined `Broadcast` rooms become Managed Broadcasts, and complete
+`DirectMessage` rooms whose peer is not pending become Managed DMs. Unknown or
+incomplete rooms, pending requests, and duplicate room records are excluded. A
+pending-snapshot failure fails startup closed. An empty eligible set is valid.
+Managed Broadcasts are
 destinations for reading history and sending text or images. They have no
 bridge state, subscription, inbound Agent trigger, context buffer, typing/read activity, roster lookup,
 reply anchor or reaction decoration. The native Keet Core
@@ -32,17 +34,20 @@ Failure text is bounded and does not include invitations or worker-private
 records.
 The private official runtime is discovered at
 `$DSH_HOME/runtimes/keet/4.21.0-linux-x64`, while identity data is initialized
-under the selected workspace at `.dsh/dsh-keet/identity`. Join and name that
-identity with `dsh-keet-setup`; invitation input is read from stdin and is
-never an Agent tool or setting.
+under the selected workspace at `.dsh/dsh-keet/identity`. Profile and searchable
+username changes remain available through `dsh-keet-setup`; room invitations and
+DM requests are handled by the running settings card and are never Agent tools
+or persisted settings.
 
-The bridge selects the latest eligible existing human conversation at startup.
+The bridge selects the latest eligible existing human conversation at startup
+and keeps it for its lifetime. Human settings actions can extend the admitted
+destination collection without creating another conversation or restarting DSH.
 Each Managed Group and Managed DM has an isolated bounded context buffer;
 Managed Broadcasts have no inbound state or subscription. Group messages retain
 mention, current-label, and verified-reply triggers. Every new ordinary
 external DM text opens one serialized Agent turn. Group prompts retain
 canonical message IDs and reply provenance while identifying the source with its
-startup `groupName`; DM prompts identify the source and sender label but omit
+admission-time `groupName`; DM prompts identify the source and sender label but omit
 message IDs and reply relations. Sender IDs never enter Agent prompts.
 Integration-authored messages and snapshot/history records never trigger. Human
 reactions to an Integration-authored message are silent. Aggregate reaction
@@ -57,17 +62,26 @@ match the bounded lowercase/digit/_+- grammar use colon-wrapped native names
 such as `:heart:` in that context, while literal Unicode reactions remain
 unchanged. Whitespace, unsafe punctuation, and arbitrary prose are omitted;
 the grammar is forward-compatible display normalization, not an authenticity
-assertion. The Agent's final text is not sent automatically.
+assertion. The Agent's final text is not sent automatically. A newly admitted
+group or DM establishes its history baseline and subscription before
+publication, so only messages received after that intake boundary can trigger a
+turn; history is not replayed.
 
-While ready, the bridge polls each regular Managed Group roster every ten
-seconds. The first successful read is the startup baseline; a later observed
-member addition produces one bounded Member Join turn at most once per
-group/member pair across restarts. Startup members, missed between-poll joins,
-failed reads, the Integration Identity, DMs, Broadcasts, and leave/rejoin
-churn do not produce turns. Member Join context contains only an untrusted
-display name and source `groupName`, with no message/reply ID, image, activity,
-or reaction capability. DSH's durable inbox splice history is the at-most-once
-receipt authority; canceled inbox work remains eligible.
+While ready, the bridge polls each enabled ordinary Managed Group roster every
+ten seconds. Member Join Trigger is off by default and independently selectable
+in the settings card; DMs and Broadcasts have no toggle. The first successful
+read for each enabled admitted group is its startup or admission baseline. A
+later observed member addition produces one bounded Member Join turn at most
+once per group/member pair across restarts. Enabling takes effect live and
+resets that group's baseline, so disabled-period arrivals are not replayed;
+disabling suppresses queued observations without interrupting a turn already
+running. Startup members, missed between-poll joins, failed reads, the
+Integration Identity, DMs, Broadcasts, and leave/rejoin churn do not produce
+turns. Member Join context contains only an untrusted display name and source
+`groupName`, with no message/reply ID, image, activity, or reaction capability.
+DSH's durable inbox splice history is the at-most-once receipt authority;
+ordinary canceled inbox work remains eligible, while preference-suppressed
+work does not.
 
 New external Managed DM messages may contain one or more PNG, JPEG, WebP, or
 GIF images with an optional caption. The bridge sends one tuple through a
@@ -101,7 +115,7 @@ ordinary bridge path.
 Call `keet_list_groups` first. The remaining tools require an exact returned
 `groupName` (caller whitespace is trimmed, matching remains case-sensitive):
 
-- `keet_list_groups` — every discovered Managed Group, Managed Broadcast, and
+- `keet_list_groups` — every admitted Managed Group, Managed Broadcast, and
   Managed DM, each returned only as `{ groupName, kind }`;
 - `keet_list_members` — current bounded roster of display names only; Managed
   Broadcast roster lookup is rejected;
@@ -142,27 +156,46 @@ responds normally. Outbound reactions accept Unicode emoji only. Bounded Keet
 wire-shortcode values such as `heart` and `+1` appear only as colon-wrapped
 inbound context labels such as `:heart:` and `:+1:`.
 
-Names are captured when DSH starts after trimming bounded titles and replacing
-line separators with spaces. A missing title uses the bounded fallback name.
-No match is rejected before Core access; normalized duplicate names fail closed,
-and an ambiguous send explicitly reports that no message was sent. Human-only
-onboarding supports the following operations:
+Names are captured when a destination is admitted, either at startup or through
+live onboarding, after trimming bounded titles and replacing line separators
+with spaces. A missing title uses the bounded fallback name. No match is rejected
+before Core access; normalized duplicate names fail closed, and an ambiguous
+send explicitly reports that no message was sent.
+
+## Live human onboarding
+
+After saving the workspace, open the native settings card while readiness is
+`Ready` or `Unbound`. Paste one `keet://chat/<token>` URL into the transient
+Invitation field and choose `Join`. The card loads bounded Pending DM Requests
+when opened; `Refresh` rereads them, and `Accept` submits the exact hidden peer
+selector shown with its bounded display name and identity hint. These actions
+use the already-running Integration Identity, initialize the resulting room,
+and publish the destination to the current Agent tools immediately. They do not
+persist invitations or peer IDs, and they do not require a DSH restart.
+
+The card disables actions for unsaved or workspace-mismatched settings and for
+unavailable readiness. A successful native mutation followed by an admission
+failure is shown as partial and can be retried through admission only; the
+confirmed native join or acceptance is never repeated. An `Unbound` bridge can
+admit a destination while remaining unbound if no existing DSH conversation is
+available. Empty, failed, loading, and new-message-only states are explicit.
+
+`dsh-keet-setup` now supports only the independent human profile and searchable
+username operations:
 
 ```sh
-dsh-keet-setup dm-requests --workspace /path/to/workspace
-dsh-keet-setup dm-accept --workspace /path/to/workspace --member-id <peer-member-id>
 dsh-keet-setup profile --workspace /path/to/workspace --avatar /path/to/avatar.png
 dsh-keet-setup username --workspace /path/to/workspace --username agent_name1
 ```
 
-Each setup operation needs exclusive ownership of the workspace identity. Core
+Each remaining setup operation needs exclusive ownership of the workspace identity. Core
 holds that ownership with an exclusive kernel lock on the persistent
 mode-0600 `.keet-sidecar.lock` file. Ownership follows the open descriptor and is
 released by the kernel after an abnormal process death; a live owner still
 fails another opener immediately. The file is not a stale PID record and must
-never be deleted manually. Stop the running DSH bridge first and ensure it
-starts again afterward; for a systemd user service, run the operation in a
-Bash subshell with an exit trap:
+never be deleted manually. Stop the running DSH bridge before these setup
+operations; for a systemd user service, run the operation in a Bash subshell
+with an exit trap:
 
 ```sh
 bash -lc '
@@ -174,9 +207,9 @@ bash -lc '
 '
 ```
 
-DM requests are never created or accepted by the Agent. Join and acceptance
-success results do not expose room IDs; restart DSH after either operation so
-the next startup snapshot can discover the destination. Avatar setup accepts a
+DM requests are never created or accepted by the Agent. The settings card
+accepts only the human-selected request and does not expose room IDs. Avatar
+setup accepts a
 local PNG, JPEG, or WebP up to 8 MiB, honors orientation, center-crops to a
 square, and prepares deterministic 64/128/256 pixel PNG variants below Keet's
 512 KiB inline limit. The square is passed to official clients, which apply a
