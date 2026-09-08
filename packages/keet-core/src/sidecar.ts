@@ -81,6 +81,8 @@ export class KeetSidecar {
   #abi: number | null = null
   #lock: FileHandle | null = null
   #closing: Promise<void> | null = null
+  #starting: Promise<void> | null = null
+  #stopping: Promise<void> | null = null
   #closed = false
   #terminalReason: KeetSidecarTerminalReason | null = null
   readonly #terminalListeners = new Set<KeetSidecarTerminalListener>()
@@ -104,14 +106,19 @@ export class KeetSidecar {
 
   async start(): Promise<void> {
     if (this.#closed) throw new Error('Keet sidecar cannot be restarted after close')
-    if (this.#child) throw new Error('Keet sidecar is already started')
+    if (this.#child || this.#starting) throw new Error('Keet sidecar is already started')
+    this.#starting = this.#start()
+    try { await this.#starting } finally { this.#starting = null }
+  }
+
+  async #start(): Promise<void> {
     this.#terminalReason = null
-
-    await this.#validatePaths()
-    await this.#acquireLock()
-    this.#log({ event: 'sidecar.starting', level: 'info' })
-
     try {
+      await this.#validatePaths()
+      if (this.#closed) throw new Error('Keet sidecar closed during startup')
+      await this.#acquireLock()
+      this.#log({ event: 'sidecar.starting', level: 'info' })
+      if (this.#closed) throw new Error('Keet sidecar closed during startup')
       await this.#spawnAndBoot()
       this.#log({ event: 'sidecar.ready', level: 'info' })
     } catch (error) {
@@ -192,6 +199,7 @@ export class KeetSidecar {
         this.#closed = true
         this.#log({ event: 'sidecar.stopping', level: 'info' })
         await this.#stopProcess()
+        await this.#starting?.catch(() => undefined)
         await this.#releaseLock()
         this.#log({ event: 'sidecar.stopped', level: 'info' })
       })()
@@ -402,7 +410,14 @@ export class KeetSidecar {
     postReady = true
   }
 
-  async #stopProcess(): Promise<void> {
+  #stopProcess(): Promise<void> {
+    if (!this.#stopping) {
+      this.#stopping = this.#stopChild().finally(() => { this.#stopping = null })
+    }
+    return this.#stopping
+  }
+
+  async #stopChild(): Promise<void> {
     const child = this.#child
     this.#child = null
     this.#coreVersion = null

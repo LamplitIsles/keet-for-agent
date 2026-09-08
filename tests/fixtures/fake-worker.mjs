@@ -6,6 +6,8 @@
 import net from "node:net"
 import TinyBufferRPC from "tiny-buffer-rpc"
 import any from "tiny-buffer-rpc/any.js"
+import { writeFile } from "node:fs/promises"
+import path from "node:path"
 
 const dataPath = process.argv[2]
 const ipc = new net.Socket({ fd: 3, readable: true, writable: true })
@@ -33,7 +35,13 @@ const rpc = new TinyBufferRPC((message) => {
 
 rpc.register(0, { request: any, response: any, onrequest: () => true })
 rpc.register(1, { request: any, response: any, onrequest: () => ({ modules: { "keet-core": "4.21.5" }, abi: { production: 35 } }) })
-rpc.register(6, { request: any, response: any, onrequest: () => ({ memberId: selfId, displayName: "Fixture Bot" }) })
+rpc.register(6, { request: any, response: any, onrequest: async () => {
+  if (dataPath.includes("identity-stall")) {
+    await writeFile(path.join(dataPath, "identity-read-started"), "ready")
+    return new Promise(() => undefined)
+  }
+  return { memberId: selfId, displayName: "Fixture Bot" }
+} })
 rpc.register(39, { request: any, response: any, onrequest: ([room]) => room === groupId ? ({ roomId: groupId, title: "Test group", description: "fixture", roomType: "Default" }) : null })
 rpc.register(43, { request: any, response: any, onrequest: () => ({ rooms: groups }) })
 rpc.register(66, { request: any, response: any, onrequest: () => members })
@@ -77,6 +85,13 @@ rpc.register(156, {
     if (roomId !== groupId || !messageId || typeof emoji !== "string") return { ok: false }
     return { key: Buffer.alloc(32), length: 1 }
   },
+})
+rpc.register(159, {
+  request: any,
+  response: any,
+  onrequest: ([roomId, messageId]) => roomId === groupId && messageId
+    ? { digest: { total: 0, reactions: [] }, mine: [] }
+    : null,
 })
 rpc.register(171, {
   request: any,

@@ -203,6 +203,8 @@ export interface KeetCore {
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listMembers(groupId: string, signal?: AbortSignal): Promise<KeetMember[]>
   readRecentMessages(groupId: string, last?: number, signal?: AbortSignal): Promise<KeetMessage[]>
+  /** Complete bounded reaction state, or null if the native message is unavailable. */
+  readReactions(groupId: string, messageId: KeetMessageId, signal?: AbortSignal): Promise<readonly KeetReactionSummary[] | null>
   /** Download and bound one live external-blob image record. */
   readImage(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
   /** Save and publish one native image record; no chat text is emitted. */

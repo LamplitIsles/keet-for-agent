@@ -8,6 +8,10 @@ x86-64 runtime through a typed Integration Core; the runtime itself is supplied
 privately by the operator and is never included in this repository or package
 artifact.
 
+The workspace also includes a private [Impri Keet approval channel](packages/impri-keet/README.md).
+It uses a separate bot identity and a private DM with ✅ / ❌ reactions to
+decide existing Impri actions. Action producers retain execution ownership.
+
 ## Install locally
 
 This repository is a pnpm workspace targeting Node.js. Build and inspect the package, then add

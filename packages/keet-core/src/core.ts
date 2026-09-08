@@ -87,16 +87,23 @@ export class KeetIntegrationCore implements KeetCore {
     this.imageAdmissionTimeoutMs = boundedTimeout(configuredImageTimeout, DEFAULT_IMAGE_ADMISSION_TIMEOUT_MS)
   }
 
-  static async start(options: KeetCoreOptions): Promise<KeetIntegrationCore> {
+  static async start(options: KeetCoreOptions, signal?: AbortSignal): Promise<KeetIntegrationCore> {
     validateAdmission(options)
+    ensureSignal(signal)
     const core = new KeetIntegrationCore(options)
-    await core.sidecar.start()
+    const abort = () => { void core.close().catch(() => undefined) }
+    signal?.addEventListener("abort", abort, { once: true })
     try {
+      await core.sidecar.start()
+      ensureSignal(signal)
       await core.loadIdentity()
+      ensureSignal(signal)
       return core
     } catch (error) {
       await core.close().catch(() => undefined)
       throw error
+    } finally {
+      signal?.removeEventListener("abort", abort)
     }
   }
 
@@ -311,6 +318,37 @@ export class KeetIntegrationCore implements KeetCore {
     }
     messages.sort(compareMessages)
     return messages.slice(-last)
+  }
+
+  async readReactions(groupId: string, messageId: KeetMessageId, signal?: AbortSignal): Promise<readonly KeetReactionSummary[] | null> {
+    const id = boundedId(groupId, "Managed Group ID")
+    const target = normalizeMessageId(messageId)
+    if (!target) throw publicError("reaction target is not a valid Keet message ID")
+    const raw = await this.callWithSignal("getReactions", [id, target], signal)
+    if (raw === null) return null
+    // Unlike best-effort history context, callers use this complete snapshot
+    // for interaction. Never drop a malformed `mine` or truncate one choice:
+    // that could turn our decoration into an apparent participant reaction.
+    if (!isRecord(raw) || !isRecord(raw.digest) || !Array.isArray(raw.digest.reactions) || !Array.isArray(raw.mine)
+      || raw.digest.reactions.length > MAX_REACTIONS_PER_MESSAGE || raw.mine.length > MAX_REACTIONS_PER_MESSAGE) {
+      throw publicError("Keet returned an invalid reaction snapshot")
+    }
+    const entries = new Map<string, number>()
+    for (const entry of raw.digest.reactions) {
+      const emoji = isRecord(entry) ? normalizeInboundReaction(entry.text) : undefined
+      if (!isRecord(entry) || !emoji || entries.has(emoji) || !Number.isSafeInteger(entry.count)
+        || (entry.count as number) < 1 || (entry.count as number) > MAX_REACTION_COUNT) {
+        throw publicError("Keet returned an invalid reaction snapshot")
+      }
+      entries.set(emoji, entry.count as number)
+    }
+    const mine = new Set<string>()
+    for (const value of raw.mine) {
+      const emoji = normalizeInboundReaction(value)
+      if (!emoji || mine.has(emoji) || !entries.has(emoji)) throw publicError("Keet returned an invalid reaction snapshot")
+      mine.add(emoji)
+    }
+    return Object.freeze([...entries].map(([emoji, count]) => Object.freeze({ emoji, count, own: mine.has(emoji) })))
   }
 
   async addReaction(groupId: string, messageId: KeetMessageId, reaction: string, signal?: AbortSignal): Promise<void> {
@@ -675,8 +713,9 @@ export class KeetIntegrationCore implements KeetCore {
   }
 
   async close(): Promise<void> {
-    if (this.#closed) return
     this.#closed = true
+    // Sidecar owns the shared close promise. Every caller waits for the actual
+    // worker exit and identity unlock, including concurrent abort/finally paths.
     await this.sidecar.close()
   }
 

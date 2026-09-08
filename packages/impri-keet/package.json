@@ -1,0 +1,21 @@
+{
+  "name": "@lamplitisles/impri-keet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private-DM Keet approval channel for Impri",
+  "type": "module",
+  "bin": {
+    "impri-keet": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsdown --config tsdown.config.ts"
+  },
+  "dependencies": {
+    "@lamplitisles/keet-integration-core": "workspace:*",
+    "fs-native-extensions": "1.5.1",
+    "tiny-buffer-rpc": "2.4.0"
+  }
+}

@@ -23,7 +23,8 @@ A thin host-specific interface over the Integration Core. The first Adapter is
 the DSH Keet Bridge; MCP, OpenClaw, Hermes, and a general CLI adapter are later
 work. The settings card performs live human room onboarding; the setup
 executable is intentionally narrower than a general CLI and only performs
-searchable-username reservation and profile updates.
+searchable-username reservation and profile updates. The private Impri Keet
+Approval Channel is a separate Adapter for human approval of Impri actions.
 _Avoid_: Independent client implementation
 
 **Managed Group**:
@@ -213,7 +214,7 @@ _Avoid_: Automatic reply, arbitrary-room send
 
 **Keet Reaction**:
 A native Unicode emoji or bounded Keet wire-shortcode reaction attached to one
-Keet message by a participant or assistant. Participant reactions are aggregate
+Keet message by a participant or assistant. In the DSH Keet Bridge, participant reactions are aggregate
 signals that can inform a later interaction in the same destination without
 starting one, and they do not imply reactor identity. Aggregate reaction
 context is delivered at most once for an exact target-message, emoji, and
@@ -284,3 +285,27 @@ JPEG, or WebP into deterministic square 64/128/256 PNG variants and preserves
 the current non-empty display name for avatar-only updates. Official clients
 apply the circular presentation mask.
 _Avoid_: Agent-editable identity, general profile manager
+
+**Impri Keet Approval Channel**:
+The Adapter that presents Impri actions and collects human decisions in one
+private Keet DM. Action execution belongs to the action producer.
+_Avoid_: PR merge executor, DSH conversation, Telegram callback emulation
+
+**Approval DM**:
+The private conversation selected by the operator for one Impri Keet Approval
+Channel. It is the boundary within which external approval choices count.
+_Avoid_: Any joined room, approver Member ID allowlist
+
+**Approval Message**:
+A bot-authored message presenting one Impri action for a human decision.
+_Avoid_: PR snapshot, executable instruction
+
+**Preset Approval Reaction**:
+The bot's own ✅ or ❌ on an Approval Message, providing a clickable choice
+without constituting a human decision.
+_Avoid_: Bot vote, automatic approval
+
+**External Approval Choice**:
+A ✅ or ❌ on an Approval Message contributed by someone other than the bot
+in its Approval DM. Both choices present together form an unresolved conflict.
+_Avoid_: Member-attributed review, quorum vote

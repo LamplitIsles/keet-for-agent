@@ -1,21 +1,32 @@
 # Keet for Agent handoff
 
-The implementation is a pnpm workspace with one public adapter and one private
-reusable Integration Core:
+The implementation is a pnpm workspace with a public DSH adapter, a private
+Impri approval adapter, and a private reusable Integration Core:
 
 ```text
 DSH Keet Bridge -> Integration Core -> fd-3 tiny-buffer-rpc -> official Bare sidecar
+Impri Keet Approval Channel -> Integration Core (separate identity)
 ```
 
 ## Source of truth
 
+- `packages/impri-keet/src/` owns the standalone Impri API client, private-DM
+  onboarding, durable approval-message association, and serialized reaction
+  polling. It submits the existing Impri `decision` API with `channel=keet`;
+  no PR payload, forge, or execution logic belongs here. Its README documents
+  configuration and recovery. The data-directory kernel lock spans sidecar
+  reconnects, and Impri is the authority for accepted decisions and results.
 - `packages/keet-core/src/` owns the typed sidecar lifecycle, pinned runtime
   admission, normalized room/group/member/message values (including bounded
   aggregate reaction summaries and image descriptors), canonical room-list DM
   resolution, subscriptions, text/native-image sends, image reads, native
-  reaction add (RPC 156), onboarding, profile update, and globally searchable
+  reaction add (RPC 156), complete per-message reaction reads (RPC 159), onboarding, profile update, and globally searchable
   username registration/update with bounded lookup convergence. Core also owns
   the single Unicode reaction validator and username syntax validator.
+  Complete reaction reads reject incomplete ownership or truncated snapshots;
+  ordinary history retains its best-effort context normalization. Startup can
+  be canceled, and close waits for both startup teardown and worker exit before
+  releasing identity ownership.
 - `packages/dsh-keet/src/` owns the DSH Host bridge, Managed Destination tools
   (including optional reaction decoration on `keet_send_message`), setup
   executable, settings schema/client, and protocol rendering.

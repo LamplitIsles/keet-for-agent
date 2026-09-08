@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { spawn, type ChildProcess } from "node:child_process"
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { PassThrough } from "node:stream"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -444,6 +444,41 @@ describe("typed Keet Integration Core unit behavior", () => {
     await expect(pending).rejects.toThrow("cancelled")
   })
 
+  it("reads complete reaction state for an exact message without a recent-history window", async () => {
+    const harness = makeMockCore({ handlers: { getReactions: () => ({
+      digest: { total: 3, reactions: [{ text: "✅", count: 2 }, { text: "❌", count: 1 }] }, mine: ["✅", "❌"],
+    }) } })
+    const target = { deviceId: "device-self", seq: 2 }
+    await expect(harness.core.readReactions("group-test", target)).resolves.toEqual([
+      { emoji: "✅", count: 2, own: true }, { emoji: "❌", count: 1, own: true },
+    ])
+    expect(harness.state.calls).toEqual([{ name: "getReactions", args: ["group-test", target] }])
+    await expect(harness.core.readReactions("group-test", { deviceId: "", seq: 2 })).rejects.toThrow("valid Keet message ID")
+    const absent = makeMockCore({ handlers: { getReactions: () => null } })
+    await expect(absent.core.readReactions("group-test", target)).resolves.toBeNull()
+  })
+
+  it("never interprets incomplete ownership or a truncated reaction snapshot as participant intent", async () => {
+    const entry = { text: "✅", count: 1 }
+    for (const value of [
+      undefined, {}, { digest: { reactions: [entry] } },
+      { digest: { reactions: [entry] }, mine: "✅" },
+      { digest: { reactions: [entry, entry] }, mine: ["✅"] },
+      { digest: { reactions: [{ text: "✅", count: 0 }] }, mine: [] },
+      { digest: { reactions: [entry] }, mine: ["❌"] },
+      { digest: { reactions: [entry] }, mine: ["✅", "✅"] },
+      { digest: { reactions: Array(17).fill(entry) }, mine: [] },
+    ]) {
+      const harness = makeMockCore({ handlers: { getReactions: () => value } })
+      await expect(harness.core.readReactions("group-test", { deviceId: "device-self", seq: 2 })).rejects.toThrow("invalid reaction snapshot")
+    }
+    const cancelled = makeMockCore({ handlers: { getReactions: () => new Promise(() => undefined) } })
+    const controller = new AbortController()
+    const pending = cancelled.core.readReactions("group-test", { deviceId: "device-self", seq: 2 }, controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toThrow("cancelled")
+  })
+
   it("normalizes room kinds, compact metadata, members, and duplicate records", async () => {
     const harness = makeMockCore({
       groups: [
@@ -753,6 +788,34 @@ describe("typed Keet Integration Core unit behavior", () => {
 })
 
 describe("Keet Integration Core fd-3 process contracts", () => {
+  it("cancels startup before spawn and releases the acquired identity lock", async () => {
+    const data = await dataPath("keet-cancel-start-")
+    const controller = new AbortController()
+    const startup = KeetIntegrationCore.start(processOptions(data, (entry) => {
+      if (entry.event === "sidecar.starting") controller.abort()
+    }), controller.signal)
+    await expect(startup).rejects.toThrow()
+    const replacement = await KeetIntegrationCore.start(processOptions(data))
+    try { await expect(replacement.status()).resolves.toMatchObject({ state: "ready" }) }
+    finally { await replacement.close() }
+  })
+
+  it("cancels a stalled initial identity RPC and waits for worker shutdown before completing", async () => {
+    const data = await dataPath("keet-identity-stall-")
+    const controller = new AbortController()
+    const startup = KeetIntegrationCore.start(processOptions(data), controller.signal)
+    const failed = expect(startup).rejects.toThrow()
+    try {
+      await vi.waitFor(async () => expect(await readFile(path.join(data, "identity-read-started"), "utf8")).toBe("ready"), { timeout: 3_000 })
+    } finally { controller.abort() }
+    await failed
+    // Sidecar boot does not read identity: reacquiring this exact directory
+    // proves cancellation waited for the previous process and kernel lock.
+    const replacement = new KeetSidecar(processOptions(data))
+    try { await replacement.start() }
+    finally { await replacement.close() }
+  })
+
   it("fails closed when a bundle advertises malformed manifest framing", async () => {
     const data = await dataPath()
     const bundle = path.join(data, "malformed.bundle")
@@ -774,6 +837,7 @@ describe("Keet Integration Core fd-3 process contracts", () => {
       ]))
       await expect(core.readRecentMessages("group-test", 0)).rejects.toThrow("1 to 50")
       await expect(core.addReaction("group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽")).resolves.toBeUndefined()
+      await expect(core.readReactions("group-test", { deviceId: "device-alice", seq: 1 })).resolves.toEqual([])
       const receivedImage = await core.readImage("group-test", {
         file: { pointer: { externalBlob: { id: "fixture-image", blob: Buffer.from("streamed-image") } } },
         mediaType: "image/png",

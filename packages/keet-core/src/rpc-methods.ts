@@ -29,6 +29,8 @@ export const RPC_METHODS = {
   updateTypingIndicator: 220,
   /** Native aggregate reaction mutation; the worker enforces room/message policy. */
   addReaction: 156,
+  /** Current aggregate state for one exact message, including our own reactions. */
+  getReactions: 159,
   boot: 225,
   /** Working pinned file lifecycle; addFile/addFileBlob are missing stubs. */
   saveFileBlob: 171,
