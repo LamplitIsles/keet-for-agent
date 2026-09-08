@@ -62,7 +62,7 @@ One entry in the bridge's run-scoped allowlist: every joined `Default` room,
 joined `Broadcast` room, and accepted complete `DirectMessage` admitted from
 the bounded startup snapshot or by a human settings action. `keet_list_groups`
 returns these entries as an exact `groupName` and `kind`; the other Keet tools
-require that exact returned name.
+require the exact admitted name, also supplied by inbound context.
 _Avoid_: all joined rooms, implicit target, arbitrary destination
 
 **Managed Destination Name**:
@@ -205,7 +205,7 @@ _Avoid_: Account directory, membership history
 
 **Explicit Destination Send**:
 A plain-text message deliberately sent by an Agent tool to one admitted
-destination selected by its exact returned `groupName`. Regular-group sends
+destination selected by its exact admitted `groupName`. Regular-group sends
 may carry one exact canonical `replyTo` target; Managed DM sends are ordinary
 text and reject reply anchors. A send may optionally decorate the current Keet
 trigger with one native reaction after the text is delivered. Completing an

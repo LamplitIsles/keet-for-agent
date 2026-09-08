@@ -283,9 +283,9 @@ successful call returns `{ sent: true }`; if the image is delivered but its
 caption fails, the tool reports a bounded error that says not to retry. Images
 are never sent automatically when an Agent turn completes or creates an image.
 
-An Agent turn's final DSH text is never relayed automatically. Call
-`keet_list_groups` first, then pass one exact returned `groupName` to the common
-destination tools:
+An Agent turn's final DSH text is never relayed automatically. Use the exact
+destination `groupName` from inbound context or destination discovery. Call
+`keet_list_groups` when discovering destinations or resolving an uncertain target:
 
 - `keet_list_groups`: every admitted Managed Group, Managed Broadcast, and
   Managed DM, returned only as `{ groupName, kind }`;
@@ -316,10 +316,11 @@ destination tools:
   inbound image admission additionally requires DSH's attachment service. It
   returns only `{ sent: true }` on complete success.
 
-After any confirmed `keet_send_message` text delivery or successful
-`keet_send_image`, the injected Agent policy requires the final DSH response to
-be exactly `✓`, whether or not an optional reaction was confirmed. Without a
-successful delivery, the Agent responds normally. Outbound reactions accept
+The injected Agent policy avoids repeating delivered Keet content in DSH.
+The final response is exactly `✓` only when the turn solely completes a Keet
+reply, delivery is confirmed, and no other result or failure needs reporting.
+Other turns finish the requested work and report its outcome, including partial
+delivery or failures. Outbound reactions accept
 Unicode emoji only; bounded Keet wire shortcodes such as `heart` appear only as
 colon-wrapped inbound context labels such as `:heart:`.
 

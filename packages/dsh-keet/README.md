@@ -112,8 +112,9 @@ generic bounded response, and failures do not retry or fall back to an Agent
 turn. Whitespace, arguments, casing changes, and group messages use the
 ordinary bridge path.
 
-Call `keet_list_groups` first. The remaining tools require an exact returned
-`groupName` (caller whitespace is trimmed, matching remains case-sensitive):
+Use the exact destination `groupName` from inbound context or destination
+discovery. Call `keet_list_groups` when discovering destinations or resolving an
+uncertain target. Caller whitespace is trimmed; matching remains case-sensitive:
 
 - `keet_list_groups` — every admitted Managed Group, Managed Broadcast, and
   Managed DM, each returned only as `{ groupName, kind }`;
@@ -149,10 +150,11 @@ Call `keet_list_groups` first. The remaining tools require an exact returned
   was delivered and must not be retried. Nothing is sent automatically after a
   turn or image creation.
 
-After any confirmed `keet_send_message` text delivery or successful
-`keet_send_image`, the injected Agent policy requires the final DSH response to
-be exactly `✓`, whether or not an optional reaction was confirmed; otherwise it
-responds normally. Outbound reactions accept Unicode emoji only. Bounded Keet
+The injected Agent policy avoids repeating delivered Keet content in DSH.
+The final response is exactly `✓` only when the turn solely completes a Keet
+reply, delivery is confirmed, and no other result or failure needs reporting.
+Other turns finish the requested work and report its outcome, including partial
+delivery or failures. Outbound reactions accept Unicode emoji only. Bounded Keet
 wire-shortcode values such as `heart` and `+1` appear only as colon-wrapped
 inbound context labels such as `:heart:` and `:+1:`.
 

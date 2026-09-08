@@ -79,10 +79,12 @@ activity, roster, reply-anchor, or reaction path. The native worker
 adjudicates every post from current permissions. Group/DM destination buffers
 and subscriptions are isolated, each injected context names its admission-time
 source `groupName`, and the Agent's final text remains in DSH unless an
-explicit delivery tool is called. After a confirmed text send in a turn (with
-an optional reaction decoration), the injected policy reduces the final DSH
-response to the exact `✓` acknowledgement so the already-delivered Keet
-content is not duplicated.
+explicit delivery tool is called. The injected policy avoids repeating delivered
+Keet content in DSH. It uses the exact `✓` acknowledgement only when a turn solely completes a Keet reply,
+delivery is confirmed, and no other result or failure needs reporting. Other
+turns finish the requested work and report outcomes, including partial delivery
+or failures. Tool descriptions own operation-specific constraints; the shared
+policy omits bridge lifecycle and reaction-receipt implementation details.
 While ready, enabled regular Managed Groups use a fixed ten-second roster poll.
 Member Join Trigger is durable, opt-in independently per ordinary group through
 the settings card, and defaults off when no workspace/stable-group preference
@@ -101,8 +103,9 @@ continues.
 The tools are `keet_list_groups`, `keet_list_members`,
 `keet_read_recent_messages`, `keet_send_message`, and `keet_send_image`. The
 first lists all admitted destinations as `{ groupName, kind }`; the remaining
-tools require an exact returned `groupName` (trimmed, case-sensitive, and
-stable for the bridge run).
+tools require an exact admitted `groupName` (trimmed, case-sensitive, and
+stable for the bridge run). Inbound context supplies its source name; listing
+is used for destination discovery or an uncertain target.
 Regular Group history preserves canonical message IDs, optional reply
 provenance, and the current text of valid edited records; Managed Broadcast
 history preserves canonical message IDs but omits reply provenance. Live edited
