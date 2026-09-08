@@ -74,6 +74,7 @@ function makeImageCore(options: {
     listPendingDmRequests: async () => [],
     acceptDmRequest: async () => ({ groupId: "dm-room", roomType: "DirectMessage" as const, dmMemberId: "peer" }),
     inspectInvitation: async () => ({ isRoomInvitation: true as const }),
+    leaveGroup: async () => undefined,
     joinInvitation: async () => ({ groupId: "dm-room" }),
     updateDisplayName: async () => undefined,
     updateIdentityProfile: async () => undefined,

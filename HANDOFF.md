@@ -143,6 +143,14 @@ before native delivery; image-success/caption-failure is reported as a bounded
 no-retry partial delivery. Normalized duplicate names fail selected operations
 closed before Core access, with ambiguous sends confirming that no message was
 sent.
+Each ordinary group in settings has a `Leave group` action with an explicit
+confirmation. A successful native departure removes the destination from the
+running bridge and tools, closes its subscription, and suppresses queued work
+from that admission. A turn already submitted to DSH may finish. Rejoining
+requires an invitation and establishes a fresh subscription and history baseline.
+Leaving is human-only, applies without a restart, and is unavailable for DMs or
+Broadcasts. Official-client departure interoperability remains unverified.
+
 Room onboarding is human-only through the running settings card. `Join` accepts
 one transient invitation, while `Pending DM Request` listing and exact `Accept`
 actions expose only bounded display labels and identity hints; the hidden

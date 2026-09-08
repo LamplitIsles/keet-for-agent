@@ -126,7 +126,7 @@ interface KeetAdmissionReceipt {
 }
 
 export type KeetOnboardingMutation = "join" | "accept-dm"
-export type KeetOnboardingOperation = "join" | "list-pending-dm-requests" | "accept-dm" | "retry-admission"
+export type KeetOnboardingOperation = "join" | "list-pending-dm-requests" | "accept-dm" | "retry-admission" | "leave-group"
 
 export interface KeetPendingDmRequestView {
   /** Exact human-only selector; never included in Agent/model context. */
@@ -163,6 +163,7 @@ interface AdmissionRetry {
 }
 
 interface OnboardingRequest {
+  readonly groupId?: string
   readonly workspaceId: string
   readonly operation: KeetOnboardingOperation
   readonly invitation?: string
@@ -533,6 +534,40 @@ export class KeetBridge {
     return current
   }
 
+  private async leaveFromSettings(groupId: string, signal: AbortSignal): Promise<{ status: "left" }> {
+    return this.serializeOnboarding(() => this.serializeDestinationSend(groupId, async () => {
+      const core = this.requireOnboardingCore()
+      if (signal.aborted) throw new Error("onboarding operation canceled")
+      const state = this.states.get(groupId)
+      if (!state || state.destination.kind !== "group") throw new Error("managed group is unavailable")
+      // Leaving can end this room's stream before the native call settles.
+      state.subscriptionTerminationDisposer?.()
+      state.subscriptionTerminationDisposer = undefined
+      try {
+        // Once dispatched, finish local teardown even if the settings client closes.
+        await core.leaveGroup(groupId, this.stopController.signal)
+      } catch (error) {
+        if (!this.stopped) state.subscriptionTerminationDisposer = state.subscription?.onTerminate?.((reason) => { if (reason === "connection-failed") this.failConnection() })
+        throw error
+      }
+      state.intakeReady = false
+      state.memberJoinTriggerEnabled = false
+      state.memberJoinTriggerGeneration += 1
+      state.activeActivity?.stop()
+      this.states.delete(groupId)
+      if (![...this.states.values()].some((value) => value.memberJoinTriggerEnabled)) this.stopRosterPolling()
+      this.destinationsValue = Object.freeze(this.destinationsValue.filter((destination) => destination.groupId !== groupId))
+      for (const [key, value] of this.completedOnboarding) if (value === groupId) this.completedOnboarding.delete(key)
+      for (const [key, value] of this.admissionRetries) if (value.groupId === groupId) this.admissionRetries.delete(key)
+      for (const [key, value] of this.pendingKeetTurns) if (value.destination.groupId === groupId) this.pendingKeetTurns.delete(key)
+      if (this.activeReactionTargetValue?.groupId === groupId) this.activeReactionTargetValue = undefined
+      state.contextBuffer.length = 0
+      this.publishAdmissionReadiness()
+      if (state.subscription) await this.cleanupResources({ subscriptions: [state.subscription] })
+      return { status: "left" }
+    }))
+  }
+
   private async joinFromSettings(invitation: string, signal: AbortSignal): Promise<KeetOnboardingMutationResult> {
     const key = `join:${createHash("sha256").update(invitation).digest("hex")}`
     return this.runDeduplicatedOnboarding(key, async () => {
@@ -614,6 +649,7 @@ export class KeetBridge {
     const operationSignal = signal ?? new AbortController().signal
     try {
       if (request.operation === "list-pending-dm-requests") return rpcSuccess(await this.serializeOnboarding(() => this.listPendingForSettings(operationSignal)))
+      if (request.operation === "leave-group") return rpcSuccess(await this.leaveFromSettings(request.groupId!, operationSignal))
       if (request.operation === "join") return rpcSuccess(await this.joinFromSettings(request.invitation!, operationSignal))
       if (request.operation === "accept-dm") return rpcSuccess(await this.acceptDmFromSettings(request.memberId!, operationSignal))
       return rpcSuccess(await this.retryAdmission(request.retryToken!, operationSignal))
@@ -873,7 +909,7 @@ export class KeetBridge {
   }
 
   private async classifyMessage(state: DestinationState, message: KeetMessage, record: KeetContextRecord): Promise<void> {
-    if (!this.accepting || this.stopped) return
+    if (!this.accepting || this.stopped || !state.intakeReady) return
     if (this.identity.memberId && record.senderId === this.identity.memberId) { state.ownMessageIds.add(messageIdKey(record.messageId)); return }
     let admitted: AdmittedKeetMessage | undefined
     if (state.destination.kind === "dm") admitted = { ...record, trigger: true, triggerKind: "dm" }
@@ -884,7 +920,7 @@ export class KeetBridge {
         const targetKey = messageIdKey(replyTarget)
         if (!state.ownMessageIds.has(targetKey)) {
           await this.refreshOwnMessageIds(state, targetKey)
-          if (!this.accepting || this.stopped) return
+          if (!this.accepting || this.stopped || !state.intakeReady) return
           admitted = classifyTrigger(message, this.identity, state.ownMessageIds)
         }
       }
@@ -1011,7 +1047,7 @@ export class KeetBridge {
   private enqueue(trigger: QueuedTrigger): void {
     const generation = this.queueGeneration
     this.queueTail = this.queueTail.catch(() => undefined).then(async () => {
-      if (this.stopped || generation !== this.queueGeneration || !this.boundAgent) return
+      if (this.stopped || generation !== this.queueGeneration || !this.boundAgent || this.states.get(trigger.destination.groupId)?.destination !== trigger.destination) return
       if (trigger.memberJoin) {
         const state = this.states.get(trigger.destination.groupId)
         if (!state || !state.memberJoinTriggerEnabled || state.memberJoinTriggerGeneration !== trigger.memberJoin.generation) {
@@ -1048,7 +1084,7 @@ export class KeetBridge {
     const contextText = trigger.prompt ?? (trigger.message
       ? renderKeetContextPrompt(trigger.transcript, trigger.message, { kind: promptKind(trigger.destination.kind), groupName: trigger.destination.groupName, reactionContext: reactionRefresh.contexts })
       : "")
-    if (this.stopped) { activity?.stop(); return }
+    if (this.stopped || this.states.get(trigger.destination.groupId)?.destination !== trigger.destination) { activity?.stop(); return }
     const content: any[] = []
     for (const attachment of trigger.imageAttachments ?? []) content.push({ type: "image", attachment })
     content.push({ type: "text", text: contextText })
@@ -1246,7 +1282,11 @@ export class KeetBridge {
   /** Serialize every native send for one destination, including paired image captions. */
   private serializeDestinationSend<T>(groupId: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.destinationSendTails.get(groupId) ?? Promise.resolve()
-    const current = previous.then(operation)
+    const destination = this.destinationsValue.find((value) => value.groupId === groupId)
+    const current = previous.then(() => {
+      if (!destination || !this.destinationsValue.includes(destination)) throw new Error("managed destination is unavailable")
+      return operation()
+    })
     const tail = current.then(() => undefined, () => undefined)
     this.destinationSendTails.set(groupId, tail)
     void tail.then(() => {
@@ -1462,10 +1502,14 @@ function parseOnboardingRequest(value: unknown): OnboardingRequest | undefined {
   const workspaceId = value.workspaceId
   const operation = value.operation
   if (typeof workspaceId !== "string" || !workspaceId || workspaceId.length > MAX_ONBOARDING_MEMBER_ID_CHARS) return undefined
-  if (operation !== "join" && operation !== "list-pending-dm-requests" && operation !== "accept-dm" && operation !== "retry-admission") return undefined
+  if (operation !== "join" && operation !== "list-pending-dm-requests" && operation !== "accept-dm" && operation !== "retry-admission" && operation !== "leave-group") return undefined
   if (operation === "join") {
     if (typeof value.invitation !== "string" || !value.invitation.trim() || value.invitation.length > MAX_ONBOARDING_INPUT_CHARS || !/^keet:\/\/chat\/[A-Za-z0-9._~%!$&'()*+,;=:@/?-]+$/.test(value.invitation.trim())) return undefined
     return { workspaceId, operation, invitation: value.invitation.trim() }
+  }
+  if (operation === "leave-group") {
+    const groupId = boundedOnboardingString(value.groupId, MAX_ONBOARDING_MEMBER_ID_CHARS)
+    return groupId ? { workspaceId, operation, groupId } : undefined
   }
   if (operation === "accept-dm") {
     const memberId = boundedOnboardingString(value.memberId, MAX_ONBOARDING_MEMBER_ID_CHARS)

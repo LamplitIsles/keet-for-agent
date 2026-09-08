@@ -39,6 +39,14 @@ username changes remain available through `dsh-keet-setup`; room invitations and
 DM requests are handled by the running settings card and are never Agent tools
 or persisted settings.
 
+Each ordinary group in settings has a `Leave group` action with an explicit
+confirmation. A successful native departure removes the destination from the
+running bridge and tools, closes its subscription, and suppresses queued work
+from that admission. A turn already submitted to DSH may finish. Rejoining
+requires an invitation and establishes a fresh subscription and history baseline.
+Leaving is human-only, applies without a restart, and is unavailable for DMs or
+Broadcasts. Official-client departure interoperability remains unverified.
+
 The bridge selects the latest eligible existing human conversation at startup
 and keeps it for its lifetime. Human settings actions can extend the admitted
 destination collection without creating another conversation or restarting DSH.

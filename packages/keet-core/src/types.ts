@@ -191,6 +191,7 @@ export interface KeetCore {
   readonly imageAdmissionTimeoutMs?: number
   status(): Promise<KeetReadiness>
   listGroups(): Promise<ManagedGroup[]>
+  leaveGroup(groupId: string, signal?: AbortSignal): Promise<void>
   /** Test/onboarding helper; normal DSH operation never creates rooms. */
   createRoom?(options: CreateGroupOptions): Promise<string>
   /** Test/onboarding helper; normal DSH operation never creates invitations. */

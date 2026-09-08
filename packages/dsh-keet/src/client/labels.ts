@@ -1,6 +1,12 @@
-export type KeetLocaleKey = "title" | "description" | "workspaceId" | "workspaceHint" | "workspaceMissing" | "runtime" | "restartHint" | "save" | "saving" | "discard" | "unsaved" | "readOnly" | "saveFailed" | "required" | "unbound" | "missing-settings" | "connecting" | "ready" | "failed" | "disabled" | "memberJoinTrigger" | "memberJoinTriggerHint" | "memberJoinTriggerSaving" | "memberJoinTriggerSaved" | "memberJoinTriggerSaveFailed" | "newMessagesHint" | "invitation" | "invitationHint" | "join" | "joining" | "joinSuccess" | "pendingRequests" | "requestsHint" | "requestsLoading" | "requestsEmpty" | "refresh" | "refreshing" | "accept" | "accepting" | "acceptSuccess" | "retryAdmission" | "onboardingPartial" | "onboardingFailed"
+export type KeetLocaleKey = "leaveGroup" | "confirmLeave" | "leaveConfirmHint" | "cancelLeave" | "leaving" | "leaveFailed" | "title" | "description" | "workspaceId" | "workspaceHint" | "workspaceMissing" | "runtime" | "restartHint" | "save" | "saving" | "discard" | "unsaved" | "readOnly" | "saveFailed" | "required" | "unbound" | "missing-settings" | "connecting" | "ready" | "failed" | "disabled" | "memberJoinTrigger" | "memberJoinTriggerHint" | "memberJoinTriggerSaving" | "memberJoinTriggerSaved" | "memberJoinTriggerSaveFailed" | "newMessagesHint" | "invitation" | "invitationHint" | "join" | "joining" | "joinSuccess" | "pendingRequests" | "requestsHint" | "requestsLoading" | "requestsEmpty" | "refresh" | "refreshing" | "accept" | "accepting" | "acceptSuccess" | "retryAdmission" | "onboardingPartial" | "onboardingFailed"
 
 export const keetLabels: Record<KeetLocaleKey, string> = {
+  leaveGroup: "Leave group",
+  confirmLeave: "Confirm leave",
+  leaveConfirmHint: "The Agent will leave this group and stop receiving its messages. An invitation is needed to rejoin.",
+  cancelLeave: "Cancel",
+  leaving: "Leaving…",
+  leaveFailed: "Could not confirm leaving. Check the bridge and refresh before retrying.",
   title: "Keet bridge",
   description: "Discover joined groups and accepted DMs in one existing DSH conversation.",
   workspaceId: "DSH workspace",
@@ -51,6 +57,12 @@ export const keetZhLabels = {
   title: "Keet bridge",
   description: "在一个现有 DSH 会话中发现已加入的群组和已接受的私信。",
   restartHint: "更改工作区需要保存并重启；加入或接受私信无需重启。",
+  leaveGroup: "退出群聊",
+  confirmLeave: "确认退出",
+  leaveConfirmHint: "Agent 将退出这个群聊并停止接收消息，重新加入需要邀请。",
+  cancelLeave: "取消",
+  leaving: "退出中…",
+  leaveFailed: "未能确认退出，请检查 bridge 并刷新后再重试。",
   memberJoinTrigger: "成员加入触发器",
   memberJoinTriggerHint: "只为你选择的群组启用成员加入触发；更改立即生效，停用期间的加入不会补发。",
   memberJoinTriggerSaving: "保存中…",

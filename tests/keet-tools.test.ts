@@ -26,6 +26,7 @@ function fakeCore(overrides: Partial<KeetCore> = {}): KeetCore {
     addReaction: async () => undefined,
     sendMessage: async () => ({ deviceId: "device-b", seq: 9 }),
     inspectInvitation: async () => ({ isRoomInvitation: true }),
+    leaveGroup: async () => undefined,
     joinInvitation: async () => ({ groupId }),
     resolveDm: async () => ({ groupId: dmId, roomType: "DirectMessage", dmMemberId: "member-peer" }),
     listPendingDmRequests: async () => [],

@@ -972,3 +972,19 @@ describe("Keet Integration Core fd-3 process contracts", () => {
     }
   })
 })
+
+
+describe("group departure", () => {
+  it("dispatches the exact native room selector once and rejects canceled or invalid input", async () => {
+    const { core, state } = makeMockCore({ handlers: { leaveRoom: () => undefined } })
+    await core.leaveGroup("group-test")
+    expect(state.calls.filter((call) => call.name === "leaveRoom")).toEqual([{ name: "leaveRoom", args: ["group-test"] }])
+    await expect(core.leaveGroup("")).rejects.toThrow()
+    await expect(core.leaveGroup("group-test", AbortSignal.abort())).rejects.toThrow()
+    expect(state.calls.filter((call) => call.name === "leaveRoom")).toHaveLength(1)
+  })
+  it("redacts a failed native departure", async () => {
+    const { core } = makeMockCore({ handlers: { leaveRoom: () => { throw new Error("private worker detail") } } })
+    await expect(core.leaveGroup("group-test")).rejects.toThrow("Keet operation failed")
+  })
+})

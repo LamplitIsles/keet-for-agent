@@ -137,6 +137,8 @@ export function KeetSettingsCard({ scope, readiness, workspaces, workspaceSource
   const [pending, setPending] = useState<PendingState>(EMPTY_PENDING)
   const [acceptStatuses, setAcceptStatuses] = useState<Record<string, ActionStatus>>({})
   const [memberJoinStatuses, setMemberJoinStatuses] = useState<Record<string, ActionPhase>>({})
+  const [leaveConfirmation, setLeaveConfirmation] = useState<string | undefined>()
+  const [leaveFailed, setLeaveFailed] = useState<string | undefined>()
   const [busy, setBusy] = useState<string | undefined>()
   const [sectionOpened, setSectionOpened] = useState(false)
   const id = useId()
@@ -200,6 +202,8 @@ export function KeetSettingsCard({ scope, readiness, workspaces, workspaceSource
         setPending(EMPTY_PENDING)
         setAcceptStatuses({})
         setMemberJoinStatuses({})
+        setLeaveConfirmation(undefined)
+        setLeaveFailed(undefined)
       }
       setDraft((current) => ({ ...current, [field]: value }))
     }
@@ -280,6 +284,28 @@ export function KeetSettingsCard({ scope, readiness, workspaces, workspaceSource
     }
   }
 
+  const leaveGroup = async (groupId: string): Promise<void> => {
+    if (!actionAllowed || busy || leaveConfirmation !== groupId) return
+    const controller = new AbortController()
+    actionController.current = controller
+    setBusy(`leave:${groupId}`)
+    setLeaveFailed(undefined)
+    try {
+      const result = onboardingResult(await callOnboarding(readiness, { workspaceId: savedWorkspaceId, operation: "leave-group", groupId }, controller.signal))
+      if (result?.status !== "left") throw new Error("leave failed")
+      if (mounted.current) {
+        setRuntime((current) => ({ ...current, memberJoinGroups: (current.memberJoinGroups ?? []).filter((group) => group.groupId !== groupId) }))
+        setLeaveConfirmation(undefined)
+        await refreshReadiness()
+      }
+    } catch {
+      if (mounted.current) setLeaveFailed(groupId)
+    } finally {
+      if (actionController.current === controller) actionController.current = undefined
+      if (mounted.current) setBusy(undefined)
+    }
+  }
+
   const setMemberJoinTrigger = async (groupId: string, enabled: boolean): Promise<void> => {
     if (!actionAllowed || memberJoinStatuses[groupId] === "loading") return
     setMemberJoinStatuses((current) => ({ ...current, [groupId]: "loading" }))
@@ -331,18 +357,32 @@ export function KeetSettingsCard({ scope, readiness, workspaces, workspaceSource
         const status = memberJoinStatuses[group.groupId]
         const enabled = baseline.memberJoinTriggers[savedWorkspaceId]?.[group.groupId] === true
         const statusText = status === "loading" ? text("memberJoinTriggerSaving") : status === "success" ? text("memberJoinTriggerSaved") : status === "failure" ? text("memberJoinTriggerSaveFailed") : ""
-        return createElement("label", { className: styles.toggle, key: group.groupId, "data-member-join-group": index },
-          createElement("input", {
-            type: "checkbox",
-            className: `${styles.checkbox} toggle`,
-            checked: enabled,
-            disabled: !actionAllowed || status === "loading",
-            onChange: (event: { target: { checked: boolean } }) => void setMemberJoinTrigger(group.groupId, event.target.checked),
-            "aria-label": `${text("memberJoinTrigger")}: ${group.groupName}`,
-            "data-settings-field": "memberJoinTrigger",
-          }),
-          createElement("span", { className: styles.triggerName }, group.groupName),
-          statusText ? createElement("span", { className: `${styles.triggerStatus} ${status === "failure" ? styles.invalid : ""}`, role: "status", "data-member-join-status": status }, statusText) : null,
+        return createElement("div", { className: styles.field, key: group.groupId, "data-member-join-group": index },
+          createElement("label", { className: styles.toggle },
+            createElement("input", {
+              type: "checkbox",
+              className: `${styles.checkbox} toggle`,
+              checked: enabled,
+              disabled: !actionAllowed || busy !== undefined || status === "loading",
+              onChange: (event: { target: { checked: boolean } }) => void setMemberJoinTrigger(group.groupId, event.target.checked),
+              "aria-label": `${text("memberJoinTrigger")}: ${group.groupName}`,
+              "data-settings-field": "memberJoinTrigger",
+            }),
+            createElement("span", { className: styles.triggerName }, group.groupName),
+            statusText ? createElement("span", { className: `${styles.triggerStatus} ${status === "failure" ? styles.invalid : ""}`, role: "status", "data-member-join-status": status }, statusText) : null,
+          ),
+          leaveConfirmation === group.groupId
+            ? createElement("p", { className: styles.hint, id: `${id}-leave-${index}` }, text("leaveConfirmHint")) : null,
+          createElement("div", { className: styles.actionRow },
+            createElement("button", { type: "button", className: styles.secondaryAction, disabled: !actionAllowed || busy !== undefined,
+              "aria-label": `${text("leaveGroup")}: ${group.groupName}`,
+              "aria-describedby": leaveConfirmation === group.groupId ? `${id}-leave-${index}` : undefined,
+              "data-onboarding-action": leaveConfirmation === group.groupId ? "confirm-leave" : "leave",
+              onClick: () => { if (leaveConfirmation === group.groupId) void leaveGroup(group.groupId); else { setLeaveConfirmation(group.groupId); setLeaveFailed(undefined) } },
+            }, busy === `leave:${group.groupId}` ? text("leaving") : leaveConfirmation === group.groupId ? text("confirmLeave") : text("leaveGroup")),
+            leaveConfirmation === group.groupId ? createElement("button", { type: "button", className: styles.secondaryAction, disabled: busy !== undefined, "data-onboarding-action": "cancel-leave", onClick: () => { setLeaveConfirmation(undefined); setLeaveFailed(undefined) } }, text("cancelLeave")) : null,
+          ),
+          leaveFailed === group.groupId ? createElement("span", { className: `${styles.status} ${styles.invalid}`, role: "status", "data-leave-status": "failure" }, text("leaveFailed")) : null,
         )
       }),
     )

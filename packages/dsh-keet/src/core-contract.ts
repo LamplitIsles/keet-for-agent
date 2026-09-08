@@ -90,6 +90,7 @@ export interface KeetCore {
   readonly imageAdmissionTimeoutMs?: number
   status(): Promise<KeetReadiness>
   listGroups(): Promise<ManagedGroup[]>
+  leaveGroup(groupId: string, signal?: AbortSignal): Promise<void>
   resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
   listPendingDmRequests(signal?: AbortSignal): Promise<KeetPendingDmRequest[]>
   acceptDmRequest(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>

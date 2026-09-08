@@ -252,3 +252,36 @@ describe("native Keet settings card", () => {
     renderer.unmount()
   })
 })
+
+
+describe("settings group departure", () => {
+  it("requires confirmation, preserves a failed row, and removes it after success", async () => {
+    const fixture = scopeFixture()
+    const calls: unknown[] = []
+    let fail = true
+    let groups = [{ groupId: "group-one", groupName: "Group one", enabled: false }]
+    const renderer = await openCard({ ...props(fixture), readiness: {
+      get: async () => ({ state: "ready", workspaceId: "workspace", memberJoinGroups: groups }),
+      onboarding: async (payload: any) => {
+        if (payload.operation !== "leave-group") return { status: "ready", requests: [] }
+        calls.push(payload)
+        if (fail) return { ok: false }
+        groups = []
+        return { ok: true, value: { status: "left" } }
+      },
+    } })
+    const action = (name: string) => renderer.root.findByProps({ "data-onboarding-action": name })
+    await act(async () => { action("leave").props.onClick() })
+    expect(calls).toEqual([])
+    await act(async () => { action("cancel-leave").props.onClick() })
+    expect(calls).toEqual([])
+    await act(async () => { action("leave").props.onClick() })
+    await act(async () => { action("confirm-leave").props.onClick() })
+    expect(renderer.root.findByProps({ "data-leave-status": "failure" })).toBeTruthy()
+    expect(calls).toEqual([{ workspaceId: "workspace", operation: "leave-group", groupId: "group-one" }])
+    fail = false
+    await act(async () => { action("confirm-leave").props.onClick() })
+    expect(renderer.root.findAllByProps({ "data-onboarding-action": "leave" })).toHaveLength(0)
+    await act(async () => renderer.unmount())
+  })
+})

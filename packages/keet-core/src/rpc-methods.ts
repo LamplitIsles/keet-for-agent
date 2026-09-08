@@ -5,6 +5,7 @@ export const RPC_METHODS = {
   getRoomInfo: 39,
   getLinkInfo: 22,
   createRoom: 25,
+  leaveRoom: 27,
   startPairingRoom: 28,
   stopPairingRoom: 29,
   getRecentRooms: 43,

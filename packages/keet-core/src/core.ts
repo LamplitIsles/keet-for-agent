@@ -625,6 +625,13 @@ export class KeetIntegrationCore implements KeetCore {
     }
   }
 
+  async leaveGroup(groupId: string, signal?: AbortSignal): Promise<void> {
+    const id = boundedId(groupId, "Managed Group ID")
+    ensureSignal(signal)
+    const result = await this.callWithSignal("leaveRoom", [id], signal)
+    validateVoidResult(result, "group departure")
+  }
+
   async joinInvitation(invitation: string, signal?: AbortSignal): Promise<JoinResult> {
     const value = validateInvitation(invitation)
     await this.inspectInvitation(value, signal)

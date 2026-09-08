@@ -97,6 +97,14 @@ exact hidden peer selector. Joining or accepting mutates the live Integration
 Identity and immediately publishes the fully initialized destination to the
 current bridge and Agent tools. No DSH restart is needed.
 
+Each ordinary group in settings has a `Leave group` action with an explicit
+confirmation. A successful native departure removes the destination from the
+running bridge and tools, closes its subscription, and suppresses queued work
+from that admission. A turn already submitted to DSH may finish. Rejoining
+requires an invitation and establishes a fresh subscription and history baseline.
+Leaving is human-only, applies without a restart, and is unavailable for DMs or
+Broadcasts. Official-client departure interoperability remains unverified.
+
 Live onboarding is disabled while the workspace has unsaved changes, the
 selected workspace does not match the running bridge, or readiness is not
 `Ready`/`Unbound`. A connected `Unbound` bridge can still admit a room while

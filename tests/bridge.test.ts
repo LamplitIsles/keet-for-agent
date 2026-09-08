@@ -75,6 +75,7 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
     addReaction: async () => undefined,
     sendMessage: async (groupId, text, replyTo) => { sent.push({ groupId, text, ...(replyTo ? { replyTo } : {}) }); return { deviceId: "device-bot", seq: sent.length + 10 } },
     inspectInvitation: async () => ({ isRoomInvitation: true }),
+    leaveGroup: async () => undefined,
     joinInvitation: async () => ({ groupId: settings.groupId }),
     listPendingDmRequests: async () => {
       if (options.pendingFailure) throw new Error("pending snapshot unavailable")
@@ -1990,5 +1991,95 @@ describe("Keet bridge", () => {
     expect(fixture.tools).toHaveLength(0)
     expect(core.closed).toBe(true)
     expect(bridge.agent).toBeUndefined()
+  })
+})
+
+
+describe("human group departure", () => {
+  it("closes the subscription, ignores stale callbacks, and permits a fresh rejoin", async () => {
+    const handlers: Array<(value: KeetMessage) => void> = []
+    const core = fakeCore({ onWatch: (handler) => handlers.push(handler) })
+    const watch = core.watchMessages.bind(core)
+    const close = vi.fn(async () => undefined)
+    core.watchMessages = (...args) => { const subscription = watch(...args); return { ...subscription, close } }
+    const leave = vi.fn(async () => undefined)
+    core.leaveGroup = leave
+    const fixture = makeAgent()
+    const bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+    const rpc = bridgeRpcHandler(bridge)
+    const left = await rpc("onboarding", { workspaceId: "workspace", operation: "leave-group", groupId: settings.groupId }, new AbortController().signal)
+    expect(left).toEqual({ ok: true, value: { status: "left" } })
+    expect(leave).toHaveBeenCalledExactlyOnceWith(settings.groupId, expect.any(AbortSignal))
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(bridge.destinations).toEqual([])
+    expect(bridge.contextBuffers.has(settings.groupId)).toBe(false)
+    handlers[0]!(message(10, "old callback", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(0)
+    await rpc("onboarding", { workspaceId: "workspace", operation: "join", invitation: "keet://chat/rejoin" }, new AbortController().signal)
+    handlers[0]!(message(11, "stale after rejoin", { mentions: ["bot"] }))
+    handlers[1]!(message(12, "fresh after rejoin", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(1)
+    expect(JSON.stringify(fixture.prompts)).toContain("fresh after rejoin")
+    await bridge.stop()
+  })
+
+  it("finishes departure when the room stream ends and the client cancels during the native call", async () => {
+    let terminate!: () => void
+    const controller = new AbortController()
+    const core = fakeCore({ onSubscription: (value) => { terminate = value } })
+    const leave = vi.fn(async () => { terminate(); controller.abort() })
+    core.leaveGroup = leave
+    const bridge = new KeetBridge(deps(core, makeAgent().agent))
+    await bridge.start()
+    expect(await bridgeRpcHandler(bridge)("onboarding", { workspaceId: "workspace", operation: "leave-group", groupId: settings.groupId }, controller.signal)).toEqual({ ok: true, value: { status: "left" } })
+    expect(core.closed).toBe(false)
+    expect(bridge.destinations).toEqual([])
+    expect(leave).toHaveBeenCalledTimes(1)
+    await bridge.stop()
+  })
+
+  it("suppresses queued messages across leaving and rejoining while another turn runs", async () => {
+    const handlers: Array<(value: KeetMessage) => void> = []
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const core = fakeCore({ onWatch: (handler) => handlers.push(handler) })
+    const fixture = makeAgent(undefined, () => gate)
+    const bridge = new KeetBridge(deps(core, fixture.agent))
+    await bridge.start()
+    handlers[0]!(message(20, "running", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(1)
+    handlers[0]!(message(21, "queued before leaving", { mentions: ["bot"] }))
+    await flushBridge()
+    const rpc = bridgeRpcHandler(bridge)
+    expect(await rpc("onboarding", { workspaceId: "workspace", operation: "leave-group", groupId: settings.groupId }, new AbortController().signal)).toMatchObject({ ok: true })
+    expect(await rpc("onboarding", { workspaceId: "workspace", operation: "join", invitation: "keet://chat/again" }, new AbortController().signal)).toMatchObject({ ok: true })
+    release()
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(1)
+    handlers[1]!(message(22, "new admission", { mentions: ["bot"] }))
+    await flushBridge()
+    expect(fixture.prompts).toHaveLength(2)
+    await bridge.stop()
+  })
+
+  it("rejects unknown, DM, mismatched workspace and canceled selectors without native mutation, and retains failed groups", async () => {
+    const core = fakeCore({ dm: true })
+    const leave = vi.fn(async () => { throw new Error("private failure") })
+    core.leaveGroup = leave
+    const bridge = new KeetBridge(deps(core, makeAgent().agent))
+    await bridge.start()
+    const rpc = bridgeRpcHandler(bridge)
+    for (const [workspaceId, groupId] of [["workspace", "unknown"], ["workspace", dmGroupId], ["other", settings.groupId]]) {
+      expect(await rpc("onboarding", { workspaceId, operation: "leave-group", groupId }, new AbortController().signal)).toMatchObject({ ok: false })
+    }
+    expect(await rpc("onboarding", { workspaceId: "workspace", operation: "leave-group", groupId: settings.groupId }, AbortSignal.abort())).toMatchObject({ ok: false })
+    expect(leave).not.toHaveBeenCalled()
+    expect(await rpc("onboarding", { workspaceId: "workspace", operation: "leave-group", groupId: settings.groupId }, new AbortController().signal)).toMatchObject({ ok: false, error: { code: "operation-failed" } })
+    expect(bridge.destinations).toHaveLength(2)
+    await bridge.stop()
   })
 })
