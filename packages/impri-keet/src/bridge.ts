@@ -8,7 +8,7 @@ export type ApprovalCore = Pick<KeetCore,
 const APPROVE = "✅"
 const REJECT = "❌"
 const LABELS = {
-  pending: "Pending approval", approved: "Approved; awaiting execution", rejected: "Rejected",
+  rejected: "Rejected",
   expired: "Expired", executed: "Executed", execute_failed: "Execution failed",
 } as const
 
@@ -129,14 +129,15 @@ export class ApprovalBridge {
       action = await this.inbox.get(id, signal)
       if (!action || action.status === "pending") return
     }
+    // Approval is intermediate: keep tracking the request silently until an
+    // execution receipt arrives, instead of sending two success notifications.
+    if (action.status === "approved") return
     if (message.notice !== action.status) {
       await this.core.sendMessage(binding.dmId, `"${action.title}": ${LABELS[action.status]}\n${this.inboxUrl}/inbox/${id}`, undefined, operationSignal(signal))
       message.notice = action.status
       await this.store.put(id, message)
     }
-    // Approved actions remain observed for an execution receipt. Every other
-    // non-pending status is terminal under Impri's existing action contract.
-    if (action.status !== "approved") await this.store.remove(id)
+    await this.store.remove(id)
   }
 
   private async ensureMessage(binding: BotState, id: string, message: ApprovalMessage, signal: AbortSignal): Promise<KeetMessageId | null> {

@@ -98,8 +98,8 @@ shortened with a link to the complete inbox preview.
   it does not replay historical clicks.
 - Impri owns the first accepted decision. Later reaction changes cannot undo
   it, and a decision already made through another channel wins.
-- Approval is reported separately from execution. Approved actions remain
-  observed until Impri reports `executed` or `execute_failed`.
+- Approval is tracked silently. The bot sends a final result when Impri reports
+  `executed` or `execute_failed`, and also reports rejection or expiry.
 
 Polling runs serially with a 500-millisecond delay between rounds. Temporary
 failures wait five seconds before reconnecting using saved state. Reaction reads address each saved

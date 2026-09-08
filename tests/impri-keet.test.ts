@@ -102,7 +102,7 @@ async function fixture(actions = [pendingAction()]) {
 }
 
 describe("Keet approval channel", () => {
-  it("publishes both decorations without approving, then reflects approval and execution exactly once in an uninterrupted run", async () => {
+  it("publishes approval choices and only notifies the final execution result", async () => {
     const f = await fixture()
     await expect(f.bridge.tick(signal())).resolves.toBe(true)
     expect(f.messages).toHaveLength(1)
@@ -111,16 +111,37 @@ describe("Keet approval channel", () => {
     f.choose(f.messages[0]!.messageId, "✅")
     await f.bridge.tick(signal())
     expect(f.inbox.decide).toHaveBeenCalledWith("act_one", "approve", expect.any(AbortSignal))
-    expect(f.messages.at(-1)?.text).toContain("Approved; awaiting execution")
+    expect(f.messages).toHaveLength(1)
+    expect(f.store.snapshot()?.requests.act_one).toBeDefined()
     await f.bridge.tick(signal())
-    expect(f.messages).toHaveLength(2)
+    expect(f.messages).toHaveLength(1)
     f.state.get("act_one")!.status = "executed"
     await f.bridge.tick(signal())
     expect(f.messages.at(-1)?.text).toContain("Executed")
     expect(f.store.snapshot()?.requests).toEqual({})
     await f.bridge.tick(signal())
-    expect(f.messages).toHaveLength(3)
+    expect(f.messages).toHaveLength(2)
     expect(f.inbox.decide).toHaveBeenCalledTimes(1)
+  })
+
+  it("silently tracks externally approved actions across restart until execution fails", async () => {
+    const f = await fixture()
+    await f.bridge.tick(signal())
+    f.state.get("act_one")!.status = "approved"
+    await f.bridge.tick(signal())
+    expect(f.messages).toHaveLength(1)
+    await f.store.close()
+    const reopened = await openStore(f.directory)
+    const bridge = new ApprovalBridge(f.core, f.inbox, reopened.store, baseUrl)
+    await bridge.tick(signal())
+    expect(f.messages).toHaveLength(1)
+    f.state.get("act_one")!.status = "execute_failed"
+    await bridge.tick(signal())
+    await bridge.tick(signal())
+    expect(f.messages).toHaveLength(2)
+    expect(f.messages.at(-1)?.text).toContain("Execution failed")
+    expect(reopened.store.snapshot()?.requests).toEqual({})
+    expect(f.inbox.decide).not.toHaveBeenCalled()
   })
 
   it("maps reject to the existing action decision and never calls a forge", async () => {
@@ -184,7 +205,8 @@ describe("Keet approval channel", () => {
     f.choose(f.messages[0]!.messageId, "❌")
     await f.bridge.tick(signal())
     expect(f.inbox.decide).toHaveBeenCalledTimes(1)
-    expect(f.messages.at(-1)?.text).toContain("Approved")
+    expect(f.messages).toHaveLength(1)
+    expect(f.store.snapshot()?.requests.act_one).toBeDefined()
   })
 
   it("never re-decides an action resolved through another channel", async () => {
