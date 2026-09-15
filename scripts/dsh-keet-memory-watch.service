@@ -1,0 +1,11 @@
+[Unit]
+Description=Alert when the DSH Keet worker exceeds its PSS threshold
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/dsh-keet/memory-watch.env
+ExecStart=%h/.local/bin/dsh-keet-memory-watch
+Restart=no
+
+[Install]
+WantedBy=default.target

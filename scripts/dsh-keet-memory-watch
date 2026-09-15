@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -u
+
+export PATH=/run/current-system/sw/bin:/usr/bin:/bin
+
+readonly threshold_kib=$(( ${KEET_MEMORY_THRESHOLD_MIB:-700} * 1024 ))
+: "${KEET_MEMORY_WORKER_PATTERN:?Set the DSH Keet worker command-line pattern}"
+: "${KEET_MEMORY_PROFILE_SOCKET:?Set the DSH Keet heap-profile socket path}"
+readonly worker_pattern="$KEET_MEMORY_WORKER_PATTERN"
+readonly profile_socket="$KEET_MEMORY_PROFILE_SOCKET"
+
+while :; do
+  worker_pid=$(pgrep -f "$worker_pattern" | head -n 1 || true)
+  if [ -n "$worker_pid" ] && [ -r "/proc/$worker_pid/smaps_rollup" ]; then
+    pss_kib=$(awk '/^Pss:/ { print $2; exit }' "/proc/$worker_pid/smaps_rollup")
+    if [ -n "$pss_kib" ] && [ "$pss_kib" -ge "$threshold_kib" ]; then
+      message="DSH Keet memory alert: PID $worker_pid reached $((pss_kib / 1024)) MiB PSS (threshold: $((threshold_kib / 1024)) MiB)."
+      logger -t dsh-keet-memory-watch -- "$message"
+      wall "$message Capturing a structural heap profile now; the result will be in the user journal." || true
+      if profile=$(printf 'capture\n' | nc -N -U -w 300 "$profile_socket" 2>/dev/null) && [[ "$profile" == '{"ok":true,'* ]]; then
+        capture_id="${worker_pid}-$(date +%s)"
+        if summary=$(printf '%s' "$profile" | jq -er '
+          .value
+          | select((.nodeCount | type) == "number" and (.selfSizeBytes | type) == "number" and (.nodeTypes | type) == "array")
+          | "node_count=\(.nodeCount) self_size_bytes=\(.selfSizeBytes) categories=\(.nodeTypes | length)"
+        ' 2>/dev/null); then
+          logger -t dsh-keet-memory-watch -- "$message Heap profile capture=$capture_id $summary"
+          while IFS=$'\t' read -r node_type node_count self_size_bytes; do
+            logger -t dsh-keet-memory-watch -- "$message Heap profile capture=$capture_id type=$node_type node_count=$node_count self_size_bytes=$self_size_bytes"
+          done < <(printf '%s' "$profile" | jq -er '.value.nodeTypes[] | [.type, .nodeCount, .selfSizeBytes] | @tsv' 2>/dev/null)
+        else
+          logger -t dsh-keet-memory-watch -- "$message Heap profile capture returned malformed data."
+        fi
+        wall "$message Structural heap profile captured and written to the user journal." || true
+      else
+        logger -t dsh-keet-memory-watch -- "$message Heap profile capture was unavailable."
+        wall "$message Heap profile capture was unavailable; the alert remains recorded in the user journal." || true
+      fi
+      exit 0
+    fi
+  fi
+  sleep 30
+done
