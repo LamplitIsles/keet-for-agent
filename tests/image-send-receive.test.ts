@@ -54,6 +54,7 @@ function makeImageCore(options: {
   const sent: Array<{ groupId: string; text: string }> = []
   const core = {
     status: async () => ({ state: "ready" as const, appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: "bot", displayName: "Bot" }),
+    captureHeapProfile: async () => ({ nodeCount: 0, selfSizeBytes: 0, nodeTypes: [] }),
     listGroups: async () => groups,
     listMembers: async () => [],
     readRecentMessages: async (): Promise<KeetMessage[]> => [],

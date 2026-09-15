@@ -93,6 +93,19 @@ rpc.register(159, {
     ? { digest: { total: 0, reactions: [] }, mine: [] }
     : null,
 })
+rpc.register(274, {
+  request: any,
+  response: any,
+  onrequest: async ([snapshotPath]) => {
+    await writeFile(snapshotPath, JSON.stringify({
+      snapshot: { meta: { node_fields: ["type", "name", "id", "self_size", "edge_count"], node_types: [["hidden"], "string", "number", "number", "number"] } },
+      nodes: [0, 1, 1, 8, 0],
+      edges: [],
+      strings: [],
+    }))
+    return snapshotPath
+  },
+})
 rpc.register(171, {
   request: any,
   response: any,

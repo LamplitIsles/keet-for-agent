@@ -5,6 +5,7 @@ import { KeetBridge, bridgeRpcHandler, type KeetBridgeAgent, type KeetBridgeDepe
 import { RPC_CHANNEL, SETTINGS_NAMESPACE } from "./constants.js"
 import { KeetSettingsSchema } from "./settings.js"
 import { resolveKeetRuntimePaths } from "./local-paths.js"
+import { startKeetHeapProfileSocket } from "./heap-profile-socket.js"
 
 export const name = "dsh-keet"
 export const inject = [
@@ -50,10 +51,16 @@ export function apply(ctx: HostContext): void {
     onError: () => { if (process.env.NODE_ENV !== "test") console.error("[dsh-keet] bridge operation failed") },
   }
   const bridge = new KeetBridge(bridgeDeps)
-  ctx.effect(() => {
+  ctx.effect(async () => {
     const disposeRpc = ctx.connection.rpc.handle(RPC_CHANNEL, bridgeRpcHandler(bridge))
+    let closeHeapProfileSocket: (() => Promise<void>) | undefined
+    try {
+      closeHeapProfileSocket = await startKeetHeapProfileSocket({ capture: async () => await bridge.captureHeapProfile() })
+    } catch {
+      if (process.env.NODE_ENV !== "test") console.error("[dsh-keet] heap profile socket unavailable")
+    }
     void bridge.start()
-    return async () => { await disposeRpc(); await bridge.stop() }
+    return async () => { await closeHeapProfileSocket?.(); await disposeRpc(); await bridge.stop() }
   }, "dsh-keet: bridge lifecycle")
 }
 
@@ -65,6 +72,7 @@ export type { KeetAttachmentStore, KeetImageAttachmentRef, KeetSaveImageAttachme
 export { KeetSettingsSchema } from "./settings.js"
 export { RPC_CHANNEL, RPC_ENDPOINT, RPC_ONBOARDING_ENDPOINT, SETTINGS_NAMESPACE } from "./constants.js"
 export { ensureKeetIdentityDataDir, resolveKeetRuntimeDir, resolveKeetRuntimePaths } from "./local-paths.js"
+export { keetHeapProfileSocketPath, startKeetHeapProfileSocket } from "./heap-profile-socket.js"
 export { decodeSettings, normalizeSettings, validateSettings } from "./settings-client.js"
 export type { KeetSettings } from "./constants.js"
 export { renderKeetContextPrompt, renderKeetMemberJoinPrompt, fitKeetReactionContext, classifyTrigger, normalizeKeetRecord, messageIdKey } from "./keet-protocol.js"

@@ -331,6 +331,44 @@ describe("typed Keet Integration Core unit behavior", () => {
     await expect(missing.core.status()).rejects.toThrow("identity is unavailable")
   })
 
+  it("captures one coalesced structural heap profile and removes its raw snapshot", async () => {
+    const paths: string[] = []
+    const snapshot = JSON.stringify({
+      snapshot: {
+        meta: {
+          node_fields: ["type", "name", "id", "self_size", "edge_count"],
+          node_types: [["hidden", "array", "string"], "string", "number", "number", "number"],
+        },
+      },
+      nodes: [0, 1, 1, 8, 0, 1, 2, 2, 16, 1, 1, 3, 3, 32, 0, 2, 4, 4, 4, 0],
+      edges: [],
+      strings: ["never returned"],
+    })
+    const harness = makeMockCore({ handlers: {
+      heapSnapshot: async ([snapshotPath]) => {
+        expect(typeof snapshotPath).toBe("string")
+        paths.push(snapshotPath as string)
+        await writeFile(snapshotPath as string, snapshot)
+        return snapshotPath
+      },
+    } })
+    const [first, second] = await Promise.all([harness.core.captureHeapProfile(), harness.core.captureHeapProfile()])
+    expect(first).toEqual({
+      nodeCount: 4,
+      selfSizeBytes: 60,
+      nodeTypes: [
+        { type: "hidden", nodeCount: 1, selfSizeBytes: 8 },
+        { type: "array", nodeCount: 2, selfSizeBytes: 48 },
+        { type: "string", nodeCount: 1, selfSizeBytes: 4 },
+      ],
+    })
+    expect(second).toEqual(first)
+    expect(harness.state.calls.filter((call) => call.name === "heapSnapshot")).toHaveLength(1)
+    expect(paths).toHaveLength(1)
+    await expect(stat(paths[0]!)).rejects.toMatchObject({ code: "ENOENT" })
+    await expect(stat(path.dirname(paths[0]!))).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
   it("normalizes official nullable replies, edits, mentions, labels, and chat indexes", async () => {
     const harness = makeMockCore({ messages: officialMessages() })
     const history = await harness.core.readRecentMessages("group-test", 50)
@@ -829,6 +867,7 @@ describe("Keet Integration Core fd-3 process contracts", () => {
     const core = await KeetIntegrationCore.start(processOptions(data, (entry) => logs.push(entry)))
     try {
       await expect(core.status()).resolves.toMatchObject({ state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: "identity-self", displayName: "Fixture Bot" })
+      await expect(core.captureHeapProfile()).resolves.toEqual({ nodeCount: 1, selfSizeBytes: 8, nodeTypes: [{ type: "hidden", nodeCount: 1, selfSizeBytes: 8 }] })
       await expect(core.listGroups()).resolves.toEqual([{ groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" }])
       await expect(core.listMembers("group-test")).resolves.toEqual([{ memberId: "identity-self", displayName: "Fixture Bot" }, { memberId: "member-alice", displayName: "Alice" }])
       await expect(core.readRecentMessages("group-test", 50)).resolves.toEqual(expect.arrayContaining([

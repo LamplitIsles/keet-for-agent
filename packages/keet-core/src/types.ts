@@ -179,6 +179,17 @@ export interface KeetReadiness {
   readonly displayName?: string
 }
 
+/** A bounded structural summary of one transient live-worker V8 heap snapshot. */
+export interface KeetHeapProfile {
+  readonly nodeCount: number
+  readonly selfSizeBytes: number
+  readonly nodeTypes: readonly {
+    readonly type: string
+    readonly nodeCount: number
+    readonly selfSizeBytes: number
+  }[]
+}
+
 export interface KeetSubscription {
   close(): Promise<void>
   readonly closed: boolean
@@ -190,6 +201,8 @@ export interface KeetCore {
   /** Core-owned image admission deadline; not a user-facing setting. */
   readonly imageAdmissionTimeoutMs?: number
   status(): Promise<KeetReadiness>
+  /** Capture and erase a transient snapshot, returning only structural totals. */
+  captureHeapProfile(): Promise<KeetHeapProfile>
   listGroups(): Promise<ManagedGroup[]>
   leaveGroup(groupId: string, signal?: AbortSignal): Promise<void>
   /** Test/onboarding helper; normal DSH operation never creates rooms. */

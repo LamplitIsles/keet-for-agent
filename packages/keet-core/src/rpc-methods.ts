@@ -32,6 +32,8 @@ export const RPC_METHODS = {
   addReaction: 156,
   /** Current aggregate state for one exact message, including our own reactions. */
   getReactions: 159,
+  /** Diagnostic-only V8 snapshot, consumed locally as bounded structural totals. */
+  heapSnapshot: 274,
   boot: 225,
   /** Working pinned file lifecycle; addFile/addFileBlob are missing stubs. */
   saveFileBlob: 171,

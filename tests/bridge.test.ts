@@ -39,6 +39,7 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
       if (options.fail) throw new Error("private provider output")
       return { state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: options.missingIdentity ? "" : "bot", ...(options.missingDisplayName ? {} : { displayName: "Keet Bot" }) }
     },
+    captureHeapProfile: async () => ({ nodeCount: 0, selfSizeBytes: 0, nodeTypes: [] }),
     listGroups: async () => options.groups ?? [{ groupId: settings.groupId, roomType: "Default", title: options.duplicateNames ? " Shared\nName " : "Test group" }, ...(options.dm ? [{ groupId: dmGroupId, roomType: "DirectMessage" as const, title: options.duplicateNames ? "Shared Name" : "Managed DM", dmMemberId: "peer" }] : [])],
     resolveDm: async () => ({ groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: "peer", title: options.duplicateNames ? "Shared\nName" : "Managed DM" }),
     listMembers: async (groupId) => {

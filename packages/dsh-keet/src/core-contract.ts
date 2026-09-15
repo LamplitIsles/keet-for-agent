@@ -75,6 +75,12 @@ export interface KeetMessage {
 }
 
 export interface KeetReadiness { readonly state: "ready"; readonly appVersion: string; readonly coreVersion: string; readonly abi: number; readonly swarming: boolean; readonly identityId: string; readonly displayName?: string }
+/** Bounded structural totals only; no heap strings, object names, or paths. */
+export interface KeetHeapProfile {
+  readonly nodeCount: number
+  readonly selfSizeBytes: number
+  readonly nodeTypes: readonly { readonly type: string; readonly nodeCount: number; readonly selfSizeBytes: number }[]
+}
 export interface KeetSubscription {
   readonly closed: boolean
   readonly terminationReason?: "closed" | "connection-failed"
@@ -89,6 +95,7 @@ export interface KeetCore {
   /** Core-owned image admission deadline; not a user-facing setting. */
   readonly imageAdmissionTimeoutMs?: number
   status(): Promise<KeetReadiness>
+  captureHeapProfile(): Promise<KeetHeapProfile>
   listGroups(): Promise<ManagedGroup[]>
   leaveGroup(groupId: string, signal?: AbortSignal): Promise<void>
   resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>

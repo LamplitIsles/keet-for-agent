@@ -1,5 +1,6 @@
 import { KeetSidecar } from "./sidecar.js"
 import type { Duplex } from "node:stream"
+import { captureHeapProfile } from "./heap-profile.js"
 import {
   KEET_NATIVE_ADDON_COUNT,
   validateKeetCompatibility,
@@ -17,6 +18,7 @@ import {
   type KeetImageFile,
   type KeetImageMediaType,
   type KeetImagePreview,
+  type KeetHeapProfile,
   type PreparedKeetImage,
   type KeetReadiness,
   type KeetSubscription,
@@ -79,6 +81,7 @@ export class KeetIntegrationCore implements KeetCore {
   #selfLabel: string | undefined
   #selfUsername: string | undefined
   #closed = false
+  #heapProfile: Promise<KeetHeapProfile> | undefined
 
   constructor(options: KeetCoreOptions | KeetSidecar, timing: { readonly imageAdmissionTimeoutMs?: number } = {}) {
     this.sidecar = options instanceof KeetSidecar ? options : new KeetSidecar(options)
@@ -119,6 +122,26 @@ export class KeetIntegrationCore implements KeetCore {
       ...status,
       identityId: identity.id,
       ...(identity.label ? { displayName: identity.label } : {}),
+    }
+  }
+
+  async captureHeapProfile(): Promise<KeetHeapProfile> {
+    if (this.#closed) throw publicError("Keet heap profile is unavailable")
+    if (!this.#heapProfile) {
+      const active = this.captureHeapProfileOnce()
+      this.#heapProfile = active
+      void active.finally(() => {
+        if (this.#heapProfile === active) this.#heapProfile = undefined
+      }).catch(() => undefined)
+    }
+    return await this.#heapProfile
+  }
+
+  private async captureHeapProfileOnce(): Promise<KeetHeapProfile> {
+    try {
+      return await captureHeapProfile(async (snapshotPath) => await this.sidecar.call("heapSnapshot", [snapshotPath]))
+    } catch {
+      throw publicError("Keet heap profile is unavailable")
     }
   }
 

@@ -4,7 +4,7 @@ import type { Agent } from "@deepseek-ai/dsh-agent"
 import type { Context } from "@deepseek-ai/cordis"
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools"
 import { KeetIntegrationCore } from "@lamplitisles/keet-integration-core"
-import type { KeetCore, KeetCoreOptions, KeetMessage, KeetMessageId, KeetPendingDmRequest, KeetSubscription, ManagedGroup } from "./core-contract.js"
+import type { KeetCore, KeetCoreOptions, KeetHeapProfile, KeetMessage, KeetMessageId, KeetPendingDmRequest, KeetSubscription, ManagedGroup } from "./core-contract.js"
 import { CLASSIFICATION_STOP_TIMEOUT_MS, CONTEXT_BUFFER_LIMIT, DEFAULT_SETTINGS, DEDUPE_LIMIT, DM_TYPING_REFRESH_MS, MAX_INBOX_SPLICE_MESSAGES, MEMBER_JOIN_POLL_INTERVAL_MS, MAX_MESSAGE_TEXT, MAX_PROMPT_CHARS, MAX_PROVENANCE_CHARS, MAX_RECENT_MESSAGES, RPC_ONBOARDING_ENDPOINT, type KeetSettings } from "./constants.js"
 import { classifyTrigger, fitKeetReactionContext, messageIdKey, normalizeKeetRecord, renderKeetContextPrompt, renderKeetMemberJoinPrompt, type AdmittedKeetMessage, type KeetContextRecord, type KeetIdentity, type KeetReactionContext } from "./keet-protocol.js"
 import { createKeetToolDefinitions, normalizeManagedDestinationName, type ActiveReactionTarget, type ManagedDestination, type ManagedDestinationSummary } from "./keet-tools.js"
@@ -243,6 +243,12 @@ export class KeetBridge {
   get readiness(): KeetBridgeReadiness { return this.readinessValue }
   readinessForClient(): KeetBridgeReadiness { return Object.freeze({ ...this.readinessValue }) }
   get core(): KeetCore | undefined { return this.coreValue }
+  /** Owner-only diagnostic seam for the already-running worker. */
+  async captureHeapProfile(): Promise<KeetHeapProfile> {
+    const core = this.coreValue
+    if (!core || this.stopped || !this.accepting) throw new Error("Keet heap profile is unavailable")
+    return await core.captureHeapProfile()
+  }
   get agent(): KeetBridgeAgent | undefined { return this.boundAgent }
   /** Public destination snapshot; routing IDs remain bridge-owned. */
   get destinations(): readonly ManagedDestinationSummary[] { return this.publicDestinations() }

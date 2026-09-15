@@ -13,8 +13,10 @@ const destinations: ManagedDestination[] = [
 ]
 
 function fakeCore(overrides: Partial<KeetCore> = {}): KeetCore {
+  const { captureHeapProfile = async () => ({ nodeCount: 0, selfSizeBytes: 0, nodeTypes: [] }), ...rest } = overrides
   return {
     status: async () => ({ state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: "bot" }),
+    captureHeapProfile,
     listGroups: async () => [{ groupId, roomType: "Default" }, { groupId: dmId, roomType: "DirectMessage", dmMemberId: "member-peer" }],
     listMembers: async (id) => id === dmId ? [{ memberId: "bot", displayName: "Bot" }, { memberId: "member-peer", displayName: "Peer" }] : [{ memberId: "z", displayName: "Zed" }, { memberId: "a", displayName: "Alice" }],
     readRecentMessages: async (id) => [{ messageId: target, groupId: id, senderId: "a", senderLabel: "Alice", timestamp: 1, text: "hello", replyTo: { deviceId: "device-self", seq: 3 } }],
@@ -34,7 +36,7 @@ function fakeCore(overrides: Partial<KeetCore> = {}): KeetCore {
     updateIdentityProfile: async () => undefined,
     updateDisplayName: async () => undefined,
     close: async () => undefined,
-    ...overrides,
+    ...rest,
   }
 }
 
