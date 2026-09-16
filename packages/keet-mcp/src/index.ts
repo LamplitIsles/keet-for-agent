@@ -11,7 +11,7 @@ import { CflEventFeed, type CflDestination } from "./cfl-event-feed.js"
 
 export type DestinationKind = "group" | "broadcast" | "dm"
 export interface Destination { readonly groupId: string; readonly groupName: string; readonly kind: DestinationKind }
-export interface GatewayConfig { readonly runtimeDir: string; readonly identityDir: string; readonly workspaceRoot: string; readonly stateDir: string; readonly eventRetention: number; readonly listen: string; readonly token: string }
+export interface GatewayConfig { readonly runtimeDir: string; readonly identityDir: string; readonly workspaceRoot: string; readonly stateDir: string; readonly mediaDir: string; readonly eventRetention: number; readonly listen: string; readonly token: string }
 export interface GatewayOptions { readonly config: GatewayConfig; readonly createCore?: (options: KeetCoreOptions) => Promise<KeetCore> }
 
 const MAX_TEXT = 16_000
@@ -25,7 +25,7 @@ const MAX_SESSIONS = 64
 export function configurationFromEnvironment(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
   return {
     runtimeDir: required(env, "KEET_MCP_RUNTIME_DIR"), identityDir: required(env, "KEET_MCP_IDENTITY_DIR"),
-    workspaceRoot: required(env, "KEET_MCP_WORKSPACE_ROOT"), stateDir: required(env, "KEET_MCP_STATE_DIR"), eventRetention: positiveInteger(env.KEET_CFL_EVENT_RETENTION, "KEET_CFL_EVENT_RETENTION", 10_000), listen: required(env, "KEET_MCP_LISTEN"), token: required(env, "KEET_MCP_TOKEN"),
+    workspaceRoot: required(env, "KEET_MCP_WORKSPACE_ROOT"), stateDir: required(env, "KEET_MCP_STATE_DIR"), mediaDir: required(env, "KEET_CFL_MEDIA_DIR"), eventRetention: positiveInteger(env.KEET_CFL_EVENT_RETENTION, "KEET_CFL_EVENT_RETENTION", 10_000), listen: required(env, "KEET_MCP_LISTEN"), token: required(env, "KEET_MCP_TOKEN"),
   }
 }
 function required(env: NodeJS.ProcessEnv, name: string): string { const value = env[name]?.trim(); if (!value) throw new Error(`Missing ${name}.`); return value }
@@ -90,7 +90,7 @@ export class KeetMcpGateway {
       if (new Set(destinations.map((value) => value.groupId)).size !== destinations.length) throw new Error("Keet destination snapshot contains duplicate rooms.")
       if (new Set(destinations.map((value) => value.groupName)).size !== destinations.length) throw new Error("Keet destination names are ambiguous.")
       if (this.#closing) throw new Error("Keet gateway is closing."); this.#workspaceRoot = config.workspaceRoot; this.#destinations = Object.freeze(destinations)
-      const feed = new CflEventFeed({ stateDir: config.stateDir, retention: config.eventRetention, core, identityId: readiness.identityId, destinations: destinations as readonly CflDestination[], isAuthorized: (request) => authorized(request, config.token), onFatal: (error) => { this.fail(error) } })
+      const feed = new CflEventFeed({ stateDir: config.stateDir, mediaDir: config.mediaDir, retention: config.eventRetention, core, identityId: readiness.identityId, destinations: destinations as readonly CflDestination[], isAuthorized: (request) => authorized(request, config.token), onFatal: (error) => { this.fail(error) } })
       createdFeed = feed
       await feed.start()
       if (this.#closing) throw new Error("Keet gateway is closing.")
@@ -141,17 +141,17 @@ export class KeetMcpGateway {
 
 interface CheckedConfig extends GatewayConfig { readonly host: "127.0.0.1" | "::1"; readonly port: number }
 async function validateConfig(config: GatewayConfig): Promise<CheckedConfig> {
-  for (const [name, value] of Object.entries({ runtimeDir: config.runtimeDir, identityDir: config.identityDir, workspaceRoot: config.workspaceRoot, stateDir: config.stateDir })) if (!path.isAbsolute(value)) throw new Error(`${name} must be an absolute path.`)
+  for (const [name, value] of Object.entries({ runtimeDir: config.runtimeDir, identityDir: config.identityDir, workspaceRoot: config.workspaceRoot, stateDir: config.stateDir, mediaDir: config.mediaDir })) if (!path.isAbsolute(value)) throw new Error(`${name} must be an absolute path.`)
   if (config.token.length < 32) throw new Error("KEET_MCP_TOKEN must be at least 32 characters.")
   if (!Number.isSafeInteger(config.eventRetention) || config.eventRetention < 1) throw new Error("KEET_CFL_EVENT_RETENTION must be a positive integer.")
   const match = /^(127\.0\.0\.1|::1):(\d{1,5})$/.exec(config.listen); if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535) throw new Error("KEET_MCP_LISTEN must be a loopback host and port.")
-  const runtime = await realpath(config.runtimeDir); const workspace = await realpath(config.workspaceRoot); await stat(path.join(runtime, "bare")); await stat(path.join(runtime, "core-worker.bundle")); assertSeparate([runtime, workspace, await existingOrAbsolute(config.identityDir), await existingOrAbsolute(config.stateDir)]); await mkdir(config.identityDir, { recursive: true, mode: 0o700 }); const identity = await realpath(config.identityDir); await mkdir(config.stateDir, { recursive: true, mode: 0o700 }); await chmod(config.stateDir, 0o700); const state = await realpath(config.stateDir)
-  assertSeparate([runtime, identity, workspace, state])
-  return { ...config, runtimeDir: runtime, identityDir: identity, workspaceRoot: workspace, stateDir: state, host: match[1] as "127.0.0.1" | "::1", port: Number(match[2]) }
+  const runtime = await realpath(config.runtimeDir); const workspace = await realpath(config.workspaceRoot); await stat(path.join(runtime, "bare")); await stat(path.join(runtime, "core-worker.bundle")); assertSeparate([runtime, workspace, await existingOrAbsolute(config.identityDir), await existingOrAbsolute(config.stateDir), await existingOrAbsolute(config.mediaDir)]); await mkdir(config.identityDir, { recursive: true, mode: 0o700 }); const identity = await realpath(config.identityDir); await mkdir(config.stateDir, { recursive: true, mode: 0o700 }); await chmod(config.stateDir, 0o700); const state = await realpath(config.stateDir); await mkdir(config.mediaDir, { recursive: true, mode: 0o700 }); await chmod(config.mediaDir, 0o700); const media = await realpath(config.mediaDir)
+  assertSeparate([runtime, identity, workspace, state, media])
+  return { ...config, runtimeDir: runtime, identityDir: identity, workspaceRoot: workspace, stateDir: state, mediaDir: media, host: match[1] as "127.0.0.1" | "::1", port: Number(match[2]) }
 }
 function authorized(request: import("node:http").IncomingMessage, token: string): boolean { const presented = request.headers.authorization; const expected = `Bearer ${token}`; return !!presented && presented.length === expected.length && timingSafeEqual(Buffer.from(presented), Buffer.from(expected)) }
 async function existingOrAbsolute(input: string): Promise<string> { try { return await realpath(input) } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return path.resolve(input); throw error } }
-function assertSeparate(locations: readonly string[]): void { for (const [index, left] of locations.entries()) for (const right of locations.slice(index + 1)) if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) throw new Error("runtime, identity, workspace, and state locations must not overlap.") }
+function assertSeparate(locations: readonly string[]): void { for (const [index, left] of locations.entries()) for (const right of locations.slice(index + 1)) if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) throw new Error("runtime, identity, workspace, state, and media locations must not overlap.") }
 async function prepareImage(root: string, input: string, signal: AbortSignal): Promise<PreparedKeetImage> {
   if (signal.aborted) throw new Error("cancelled")
   if (input.includes("\0") || /^[a-z][a-z\d+.-]*:/i.test(input) || input.includes("://")) throw new Error("path must be a workspace-contained image path.")

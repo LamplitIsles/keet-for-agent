@@ -2,7 +2,7 @@
 import { configurationFromEnvironment, KeetMcpGateway } from "./index.js"
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-  console.log("Usage: keet-mcpd\n\nRequired environment: KEET_MCP_RUNTIME_DIR, KEET_MCP_IDENTITY_DIR, KEET_MCP_WORKSPACE_ROOT, KEET_MCP_STATE_DIR, KEET_MCP_LISTEN, KEET_MCP_TOKEN\nOptional environment: KEET_CFL_EVENT_RETENTION (positive integer; default 10000)")
+  console.log("Usage: keet-mcpd\n\nRequired environment: KEET_MCP_RUNTIME_DIR, KEET_MCP_IDENTITY_DIR, KEET_MCP_WORKSPACE_ROOT, KEET_MCP_STATE_DIR, KEET_CFL_MEDIA_DIR, KEET_MCP_LISTEN, KEET_MCP_TOKEN\nKEET_CFL_MEDIA_DIR is a private daemon-owned directory shared only with CFL and must not overlap runtime, identity, workspace, or state.\nOptional environment: KEET_CFL_EVENT_RETENTION (positive integer; default 10000)")
 } else {
   const gateway = new KeetMcpGateway({ config: configurationFromEnvironment() })
   const stop = () => { void gateway.close().finally(() => process.exit(0)) }

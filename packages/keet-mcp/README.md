@@ -1,12 +1,13 @@
 # Keet MCP Gateway
 
-**`keet-mcpd` is one persistent, bearer-protected loopback gateway for five explicit Keet destination tools and CFL's incoming text-event feed.**
+**`keet-mcpd` is one persistent, bearer-protected loopback gateway for five explicit Keet destination tools and CFL's incoming event feed.**
 
 ```bash
 KEET_MCP_RUNTIME_DIR=/opt/keet/4.21.0-linux-x64 \
 KEET_MCP_IDENTITY_DIR=/var/lib/keet-mcp/identity \
 KEET_MCP_WORKSPACE_ROOT=/srv/keet-workspace \
 KEET_MCP_STATE_DIR=/var/lib/keet-mcp/state \
+KEET_CFL_MEDIA_DIR=/var/lib/keet-mcp/cfl-media \
 KEET_CFL_EVENT_RETENTION=10000 \
 KEET_MCP_LISTEN=127.0.0.1:8765 \
 KEET_MCP_TOKEN="replace-with-a-secret-of-at-least-32-characters" \
@@ -34,11 +35,12 @@ The Keet runtime is deliberately not part of the package. Prepare the operator-s
 | `KEET_MCP_IDENTITY_DIR` | Absolute writable identity-data directory, created owner-only when missing. |
 | `KEET_MCP_WORKSPACE_ROOT` | Absolute existing root from which image paths may be sent. |
 | `KEET_MCP_STATE_DIR` | Required absolute owner-only directory for the CFL event journal and its temporary replacement file. It is not a media directory. |
+| `KEET_CFL_MEDIA_DIR` | Required absolute owner-only directory for materialized inbound DM images. It is exclusively daemon-owned and shared locally with CFL under the same service account. |
 | `KEET_CFL_EVENT_RETENTION` | Optional positive number of retained CFL events; defaults to `10000`. |
 | `KEET_MCP_LISTEN` | Loopback-only `127.0.0.1:port` or `::1:port`. |
 | `KEET_MCP_TOKEN` | Bearer token at least 32 characters long. Never put it in a URL. |
 
-The runtime, identity, workspace, and state paths must not overlap. Configuration errors and Core ownership failures happen before a usable HTTP listener is exposed. A daemon has one immutable startup snapshot of eligible Default rooms, Broadcasts, and complete accepted DMs; restart it to discover later room changes.
+The runtime, identity, workspace, state, and media paths must not overlap. Configuration errors and Core ownership failures happen before a usable HTTP listener is exposed. A daemon has one immutable startup snapshot of eligible Default rooms, Broadcasts, and complete accepted DMs; restart it to discover later room changes.
 
 Each request to `/mcp`, including MCP `DELETE` session termination, requires the bearer token. The daemon retains at most 64 active MCP sessions; new session initialization receives `429` until an existing session is closed or terminated. This is a bounded local-service guard, not a substitute for operator authentication.
 
@@ -56,13 +58,17 @@ Core holds an exclusive kernel lock on the identity directory for its lifetime. 
 
 ## CFL event feed
 
-`/cfl` is a text-only WebSocket event feed for the CFL process; it is not an
+`/cfl` is a WebSocket event feed for the CFL process; it is not an
 MCP tool and it never selects an Agent, injects context, stores a read receipt,
 or sends a Keet reply. It observes new non-self text records in the immutable
-admitted destination snapshot. Image-only records are omitted. A message with
-text and an image preserves its text but never includes image bytes, image
-metadata, filesystem paths, Core-private identifiers, reactions, prompts, or
-acknowledgements.
+admitted destination snapshot. For a direct message only, an image-only record
+or captioned image record is published after every native image has been read
+and atomically materialized in `KEET_CFL_MEDIA_DIR`. Its `images` array is
+ordered and contains only `{ "filename", "mediaType", "name"? }`; `filename`
+is a generated relative basename, never a path or a Core identifier. CFL reads
+those files and attaches their bytes to its own Agent context—it is solely
+responsible for attachment, checkpoints, and reconciliation. Group and
+Broadcast records remain text-only, including captioned images.
 
 The WebSocket upgrade requires the same `Authorization: Bearer …` header as
 `/mcp`. Compression is disabled. The first and only client frame must be:
@@ -81,7 +87,13 @@ first sends `ready`, containing the nullable retained range and the immutable
 `message` whose monotonically increasing `sequence` is greater than the
 checkpoint, followed by live messages in the same order. Each message contains
 only its sequence, canonical Keet message id, source timestamp, destination,
-bounded sender label, text, and an optional canonical reply id.
+bounded sender label, text, and an optional canonical reply id. Eligible DM
+image messages additionally contain the bounded metadata above; image bytes,
+source paths, hashes, and native descriptors never enter the frame or journal.
+Referenced files remain available for the same retained-journal window. A
+successful journal compaction and startup recovery remove only unreferenced
+artifacts from the dedicated media directory, so CFL must consume media before
+its checkpoint falls outside that window.
 
 If a supplied checkpoint is older than the retained window, the gateway sends
 one `resync_required` frame with that window's range and closes the socket. CFL

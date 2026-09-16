@@ -1,9 +1,10 @@
-import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises"
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
 import type { IncomingMessage } from "node:http"
 import type { Duplex } from "node:stream"
 import path from "node:path"
 import { WebSocket, WebSocketServer, type RawData } from "ws"
-import type { KeetCore, KeetMessage, KeetMessageId, KeetSubscription } from "@lamplitisles/keet-integration-core"
+import type { KeetCore, KeetImageFile, KeetImageMediaType, KeetMessage, KeetMessageId, KeetSubscription } from "@lamplitisles/keet-integration-core"
 
 const MAX_TEXT = 16_000
 const MAX_NAME = 512
@@ -12,6 +13,11 @@ const MAX_PENDING_SOCKET_BYTES = 1024 * 1024
 const MAX_PERSISTENCE_QUEUE = 1024
 const MAX_CFL_CLIENTS = 64
 const HELLO_TIMEOUT_MS = 10_000
+const MAX_IMAGES = 16
+const MAX_IMAGE_BYTES = 16 * 1024 * 1024
+const MAX_IMAGE_BATCH_BYTES = 32 * 1024 * 1024
+const IMAGE_BATCH_TIMEOUT_MS = 60_000
+const IMAGE_TYPES = new Set<KeetImageMediaType>(["image/png", "image/jpeg", "image/webp", "image/gif"])
 
 export type CflDestinationKind = "group" | "broadcast" | "dm"
 export interface CflDestination {
@@ -29,10 +35,13 @@ interface CflMessageFrame {
   readonly destination: PublicDestination
   readonly senderLabel: string
   readonly text: string
+  readonly images?: readonly CflImage[]
   readonly replyTo?: KeetMessageId
 }
+interface CflImage { readonly filename: string; readonly mediaType: KeetImageMediaType; readonly name?: string }
 interface CflEventFeedOptions {
   readonly stateDir: string
+  readonly mediaDir: string
   readonly retention: number
   readonly core: KeetCore
   readonly identityId: string
@@ -44,6 +53,7 @@ interface CflEventFeedOptions {
 export class CflEventFeed {
   readonly #journalPath: string
   readonly #replacementPath: string
+  readonly #mediaAbort = new AbortController()
   readonly #webSockets = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MAX_CLIENT_FRAME_BYTES })
   readonly #destinations: readonly CflDestination[]
   readonly #publicDestinations: readonly PublicDestination[]
@@ -70,8 +80,13 @@ export class CflEventFeed {
     await chmod(this.options.stateDir, 0o700)
     const info = await stat(this.options.stateDir)
     if (!info.isDirectory()) throw new Error("KEET_MCP_STATE_DIR must be a directory.")
+    await mkdir(this.options.mediaDir, { recursive: true, mode: 0o700 })
+    await chmod(this.options.mediaDir, 0o700)
+    if (!(await stat(this.options.mediaDir)).isDirectory()) throw new Error("KEET_CFL_MEDIA_DIR must be a directory.")
     await rm(this.#replacementPath, { force: true })
     this.#events = await this.#readJournal()
+    await this.#verifyRecoveredMedia(this.#events)
+    await this.#cleanupMedia(this.#events)
     const last = this.#events.at(-1)
     if (last && last.sequence >= Number.MAX_SAFE_INTEGER) throw new Error("CFL event journal sequence is exhausted.")
     this.#nextSequence = (last?.sequence ?? 0) + 1
@@ -102,15 +117,22 @@ export class CflEventFeed {
     }
     this.#queuedPersistence += 1
     void this.#serialized(async () => {
+      let committed: CflMessageFrame | undefined
+      let appended = false
       try {
         if (this.#closed || this.#failure) return
-        const committed = { ...frame, sequence: this.#nextSequence }
+        committed = await this.#materialize(destination, message, { ...frame, sequence: this.#nextSequence })
+        if (!committed) return
         await this.#append(committed)
+        appended = true
         this.#nextSequence += 1
         this.#events = Object.freeze([...this.#events, committed])
         if (this.#events.length > this.options.retention) await this.#compact()
         for (const socket of this.#subscribers) this.#send(socket, committed)
       } catch (error) {
+        if (committed && !appended) {
+          try { await this.#cleanupMedia(this.#events) } catch (cleanupError) { this.#fail(asError(cleanupError, "CFL media cleanup failed.")); return }
+        }
         this.#fail(asError(error, "CFL event journal failed."))
       } finally {
         this.#queuedPersistence -= 1
@@ -139,6 +161,7 @@ export class CflEventFeed {
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    this.#mediaAbort.abort()
     await this.#serialized(async () => undefined)
     this.#subscribers.clear()
     for (const socket of this.#webSockets.clients) socket.terminate()
@@ -229,6 +252,7 @@ export class CflEventFeed {
     }
     await rename(this.#replacementPath, this.#journalPath)
     this.#events = Object.freeze(retained)
+    await this.#cleanupMedia(retained)
   }
 
   async #readJournal(): Promise<readonly CflMessageFrame[]> {
@@ -261,6 +285,61 @@ export class CflEventFeed {
     return Object.freeze(events)
   }
 
+  async #materialize(destination: CflDestination, message: KeetMessage, frame: CflMessageFrame): Promise<CflMessageFrame | undefined> {
+    if (destination.kind !== "dm" || !message.images?.length) return frame
+    if (message.images.length > MAX_IMAGES) throw new Error("CFL image batch exceeds the supported limit.")
+    const published: string[] = []
+    const temporary: string[] = []
+    const deadline = new AbortController()
+    const timeout = setTimeout(() => { deadline.abort() }, IMAGE_BATCH_TIMEOUT_MS)
+    const signal = AbortSignal.any([this.#mediaAbort.signal, deadline.signal])
+    try {
+      const images: CflImage[] = []
+      let total = 0
+      for (const image of message.images) {
+        if (this.#closed || signal.aborted) throw new Error("CFL media materialization cancelled.")
+        if (!validImage(image)) throw new Error("CFL image descriptor is invalid.")
+        const bytes = await this.options.core.readImage(destination.groupId, image, signal)
+        if (bytes.byteLength < 1 || bytes.byteLength > MAX_IMAGE_BYTES || detectMediaType(bytes) !== image.mediaType) throw new Error("CFL image is unsupported or invalid.")
+        total += bytes.byteLength
+        if (total > MAX_IMAGE_BATCH_BYTES) throw new Error("CFL image batch exceeds the supported limit.")
+        const suffix = extension(image.mediaType)
+        const filename = `${randomUUID()}.${suffix}`
+        const temporaryName = `.${filename}.tmp`
+        temporary.push(temporaryName)
+        const temporaryPath = path.join(this.options.mediaDir, temporaryName)
+        const finalPath = path.join(this.options.mediaDir, filename)
+        const handle = await open(temporaryPath, "wx", 0o600)
+        try { await handle.writeFile(bytes); await handle.sync() } finally { await handle.close() }
+        if (this.#closed || signal.aborted) throw new Error("CFL media materialization cancelled.")
+        await rename(temporaryPath, finalPath)
+        temporary.pop()
+        published.push(filename)
+        const name = boundedName(image.name, "")
+        images.push({ filename, mediaType: image.mediaType, ...(name ? { name } : {}) })
+      }
+      return { ...frame, images }
+    } catch (error) {
+      await Promise.all([...published, ...temporary].map(async (filename) => await rm(path.join(this.options.mediaDir, filename), { force: true })))
+      throw error
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
+  async #cleanupMedia(events: readonly CflMessageFrame[]): Promise<void> {
+    const referenced = new Set(events.flatMap((event) => event.images?.map((image) => image.filename) ?? []))
+    for (const entry of await readdir(this.options.mediaDir)) if (!referenced.has(entry)) await rm(path.join(this.options.mediaDir, entry), { recursive: true, force: true })
+  }
+
+  async #verifyRecoveredMedia(events: readonly CflMessageFrame[]): Promise<void> {
+    for (const image of events.flatMap((event) => event.images ?? [])) {
+      let info: Awaited<ReturnType<typeof lstat>>
+      try { info = await lstat(path.join(this.options.mediaDir, image.filename)) } catch { throw new Error("CFL event journal references unavailable media.") }
+      if (!info.isFile()) throw new Error("CFL event journal references unavailable media.")
+    }
+  }
+
   async #serialized<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.#serialTail
     let release!: () => void
@@ -271,7 +350,8 @@ export class CflEventFeed {
 }
 
 function eventFromMessage(destination: CflDestination, message: KeetMessage, sequence: number): CflMessageFrame | undefined {
-  if (!message.text?.trim() || !canonicalId(message.messageId) || !Number.isSafeInteger(sequence) || sequence < 1) return undefined
+  const hasImages = destination.kind === "dm" && !!message.images?.length
+  if ((!message.text?.trim() && !hasImages) || !canonicalId(message.messageId) || !Number.isSafeInteger(sequence) || sequence < 1) return undefined
   return {
     type: "message",
     sequence,
@@ -279,20 +359,21 @@ function eventFromMessage(destination: CflDestination, message: KeetMessage, seq
     timestamp: Number.isSafeInteger(message.timestamp) ? message.timestamp : 0,
     destination: { groupName: boundedName(destination.groupName, "Managed Destination"), kind: destination.kind },
     senderLabel: boundedName(message.senderLabel, "Unknown sender"),
-    text: Array.from(message.text).slice(0, MAX_TEXT).join(""),
+    text: Array.from(message.text ?? "").slice(0, MAX_TEXT).join(""),
     ...(canonicalId(message.replyTo) ? { replyTo: canonicalId(message.replyTo)! } : {}),
   }
 }
 
 function journalEvent(value: unknown): CflMessageFrame | undefined {
-  if (!isRecord(value) || !onlyKeys(value, ["type", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo"]) || !hasKeys(value, ["type", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text"])) return undefined
+  if (!isRecord(value) || !onlyKeys(value, ["type", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "images"]) || !hasKeys(value, ["type", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text"])) return undefined
   const { sequence, messageId, timestamp, destination, senderLabel, text } = value
-  if (value.type !== "message" || !positiveSequence(sequence) || !strictId(messageId) || typeof timestamp !== "number" || !Number.isSafeInteger(timestamp) || !strictDestination(destination) || !boundedExactString(senderLabel) || !boundedExactText(text)) return undefined
+  const images = value.images === undefined ? undefined : strictImages(value.images)
+  if (value.type !== "message" || !positiveSequence(sequence) || !strictId(messageId) || typeof timestamp !== "number" || !Number.isSafeInteger(timestamp) || !strictDestination(destination) || !boundedExactString(senderLabel) || !boundedExactText(text, !!images) || (value.images !== undefined && (!images || destination.kind !== "dm"))) return undefined
   const replyTo = value.replyTo === undefined ? undefined : strictId(value.replyTo)
   if (value.replyTo !== undefined && !replyTo) return undefined
   return {
     type: "message", sequence, messageId: strictId(messageId)!, timestamp,
-    destination: { groupName: destination.groupName, kind: destination.kind }, senderLabel, text, ...(replyTo ? { replyTo } : {}),
+    destination: { groupName: destination.groupName, kind: destination.kind }, senderLabel, text, ...(images ? { images } : {}), ...(replyTo ? { replyTo } : {}),
   }
 }
 
@@ -315,7 +396,12 @@ function boundedName(value: unknown, fallback: string): string { const name = ty
 function strictId(value: unknown): KeetMessageId | undefined { return isRecord(value) && onlyKeys(value, ["deviceId", "seq"]) && hasKeys(value, ["deviceId", "seq"]) ? canonicalId(value) : undefined }
 function strictDestination(value: unknown): value is PublicDestination { return isRecord(value) && onlyKeys(value, ["groupName", "kind"]) && hasKeys(value, ["groupName", "kind"]) && typeof value.groupName === "string" && boundedExactString(value.groupName) && destinationKind(value.kind) }
 function boundedExactString(value: unknown): value is string { return typeof value === "string" && value.length > 0 && boundedName(value, "") === value }
-function boundedExactText(value: unknown): value is string { return typeof value === "string" && value.trim().length > 0 && Array.from(value).length <= MAX_TEXT }
+function boundedExactText(value: unknown, allowEmpty = false): value is string { return typeof value === "string" && (allowEmpty || value.trim().length > 0) && Array.from(value).length <= MAX_TEXT }
+function strictImages(value: unknown): readonly CflImage[] | undefined { if (!Array.isArray(value) || value.length < 1 || value.length > MAX_IMAGES) return undefined; const names = new Set<string>(); const images: CflImage[] = []; for (const image of value) { const mediaType = isRecord(image) && IMAGE_TYPES.has(image.mediaType as KeetImageMediaType) ? image.mediaType as KeetImageMediaType : undefined; if (!isRecord(image) || !onlyKeys(image, ["filename", "mediaType", "name"]) || !hasKeys(image, ["filename", "mediaType"]) || typeof image.filename !== "string" || !safeFilename(image.filename) || !mediaType || !image.filename.endsWith(`.${extension(mediaType)}`) || (image.name !== undefined && !boundedExactString(image.name)) || names.has(image.filename)) return undefined; names.add(image.filename); images.push({ filename: image.filename, mediaType, ...(image.name ? { name: image.name } : {}) }) } return Object.freeze(images) }
+function safeFilename(value: string): boolean { return /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.(?:png|jpg|webp|gif)$/.test(value) }
+function validImage(image: KeetImageFile): boolean { return IMAGE_TYPES.has(image.mediaType) && (image.bytes === undefined || Number.isSafeInteger(image.bytes) && image.bytes > 0 && image.bytes <= MAX_IMAGE_BYTES) }
+function extension(mediaType: KeetImageMediaType): string { return mediaType === "image/jpeg" ? "jpg" : mediaType.slice(6) }
+function detectMediaType(bytes: Uint8Array): KeetImageMediaType | undefined { if (bytes.byteLength >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return "image/png"; if (bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg"; if (bytes.byteLength >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61) return "image/gif"; if (bytes.byteLength >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp"; return undefined }
 function onlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean { return Object.keys(value).every((key) => allowed.includes(key)) }
 function hasKeys(value: Record<string, unknown>, required: readonly string[]): boolean { return required.every((key) => Object.hasOwn(value, key)) }
 function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value) }
