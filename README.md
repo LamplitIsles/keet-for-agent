@@ -15,11 +15,14 @@ decide existing Impri actions. Action producers retain execution ownership.
 For conventional MCP clients, [@lamplitisles/keet-mcp](packages/keet-mcp/README.md)
 is a separate persistent loopback daemon with bearer authentication. It exposes
 the same five explicit destination operations without installing DSH and a
-separate authenticated `/cfl` WebSocket feed of durable incoming events
-for CFL. Non-self direct-message images are materialized into the configured
-private `KEET_CFL_MEDIA_DIR` before their event is durable; CFL reads those
-local files and decides whether to attach them. The gateway neither injects
-these events into an Agent nor keeps CFL's checkpoint; CFL owns both decisions.
+separate authenticated `/cfl` WebSocket feed of durable incoming events for
+CFL. The feed marks DSH-equivalent Group and DM trigger facts without exposing
+Keet identity state; CFL decides what to buffer and inject. Non-self
+direct-message images are materialized into the configured private
+`KEET_CFL_MEDIA_DIR` before their event is durable. That directory is KFA's
+durable media library, so CFL reads its local files directly rather than copying
+them, and journal retention never deletes committed images. The gateway neither
+injects events into an Agent nor keeps CFL's checkpoint; CFL owns both decisions.
 It is its own Core owner and cannot share an identity directory with the DSH
 bridge or Impri adapter.
 

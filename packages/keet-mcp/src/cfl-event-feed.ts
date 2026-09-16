@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises"
+import { chmod, lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import type { IncomingMessage } from "node:http"
 import type { Duplex } from "node:stream"
@@ -20,6 +20,7 @@ const IMAGE_BATCH_TIMEOUT_MS = 60_000
 const IMAGE_TYPES = new Set<KeetImageMediaType>(["image/png", "image/jpeg", "image/webp", "image/gif"])
 
 export type CflDestinationKind = "group" | "broadcast" | "dm"
+type CflTrigger = "mention" | "label" | "reply" | "dm"
 export interface CflDestination {
   readonly groupId: string
   readonly groupName: string
@@ -37,6 +38,7 @@ interface CflMessageFrame {
   readonly text: string
   readonly images?: readonly CflImage[]
   readonly replyTo?: KeetMessageId
+  readonly trigger?: CflTrigger
 }
 interface CflImage { readonly filename: string; readonly mediaType: KeetImageMediaType; readonly name?: string }
 interface CflEventFeedOptions {
@@ -45,6 +47,7 @@ interface CflEventFeedOptions {
   readonly retention: number
   readonly core: KeetCore
   readonly identityId: string
+  readonly identityLabel?: string
   readonly destinations: readonly CflDestination[]
   readonly isAuthorized: (request: IncomingMessage) => boolean
   readonly onFatal: (error: Error) => void
@@ -59,6 +62,7 @@ export class CflEventFeed {
   readonly #publicDestinations: readonly PublicDestination[]
   readonly #subscriptions: KeetSubscription[] = []
   readonly #subscribers = new Set<WebSocket>()
+  readonly #ownMessageIds = new Map<string, Set<string>>()
   #events: readonly CflMessageFrame[] = []
   #nextSequence = 1
   #serialTail = Promise.resolve()
@@ -86,11 +90,11 @@ export class CflEventFeed {
     await rm(this.#replacementPath, { force: true })
     this.#events = await this.#readJournal()
     await this.#verifyRecoveredMedia(this.#events)
-    await this.#cleanupMedia(this.#events)
     const last = this.#events.at(-1)
     if (last && last.sequence >= Number.MAX_SAFE_INTEGER) throw new Error("CFL event journal sequence is exhausted.")
     this.#nextSequence = (last?.sequence ?? 0) + 1
     if (this.#events.length > this.options.retention) await this.#compact()
+    await this.#primeOwnMessageIds()
     this.#started = true
     try {
       for (const destination of this.#destinations) {
@@ -108,7 +112,11 @@ export class CflEventFeed {
   }
 
   observe(destination: CflDestination, message: KeetMessage): void {
-    if (!this.#started || this.#closed || this.#failure || message.senderId === this.options.identityId) return
+    if (!this.#started || this.#closed || this.#failure) return
+    if (message.senderId === this.options.identityId) {
+      this.rememberOwnMessage(destination, message.messageId)
+      return
+    }
     const frame = eventFromMessage(destination, message, this.#nextSequence + this.#queuedPersistence)
     if (!frame) return
     if (this.#queuedPersistence >= MAX_PERSISTENCE_QUEUE) {
@@ -118,26 +126,30 @@ export class CflEventFeed {
     this.#queuedPersistence += 1
     void this.#serialized(async () => {
       let committed: CflMessageFrame | undefined
-      let appended = false
       try {
         if (this.#closed || this.#failure) return
-        committed = await this.#materialize(destination, message, { ...frame, sequence: this.#nextSequence })
+        const trigger = await this.#trigger(destination, message)
+        committed = await this.#materialize(destination, message, { ...frame, sequence: this.#nextSequence, ...(trigger ? { trigger } : {}) })
         if (!committed) return
         await this.#append(committed)
-        appended = true
         this.#nextSequence += 1
         this.#events = Object.freeze([...this.#events, committed])
         if (this.#events.length > this.options.retention) await this.#compact()
         for (const socket of this.#subscribers) this.#send(socket, committed)
       } catch (error) {
-        if (committed && !appended) {
-          try { await this.#cleanupMedia(this.#events) } catch (cleanupError) { this.#fail(asError(cleanupError, "CFL media cleanup failed.")); return }
-        }
         this.#fail(asError(error, "CFL event journal failed."))
       } finally {
         this.#queuedPersistence -= 1
       }
     })
+  }
+
+  rememberOwnMessage(destination: CflDestination, messageId: KeetMessageId | undefined): void {
+    const id = canonicalId(messageId)
+    if (destination.kind !== "group" || !id) return
+    let known = this.#ownMessageIds.get(destination.groupId)
+    if (!known) { known = new Set(); this.#ownMessageIds.set(destination.groupId, known) }
+    known.add(messageIdKey(id))
   }
 
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -252,7 +264,31 @@ export class CflEventFeed {
     }
     await rename(this.#replacementPath, this.#journalPath)
     this.#events = Object.freeze(retained)
-    await this.#cleanupMedia(retained)
+  }
+
+  async #primeOwnMessageIds(): Promise<void> {
+    for (const destination of this.#destinations) {
+      if (destination.kind !== "group") continue
+      await this.#refreshOwnMessageIds(destination)
+    }
+  }
+
+  async #trigger(destination: CflDestination, message: KeetMessage): Promise<CflTrigger | undefined> {
+    if (destination.kind === "dm") return "dm"
+    if (destination.kind !== "group") return undefined
+    if (Array.isArray(message.mentions) && message.mentions.some((memberId) => memberId === this.options.identityId)) return "mention"
+    const label = this.options.identityLabel?.trim()
+    if (label && message.text.includes(label)) return "label"
+    const replyTo = canonicalId(message.replyTo)
+    if (replyTo && !this.#ownMessageIds.get(destination.groupId)?.has(messageIdKey(replyTo))) await this.#refreshOwnMessageIds(destination)
+    return replyTo && this.#ownMessageIds.get(destination.groupId)?.has(messageIdKey(replyTo)) ? "reply" : undefined
+  }
+
+  async #refreshOwnMessageIds(destination: CflDestination): Promise<void> {
+    try {
+      const messages = await this.options.core.readRecentMessages(destination.groupId, 50)
+      for (const message of messages) if (message.senderId === this.options.identityId) this.rememberOwnMessage(destination, message.messageId)
+    } catch { /* Reply anchors are best-effort until a watcher or send observes one. */ }
   }
 
   async #readJournal(): Promise<readonly CflMessageFrame[]> {
@@ -327,11 +363,6 @@ export class CflEventFeed {
     }
   }
 
-  async #cleanupMedia(events: readonly CflMessageFrame[]): Promise<void> {
-    const referenced = new Set(events.flatMap((event) => event.images?.map((image) => image.filename) ?? []))
-    for (const entry of await readdir(this.options.mediaDir)) if (!referenced.has(entry)) await rm(path.join(this.options.mediaDir, entry), { recursive: true, force: true })
-  }
-
   async #verifyRecoveredMedia(events: readonly CflMessageFrame[]): Promise<void> {
     for (const image of events.flatMap((event) => event.images ?? [])) {
       let info: Awaited<ReturnType<typeof lstat>>
@@ -365,15 +396,16 @@ function eventFromMessage(destination: CflDestination, message: KeetMessage, seq
 }
 
 function journalEvent(value: unknown): CflMessageFrame | undefined {
-  if (!isRecord(value) || !onlyKeys(value, ["type", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "images"]) || !hasKeys(value, ["type", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text"])) return undefined
+  if (!isRecord(value) || !onlyKeys(value, ["type", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "images", "trigger"]) || !hasKeys(value, ["type", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text"])) return undefined
   const { sequence, messageId, timestamp, destination, senderLabel, text } = value
   const images = value.images === undefined ? undefined : strictImages(value.images)
   if (value.type !== "message" || !positiveSequence(sequence) || !strictId(messageId) || typeof timestamp !== "number" || !Number.isSafeInteger(timestamp) || !strictDestination(destination) || !boundedExactString(senderLabel) || !boundedExactText(text, !!images) || (value.images !== undefined && (!images || destination.kind !== "dm"))) return undefined
   const replyTo = value.replyTo === undefined ? undefined : strictId(value.replyTo)
-  if (value.replyTo !== undefined && !replyTo) return undefined
+  const trigger = value.trigger === undefined ? undefined : strictTrigger(value.trigger)
+  if ((value.replyTo !== undefined && !replyTo) || (value.trigger !== undefined && !trigger) || (destination.kind === "dm" && trigger !== "dm") || (destination.kind !== "dm" && trigger === "dm") || (trigger && trigger !== "dm" && destination.kind !== "group")) return undefined
   return {
     type: "message", sequence, messageId: strictId(messageId)!, timestamp,
-    destination: { groupName: destination.groupName, kind: destination.kind }, senderLabel, text, ...(images ? { images } : {}), ...(replyTo ? { replyTo } : {}),
+    destination: { groupName: destination.groupName, kind: destination.kind }, senderLabel, text, ...(images ? { images } : {}), ...(replyTo ? { replyTo } : {}), ...(trigger ? { trigger } : {}),
   }
 }
 
@@ -394,6 +426,7 @@ function retainedRange(events: readonly CflMessageFrame[]): SequenceRange | null
 function canonicalId(value: unknown): KeetMessageId | undefined { return isRecord(value) && typeof value.deviceId === "string" && value.deviceId.trim().length > 0 && Array.from(value.deviceId).length <= MAX_NAME && nonNegativeSequence(value.seq) ? { deviceId: value.deviceId, seq: value.seq } : undefined }
 function boundedName(value: unknown, fallback: string): string { const name = typeof value === "string" ? Array.from(value).slice(0, MAX_NAME).join("").replace(/[\r\n\u2028\u2029]+/g, " ").trim() : ""; return name || fallback }
 function strictId(value: unknown): KeetMessageId | undefined { return isRecord(value) && onlyKeys(value, ["deviceId", "seq"]) && hasKeys(value, ["deviceId", "seq"]) ? canonicalId(value) : undefined }
+function strictTrigger(value: unknown): CflTrigger | undefined { return value === "mention" || value === "label" || value === "reply" || value === "dm" ? value : undefined }
 function strictDestination(value: unknown): value is PublicDestination { return isRecord(value) && onlyKeys(value, ["groupName", "kind"]) && hasKeys(value, ["groupName", "kind"]) && typeof value.groupName === "string" && boundedExactString(value.groupName) && destinationKind(value.kind) }
 function boundedExactString(value: unknown): value is string { return typeof value === "string" && value.length > 0 && boundedName(value, "") === value }
 function boundedExactText(value: unknown, allowEmpty = false): value is string { return typeof value === "string" && (allowEmpty || value.trim().length > 0) && Array.from(value).length <= MAX_TEXT }
@@ -408,4 +441,5 @@ function isRecord(value: unknown): value is Record<string, unknown> { return !!v
 function destinationKind(value: unknown): value is CflDestinationKind { return value === "group" || value === "broadcast" || value === "dm" }
 function nonNegativeSequence(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 }
 function positiveSequence(value: unknown): value is number { return nonNegativeSequence(value) && value > 0 }
+function messageIdKey(value: KeetMessageId): string { return `${value.deviceId}:${value.seq}` }
 function asError(value: unknown, fallback: string): Error { return value instanceof Error ? value : new Error(fallback) }

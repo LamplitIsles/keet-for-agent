@@ -35,7 +35,7 @@ The Keet runtime is deliberately not part of the package. Prepare the operator-s
 | `KEET_MCP_IDENTITY_DIR` | Absolute writable identity-data directory, created owner-only when missing. |
 | `KEET_MCP_WORKSPACE_ROOT` | Absolute existing root from which image paths may be sent. |
 | `KEET_MCP_STATE_DIR` | Required absolute owner-only directory for the CFL event journal and its temporary replacement file. It is not a media directory. |
-| `KEET_CFL_MEDIA_DIR` | Required absolute owner-only directory for materialized inbound DM images. It is exclusively daemon-owned and shared locally with CFL under the same service account. |
+| `KEET_CFL_MEDIA_DIR` | Required absolute owner-only durable media library for materialized inbound DM images. It is written only by the daemon and read locally by CFL under the same service account. |
 | `KEET_CFL_EVENT_RETENTION` | Optional positive number of retained CFL events; defaults to `10000`. |
 | `KEET_MCP_LISTEN` | Loopback-only `127.0.0.1:port` or `::1:port`. |
 | `KEET_MCP_TOKEN` | Bearer token at least 32 characters long. Never put it in a URL. |
@@ -58,17 +58,25 @@ Core holds an exclusive kernel lock on the identity directory for its lifetime. 
 
 ## CFL event feed
 
-`/cfl` is a WebSocket event feed for the CFL process; it is not an
-MCP tool and it never selects an Agent, injects context, stores a read receipt,
-or sends a Keet reply. It observes new non-self text records in the immutable
-admitted destination snapshot. For a direct message only, an image-only record
-or captioned image record is published after every native image has been read
-and atomically materialized in `KEET_CFL_MEDIA_DIR`. Its `images` array is
-ordered and contains only `{ "filename", "mediaType", "name"? }`; `filename`
-is a generated relative basename, never a path or a Core identifier. CFL reads
-those files and attaches their bytes to its own Agent context—it is solely
-responsible for attachment, checkpoints, and reconciliation. Group and
-Broadcast records remain text-only, including captioned images.
+`/cfl` is a WebSocket event feed for the CFL process; it is not an MCP tool and
+it never selects an Agent, injects context, stores a read receipt, or sends a
+Keet reply. It observes new non-self records in the immutable admitted
+destination snapshot. Every frame retains its bounded source text and may carry
+the gateway-owned `trigger` classification: `mention`, `label`, `reply`, or
+`dm`. A Group value means, respectively, a verified native mention of the
+Integration Identity, a literal occurrence of its current display label, or a
+reply to a known Integration-authored Keet message. `dm` marks every external
+DM. Unqualified Group and every Broadcast frame omit `trigger`. The gateway
+does not decide what CFL buffers or admits from these facts.
+
+For a direct message only, an image-only record or captioned image record is
+published after every native image has been read and atomically materialized in
+`KEET_CFL_MEDIA_DIR`. Its ordered `images` array contains only
+`{ "filename", "mediaType", "name"? }`; `filename` is a generated relative
+basename, never a path or a Core identifier. CFL resolves that basename below
+its configured KFA media-library root and may use the resulting file directly
+as its native local-image input. Group and Broadcast records remain text-only,
+including captioned images.
 
 The WebSocket upgrade requires the same `Authorization: Bearer …` header as
 `/mcp`. Compression is disabled. The first and only client frame must be:
@@ -87,13 +95,14 @@ first sends `ready`, containing the nullable retained range and the immutable
 `message` whose monotonically increasing `sequence` is greater than the
 checkpoint, followed by live messages in the same order. Each message contains
 only its sequence, canonical Keet message id, source timestamp, destination,
-bounded sender label, text, and an optional canonical reply id. Eligible DM
-image messages additionally contain the bounded metadata above; image bytes,
-source paths, hashes, and native descriptors never enter the frame or journal.
-Referenced files remain available for the same retained-journal window. A
-successful journal compaction and startup recovery remove only unreferenced
-artifacts from the dedicated media directory, so CFL must consume media before
-its checkpoint falls outside that window.
+bounded sender label, text, optional canonical reply id, and optional trigger
+classification. Eligible DM image messages additionally contain the bounded
+metadata above; image bytes, source paths, hashes, and native descriptors never
+enter the frame or journal. The event journal is bounded by
+`KEET_CFL_EVENT_RETENTION`; media is not. Journal compaction, gateway restart,
+and event-append failure recovery never delete a published media file.
+Operators must provision and back up this append-only media library and must
+not manually delete a file while CFL history still references it.
 
 If a supplied checkpoint is older than the retained window, the gateway sends
 one `resync_required` frame with that window's range and closes the socket. CFL

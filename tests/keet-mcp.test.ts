@@ -30,7 +30,7 @@ function fakeCore() {
     } as KeetSubscription
   })
   const core = {
-    status: vi.fn(async () => ({ state: "ready" as const, appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: true, identityId: "bot" })),
+    status: vi.fn(async () => ({ state: "ready" as const, appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: true, identityId: "bot", displayName: "Bot" })),
     listPendingDmRequests: vi.fn(async () => []),
     listGroups: vi.fn(async () => [
       { groupId: "group", roomType: "Default" as const, title: "Group" },
@@ -113,7 +113,7 @@ describe("Keet MCP gateway", () => {
       expect(json(await client.callTool({ name: "keet_list_groups", arguments: {} }))).toEqual({ groups: [{ groupName: "Group", kind: "group" }, { groupName: "Peer DM", kind: "dm" }, { groupName: "News", kind: "broadcast" }] })
       expect(json(await client.callTool({ name: "keet_list_members", arguments: { groupName: "Group" } }))).toEqual({ members: [{ displayName: "Alice" }] })
       expect(json(await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Peer DM", last: 1 } }))).toEqual({ messages: [{ senderLabel: "Alice", timestamp: 1, text: "hello" }] })
-      expect(json(await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Group", last: 50 } }))).toMatchObject({ messages: [{ text: "hello" }] }); expect(fake.readState).toBe(2)
+      expect(json(await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Group", last: 50 } }))).toMatchObject({ messages: [{ text: "hello" }] }); expect(fake.readState).toBe(3)
       expect((await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Group", last: 51 } })).isError).toBe(true)
       const unknown = await client.callTool({ name: "keet_list_members", arguments: { groupName: "Unknown" } }); expect(unknown.isError).toBe(true); expect(JSON.stringify(json(unknown))).toContain("not an allowed")
       expect(gateway.sessionCount).toBe(1); const terminated = await fetch(gateway.address!, { method: "DELETE", headers: { authorization: `Bearer ${token}`, "mcp-session-id": transport.sessionId! } }); expect(terminated.status).toBe(200); await new Promise((resolve) => setTimeout(resolve)); expect(gateway.sessionCount).toBe(0); await client.close()
@@ -136,20 +136,59 @@ describe("Keet MCP gateway", () => {
       await expect(firstEvent).resolves.toEqual(expected); await expect(secondEvent).resolves.toEqual(expected)
       const firstDm = nextCflFrame(first); const secondDm = nextCflFrame(second)
       fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer-device", seq: 6 }, senderId: "peer", senderLabel: "Peer", timestamp: 124, text: "direct message" })
-      const dmExpected = { type: "message", sequence: 2, messageId: { deviceId: "peer-device", seq: 6 }, timestamp: 124, destination: { groupName: "Peer DM", kind: "dm" }, senderLabel: "Peer", text: "direct message" }
-      await expect(firstDm).resolves.toEqual(dmExpected); await expect(secondDm).resolves.toEqual(dmExpected); expect(fake.readState).toBe(0)
+      const dmExpected = { type: "message", sequence: 2, messageId: { deviceId: "peer-device", seq: 6 }, timestamp: 124, destination: { groupName: "Peer DM", kind: "dm" }, senderLabel: "Peer", text: "direct message", trigger: "dm" }
+      await expect(firstDm).resolves.toEqual(dmExpected); await expect(secondDm).resolves.toEqual(dmExpected); expect(fake.readState).toBe(2)
       const firstCaption = nextCflFrame(first); const secondCaption = nextCflFrame(second)
       fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "news-device", seq: 7 }, senderId: "author", senderLabel: "Author", timestamp: 125, text: "caption only", images: [{ file: {}, mediaType: "image/png" }] })
       const captionExpected = { type: "message", sequence: 3, messageId: { deviceId: "news-device", seq: 7 }, timestamp: 125, destination: { groupName: "News", kind: "broadcast" }, senderLabel: "Author", text: "caption only" }
       await expect(firstCaption).resolves.toEqual(captionExpected); await expect(secondCaption).resolves.toEqual(captionExpected)
       let unexpected = false; first.once("message", () => { unexpected = true })
       fake.emit("group", { groupId: "group", messageId: { deviceId: "bot-device", seq: 6 }, senderId: "bot", senderLabel: "Bot", timestamp: 124, text: "self" })
-      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice-device", seq: 7 }, senderId: "alice", senderLabel: "Alice", timestamp: 125, text: "", images: [] })
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice-device", seq: 7 }, senderId: "alice", senderLabel: "Alice", timestamp: 125, text: "", images: [{ file: {}, mediaType: "image/png" }] })
       await pause(); expect(unexpected).toBe(false)
       const malformed = await connectCfl(cflAddress(gateway), token); const malformedClosed = socketClosed(malformed); malformed.send("[]"); await expect(malformedClosed).resolves.toBe(1008)
       const postHello = await connectCfl(cflAddress(gateway), token); const postHelloReady = nextCflFrame(postHello); postHello.send(JSON.stringify({ type: "hello" })); await postHelloReady; const postHelloClosed = socketClosed(postHello); postHello.send(JSON.stringify({ type: "hello" })); await expect(postHelloClosed).resolves.toBe(1008)
       await Promise.all([closeCfl(first), closeCfl(second)])
       expect(fake.watchMessages).toHaveBeenCalledTimes(3)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("marks only DSH-equivalent Group and DM triggers without exposing identity state", async () => {
+    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
+    try {
+      const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
+      const next = async (message: KeetMessage) => { fake.emit("group", message); return await frames.next() as Record<string, unknown> }
+      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "ordinary" })).resolves.toMatchObject({ text: "ordinary" })
+      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "Bot and @Bot", mentions: ["bot"] })).resolves.toMatchObject({ trigger: "mention" })
+      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 3 }, senderId: "alice", senderLabel: "Alice", timestamp: 3, text: "Bot please answer", replyTo: { deviceId: "bot", seq: 9 } })).resolves.toMatchObject({ trigger: "label" })
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "bot", seq: 9 }, senderId: "bot", senderLabel: "Bot", timestamp: 4, text: "self" })
+      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 4 }, senderId: "alice", senderLabel: "Alice", timestamp: 5, text: "Bot, following up", replyTo: { deviceId: "bot", seq: 9 } })).resolves.toMatchObject({ trigger: "label" })
+      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 5 }, senderId: "alice", senderLabel: "Alice", timestamp: 6, text: "following up", replyTo: { deviceId: "bot", seq: 9 } })).resolves.toMatchObject({ trigger: "reply" })
+      const mcp = new Client({ name: "test", version: "1" }); await mcp.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
+      expect(json(await mcp.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "sent through MCP" } }))).toEqual({ sent: true })
+      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 6 }, senderId: "alice", senderLabel: "Alice", timestamp: 7, text: "MCP reply", replyTo: { deviceId: "bot", seq: 2 } })).resolves.toMatchObject({ trigger: "reply" })
+      fake.core.readRecentMessages = vi.fn(async () => [{ groupId: "group", messageId: { deviceId: "bot", seq: 11 }, senderId: "bot", senderLabel: "Bot", timestamp: 7, text: "recovered anchor" }])
+      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 7 }, senderId: "alice", senderLabel: "Alice", timestamp: 8, text: "recovered reply", replyTo: { deviceId: "bot", seq: 11 } })).resolves.toMatchObject({ trigger: "reply" })
+      const broadcast = nextCflFrame(client); fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "news", seq: 1 }, senderId: "author", senderLabel: "Author", timestamp: 7, text: "broadcast" }); await expect(broadcast).resolves.toMatchObject({ destination: { kind: "broadcast" } }); await mcp.close(); await closeCfl(client)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("primes Group reply anchors on startup and restart", async () => {
+    const first = fakeCore(); const anchor = { groupId: "group", messageId: { deviceId: "bot", seq: 9 }, senderId: "bot", senderLabel: "Bot", timestamp: 1, text: "self" }
+    const firstReadRecentMessages = vi.fn(async () => [anchor]); first.core.readRecentMessages = firstReadRecentMessages
+    const { gateway, root, token } = await start(first.core)
+    try {
+      const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
+      const event = frames.next(); first.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "reply", replyTo: anchor.messageId })
+      await expect(event).resolves.toMatchObject({ trigger: "reply" }); expect(firstReadRecentMessages).toHaveBeenCalledTimes(1)
+      await closeCfl(client); await gateway.close()
+
+      const second = fakeCore(); const secondReadRecentMessages = vi.fn(async () => [anchor]); second.core.readRecentMessages = secondReadRecentMessages
+      const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => second.core }); gateways.push(restarted); await restarted.start()
+      const replay = await connectCfl(cflAddress(restarted), token); const replayFrames = cflFrameStream(replay); replay.send(JSON.stringify({ type: "hello", afterSequence: 1 })); await replayFrames.next()
+      const eventAfterRestart = replayFrames.next(); second.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 3, text: "reply again", replyTo: anchor.messageId })
+      await expect(eventAfterRestart).resolves.toMatchObject({ trigger: "reply" }); expect(secondReadRecentMessages).toHaveBeenCalledTimes(1)
+      await closeCfl(replay); await restarted.close()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
@@ -205,18 +244,18 @@ describe("Keet MCP gateway", () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
-  it("removes only unreferenced media on compaction and startup recovery", async () => {
+  it("retains committed and orphaned media across journal compaction and restart", async () => {
     const fake = fakeCore(); const { gateway, root, token } = await start(fake.core, { eventRetention: 1 })
     try {
       const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
       fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "", images: [{ file: {}, mediaType: "image/png" }] })
       await frames.next(); const first = (await readdir(join(root, "media"))).find((name) => name.endsWith(".png"))!; expect(first).toBeTruthy()
       fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "later" })
-      await frames.next(); await expect(readFile(join(root, "media", first))).rejects.toMatchObject({ code: "ENOENT" })
+      await frames.next(); await expect(readFile(join(root, "media", first))).resolves.toEqual(Buffer.from(PNG_1X1))
       await writeFile(join(root, "media", ".stale.tmp"), "partial"); await writeFile(join(root, "media", "orphan.bin"), "orphan")
       await closeCfl(client); await gateway.close()
       const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); gateways.push(restarted); await restarted.start()
-      await expect(readdir(join(root, "media"))).resolves.toEqual([])
+      await expect(readdir(join(root, "media"))).resolves.toEqual([".stale.tmp", first, "orphan.bin"].sort())
       await restarted.close()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
@@ -264,7 +303,7 @@ describe("Keet MCP gateway", () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
-  it("recovers a partial terminal record but fails closed for complete journal corruption", async () => {
+  it("recovers a partial terminal record but fails closed for invalid complete journal records", async () => {
     const firstCore = fakeCore(); const { gateway, root, token } = await start(firstCore.core)
     try {
       const live = await connectCfl(cflAddress(gateway), token); const ready = nextCflFrame(live); live.send(JSON.stringify({ type: "hello" })); await ready
@@ -279,6 +318,8 @@ describe("Keet MCP gateway", () => {
       const privateRecord = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(privateRecord.start()).rejects.toThrow("invalid sequence")
       await writeFile(join(root, "state", "cfl-events.ndjson"), `${JSON.stringify({ type: "message", sequence: 1, messageId: { deviceId: "news", seq: 1 }, timestamp: 1, destination: { groupName: "", kind: "broadcast" }, senderLabel: "", text: "published" })}\n`)
       const emptyRecord = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(emptyRecord.start()).rejects.toThrow("invalid sequence")
+      await writeFile(join(root, "state", "cfl-events.ndjson"), `${JSON.stringify({ type: "message", sequence: 1, messageId: { deviceId: "peer", seq: 1 }, timestamp: 1, destination: { groupName: "Peer DM", kind: "dm" }, senderLabel: "Peer", text: "triggerless direct message" })}\n`)
+      const triggerlessDm = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(triggerlessDm.start()).rejects.toThrow("invalid sequence")
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
@@ -295,7 +336,7 @@ describe("Keet MCP gateway", () => {
     try {
       const endpoint = cflAddress(gateway); const client = await connectCfl(endpoint, token); const ready = nextCflFrame(client); client.send(JSON.stringify({ type: "hello" })); await ready; let messages = 0; client.on("message", () => { messages += 1 })
       await mkdir(join(root, "state", "cfl-events.ndjson")); fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "journal failure", images: [{ file: {}, mediaType: "image/png" }] })
-      await pause(100); expect(messages).toBe(0); expect(fake.closed).toBe(true); expect(gateway.address).toBeUndefined(); await expect(readdir(join(root, "media"))).resolves.toEqual([]); await expect(fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).rejects.toThrow()
+      await pause(100); expect(messages).toBe(0); expect(fake.closed).toBe(true); expect(gateway.address).toBeUndefined(); await expect(readdir(join(root, "media"))).resolves.toEqual([expect.stringMatching(/^[0-9a-f-]+\.png$/)]); await expect(fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).rejects.toThrow()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 

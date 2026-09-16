@@ -56,8 +56,11 @@ contributor/release workflow, including the scoped release-audit rule. The
 public and package READMEs also document the DM-only inbound image lifecycle,
 outbound image sends, the explicit workspace-contained send tool, DSH durable attachment admission, text-only
 recent reads, and the fact that official-client image interoperability remains
-unverified. `CONTEXT.md` defines Inbound DM Image, Inbound DM Image Failure,
-and Explicit Destination Image Send. Inbound reaction normalization preserves literal
+unverified. The MCP Gateway's `/cfl` feed carries a gateway-owned
+DSH-equivalent trigger classification but never injects context; its bounded
+event journal is separate from the durable KFA-owned inbound-DM media library.
+`CONTEXT.md` defines Inbound DM Image, Inbound DM Image Failure, Explicit
+Destination Image Send, CFL Event Feed, and CFL Media Library. Inbound reaction normalization preserves literal
 Unicode and wraps bounded Keet wire shortcodes (for example `heart` as
 `:heart:`); outbound reaction validation remains Unicode-only. No ADR is needed;
 the inbound DM-only and text-history boundaries are specified and reversible.

@@ -95,6 +95,19 @@ that conversation explicit-destination Keet tools backed by the Integration
 Core.
 _Avoid_: MCP server, Keet client implementation
 
+**CFL Event Feed**:
+The bearer-protected loopback stream through which the MCP Gateway exposes new
+external Managed Destination records to CFL. It labels the DSH-equivalent
+Group/DM trigger fact but does not select an Agent, buffer context, inject a
+turn, or own CFL's receipt.
+_Avoid_: MCP tool, Agent queue, automatic reply
+
+**CFL Media Library**:
+The KFA-owned durable collection of materialized Inbound DM Images referenced
+by safe generated names in CFL Event Feed records. Its lifetime is independent
+of the bounded event journal; CFL may read a validated file directly.
+_Avoid_: event replay cache, CFL workspace attachment directory, arbitrary path
+
 **Active Conversation**:
 The existing DSH conversation selected from the configured workspace when the DSH
 Keet Bridge starts. The bridge keeps that conversation for its lifetime and
