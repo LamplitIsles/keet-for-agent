@@ -12,6 +12,12 @@ The workspace also includes a private [Impri Keet approval channel](packages/imp
 It uses a separate bot identity and a private DM with ✅ / ❌ reactions to
 decide existing Impri actions. Action producers retain execution ownership.
 
+For conventional MCP clients, [@lamplitisles/keet-mcp](packages/keet-mcp/README.md)
+is a separate persistent loopback daemon with bearer authentication. It exposes
+the same five explicit destination operations without installing DSH, but it is
+its own Core owner and cannot share an identity directory with the DSH bridge
+or Impri adapter.
+
 ## Install locally
 
 This repository is a pnpm workspace targeting Node.js. Build and inspect the package, then add
@@ -42,7 +48,9 @@ dsh plugin --profile web add .local/lamplitisles-dsh-keet-0.1.0.tgz
 
 `pnpm pack-smoke` performs this operation in a fresh temporary DSH home,
 activates the real DSH Loader, and checks the Host, client, patch, CSS,
-readiness, and settings registrations. It does not contact Keet.
+readiness, and settings registrations. It also separately packs the MCP
+gateway, verifies its distributed contents and `keet-mcpd --help` executable,
+and rejects private material. Neither smoke contacts Keet.
 
 ## Prepare the private runtime
 

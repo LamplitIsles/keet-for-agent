@@ -2,7 +2,7 @@
 
 Read `HANDOFF.md` before changing code. Implementation lives in the pnpm
 workspace packages under `packages/`: `@lamplitisles/keet-integration-core` is
-private and `@lamplitisles/dsh-keet` is the public adapter package. Keep
+private, while `@lamplitisles/dsh-keet` and `@lamplitisles/keet-mcp` are public adapter packages. Keep
 `.scratch/` wholly ignored; it contains local plans, tickets, deferred notes,
 and archived research only.
 
@@ -32,10 +32,10 @@ pnpm build
 pnpm pack-smoke
 ```
 
-`pnpm pack-smoke` packs the local npm-shaped artifact and activates it
-through the real DSH Loader in a disposable DSH home. It is the v1 local/link
-or tarball operator path. There is no publication, registry, or release
-workflow, and nothing may be pushed from this task.
+`pnpm pack-smoke` retains the DSH local artifact smoke through the real Loader
+in a disposable DSH home and adds a separate packed-gateway executable/content
+smoke. These are local/link or tarball operator paths. There is no publication,
+registry, or release workflow, and nothing may be pushed from this task.
 
 The local web profile links directly to `packages/dsh-keet`. To deploy that
 linked checkout, run `pnpm run deploy`; it builds first and restarts

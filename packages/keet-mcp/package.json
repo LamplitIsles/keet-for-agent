@@ -1,0 +1,34 @@
+{
+  "name": "@lamplitisles/keet-mcp",
+  "version": "0.1.0",
+  "description": "Persistent loopback MCP gateway for Keet",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "keet-mcpd": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "fs-native-extensions": "1.5.1",
+    "sharp": "0.33.5",
+    "tiny-buffer-rpc": "2.4.0",
+    "zod": "4.5.4"
+  }
+}
