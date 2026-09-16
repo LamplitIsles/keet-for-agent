@@ -34,7 +34,7 @@ const rpc = new TinyBufferRPC((message) => {
 })
 
 rpc.register(0, { request: any, response: any, onrequest: () => true })
-rpc.register(1, { request: any, response: any, onrequest: () => ({ modules: { "keet-core": "4.21.5" }, abi: { production: 35 } }) })
+rpc.register(1, { request: any, response: any, onrequest: () => ({ modules: { "keet-core": "4.22.20" }, abi: { production: 35 } }) })
 rpc.register(6, { request: any, response: any, onrequest: async () => {
   if (dataPath.includes("identity-stall")) {
     await writeFile(path.join(dataPath, "identity-read-started"), "ready")
@@ -118,7 +118,9 @@ rpc.register(184, {
     })
   },
 })
-rpc.register(225, { request: any, response: any, onrequest: () => ({}) })
+rpc.register(219, { request: any, response: any, onrequest: () => ({}) })
+rpc.register(221, { request: any, response: any, onrequest: () => ({}) })
+rpc.register(226, { request: any, response: any, onrequest: () => ({}) })
 
 let incoming = Buffer.alloc(0)
 ipc.on("data", (chunk) => {

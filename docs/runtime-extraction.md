@@ -9,12 +9,12 @@ The admitted compatibility tuple is:
 
 | Component | Required value |
 | --- | --- |
-| Keet desktop release | `4.21.0` |
-| `@holepunchto/keet-core` | `4.21.5` |
+| Keet desktop release | `4.22.0` |
+| `@holepunchto/keet-core` | `4.22.20` |
 | Keet ABI | `35` |
 | Platform | Linux x86-64, glibc 2.34 or newer |
 | Verified environment | Debian 12 with Node.js 22 |
-| Official archive SHA-256 | `3737014d81be8536338ebfd38e301e912f5a328c2d5c1e28f978875b8b434cc7` |
+| Official archive SHA-256 | `36808af4f31ff65f7a766fbd5ead0cab5255a61c737941e8c166cece6d4ac6a9` |
 
 The Integration Core fails closed when the tuple, platform, executable,
 bundle, or native closure does not match. The numeric RPC map is private to
@@ -31,8 +31,8 @@ extraction:
 ```sh
 set -eu
 
-KEET_VERSION=4.21.0
-KEET_ARCHIVE_SHA256=3737014d81be8536338ebfd38e301e912f5a328c2d5c1e28f978875b8b434cc7
+KEET_VERSION=4.22.0
+KEET_ARCHIVE_SHA256=36808af4f31ff65f7a766fbd5ead0cab5255a61c737941e8c166cece6d4ac6a9
 KEET_PREPARE_DIR="$(mktemp -d)"
 : "${DSH_HOME:?Set DSH_HOME to the home used by the target DSH profile}"
 KEET_RUNTIME_DIR="$DSH_HOME/runtimes/keet/$KEET_VERSION-linux-x64"

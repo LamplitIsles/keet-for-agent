@@ -199,9 +199,9 @@ Initial snapshots, self-authored/group/historical images, and
 
 ## Compatibility and safety
 
-Only Linux x86-64 with Keet 4.21.0, `@holepunchto/keet-core` 4.21.5, and ABI
+Only Linux x86-64 with Keet 4.22.0, `@holepunchto/keet-core` 4.22.20, and ABI
 35 is admitted. Runtime files are operator-supplied, read-only assets at
-`$DSH_HOME/runtimes/keet/4.21.0-linux-x64`. Identity data is persistent
+`$DSH_HOME/runtimes/keet/4.22.0-linux-x64`. Identity data is persistent
 writable state under `<workspace>/.dsh/dsh-keet/identity`. Core owns that
 directory through the persistent mode-0600 `.keet-sidecar.lock` file, held
 open for the sidecar lifetime with Holepunch's nonblocking kernel lock. A
@@ -215,7 +215,7 @@ redacted.
 The pinned worker exposes username RPCs 195–202. This implementation uses
 `checkUsername` (202), `registerUsername` (198) or `updateUsername` (199), then
 polls `lookupUsername` (195) until the configured 60-second deadline. Extracted
-4.21.0 worker evidence shows availability is boolean, both mutations delegate
+4.22.0 worker evidence shows availability is boolean, both mutations delegate
 to `userRegistry.update(name)` and return a submission boolean, and lookup
 returns `null` or an encoded user containing `memberId` and `username`. Core
 therefore accepts only exact booleans and an exact converged lookup; malformed

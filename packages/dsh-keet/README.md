@@ -33,7 +33,7 @@ safe send failure with no retry.
 Failure text is bounded and does not include invitations or worker-private
 records.
 The private official runtime is discovered at
-`$DSH_HOME/runtimes/keet/4.21.0-linux-x64`, while identity data is initialized
+`$DSH_HOME/runtimes/keet/4.22.0-linux-x64`, while identity data is initialized
 under the selected workspace at `.dsh/dsh-keet/identity`. Profile and searchable
 username changes remain available through `dsh-keet-setup`; room invitations and
 DM requests are handled by the running settings card and are never Agent tools

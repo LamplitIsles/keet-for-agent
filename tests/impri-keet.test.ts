@@ -42,7 +42,7 @@ function fakeCore() {
   const core = {
     status: vi.fn(async () => {
       if (closed) throw new Error("closed")
-      return { state: "ready" as const, identityId, appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false }
+      return { state: "ready" as const, identityId, appVersion: "4.22.0", coreVersion: "4.22.20", abi: 35, swarming: false }
     }),
     listGroups: vi.fn(async () => [{ groupId: dmId, roomType: "DirectMessage" as const, dmMemberId: "any-peer", title: "Private DM" }]),
     listPendingDmRequests: vi.fn(async (): Promise<{ memberId: string; displayName?: string }[]> => []),
@@ -274,7 +274,7 @@ describe("Keet approval channel", () => {
     await expect(f.bridge.tick(signal())).rejects.toThrow("complete private DM")
     f.core.listPendingDmRequests.mockResolvedValueOnce([{ memberId: "any-peer" }])
     await expect(f.bridge.tick(signal())).rejects.toThrow("not accepted")
-    f.core.status.mockResolvedValueOnce({ state: "ready", identityId: "replacement", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false })
+    f.core.status.mockResolvedValueOnce({ state: "ready", identityId: "replacement", appVersion: "4.22.0", coreVersion: "4.22.20", abi: 35, swarming: false })
     await expect(f.bridge.tick(signal())).rejects.toThrow("identity changed")
     expect(f.messages).toHaveLength(0)
     expect(f.inbox.decide).not.toHaveBeenCalled()

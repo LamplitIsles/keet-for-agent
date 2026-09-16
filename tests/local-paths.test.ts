@@ -6,7 +6,7 @@ import { ensureKeetIdentityDataDir, resolveKeetRuntimeDir } from "../packages/ds
 
 describe("Keet local path convention", () => {
   it("resolves the private runtime beneath DSH_HOME", () => {
-    expect(resolveKeetRuntimeDir({ DSH_HOME: "/dsh-home" })).toBe("/dsh-home/runtimes/keet/4.21.0-linux-x64")
+    expect(resolveKeetRuntimeDir({ DSH_HOME: "/dsh-home" })).toBe("/dsh-home/runtimes/keet/4.22.0-linux-x64")
     expect(() => resolveKeetRuntimeDir({})).toThrow("DSH_HOME")
   })
 

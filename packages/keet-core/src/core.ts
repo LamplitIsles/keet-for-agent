@@ -1276,7 +1276,7 @@ function validateVoidResult(value: unknown, operation: string): void {
 }
 
 function validateReactionResult(value: unknown): void {
-  // Pinned Keet 4.21.5 API v1 `_addReaction` delegates to room.dispatch(),
+  // Pinned Keet 4.22.20 API v1 `_addReaction` delegates to room.dispatch(),
   // whose successful dispatch result is exactly `{ key, length }`. RPC 156 is
   // registered with tiny-buffer-rpc/any, so failed/no-op dispatches arrive as
   // undefined or null and must not be treated as confirmed mutations.

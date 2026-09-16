@@ -37,7 +37,7 @@ function fakeCore(options: { onWatch?: (handler: (message: KeetMessage) => void,
     get closed() { return closed },
     status: async () => {
       if (options.fail) throw new Error("private provider output")
-      return { state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: options.missingIdentity ? "" : "bot", ...(options.missingDisplayName ? {} : { displayName: "Keet Bot" }) }
+      return { state: "ready", appVersion: "4.22.0", coreVersion: "4.22.20", abi: 35, swarming: false, identityId: options.missingIdentity ? "" : "bot", ...(options.missingDisplayName ? {} : { displayName: "Keet Bot" }) }
     },
     listGroups: async () => options.groups ?? [{ groupId: settings.groupId, roomType: "Default", title: options.duplicateNames ? " Shared\nName " : "Test group" }, ...(options.dm ? [{ groupId: dmGroupId, roomType: "DirectMessage" as const, title: options.duplicateNames ? "Shared Name" : "Managed DM", dmMemberId: "peer" }] : [])],
     resolveDm: async () => ({ groupId: dmGroupId, roomType: "DirectMessage", dmMemberId: "peer", title: options.duplicateNames ? "Shared\nName" : "Managed DM" }),
@@ -1927,7 +1927,7 @@ describe("Keet bridge", () => {
     const started = bridge.start()
     await coreFactoryStarted
     await bridge.stop()
-    expect(receivedOptions).toMatchObject({ executablePath: "/runtime/bare", bundlePath: "/runtime/core-worker.bundle", dataPath: "/identity", appVersion: "4.21.0", expectedCoreVersion: "4.21.5", expectedAbi: 35 })
+    expect(receivedOptions).toMatchObject({ executablePath: "/runtime/bare", bundlePath: "/runtime/core-worker.bundle", dataPath: "/identity", appVersion: "4.22.0", expectedCoreVersion: "4.22.20", expectedAbi: 35 })
     expect(bridge.readiness.state).toBe("disabled")
     expect(bridge.core).toBeUndefined()
 

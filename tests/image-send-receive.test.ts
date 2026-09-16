@@ -53,7 +53,7 @@ function makeImageCore(options: {
   const groups = options.groups ?? [{ groupId: "dm-room", roomType: "DirectMessage", title: "Peer DM", dmMemberId: "peer" }]
   const sent: Array<{ groupId: string; text: string }> = []
   const core = {
-    status: async () => ({ state: "ready" as const, appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: "bot", displayName: "Bot" }),
+    status: async () => ({ state: "ready" as const, appVersion: "4.22.0", coreVersion: "4.22.20", abi: 35, swarming: false, identityId: "bot", displayName: "Bot" }),
     listGroups: async () => groups,
     listMembers: async () => [],
     readRecentMessages: async (): Promise<KeetMessage[]> => [],

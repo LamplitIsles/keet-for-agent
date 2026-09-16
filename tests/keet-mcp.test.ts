@@ -30,7 +30,7 @@ function fakeCore() {
     } as KeetSubscription
   })
   const core = {
-    status: vi.fn(async () => ({ state: "ready" as const, appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: true, identityId: "bot", displayName: "Bot" })),
+    status: vi.fn(async () => ({ state: "ready" as const, appVersion: "4.22.0", coreVersion: "4.22.20", abi: 35, swarming: true, identityId: "bot", displayName: "Bot" })),
     listPendingDmRequests: vi.fn(async () => []),
     listGroups: vi.fn(async () => [
       { groupId: "group", roomType: "Default" as const, title: "Group" },

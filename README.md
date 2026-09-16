@@ -63,10 +63,10 @@ again.
 ## Prepare the private runtime
 
 Follow [the operator runtime guide](docs/runtime-extraction.md) to obtain the
-official release and prepare `$DSH_HOME/runtimes/keet/4.21.0-linux-x64`,
+official release and prepare `$DSH_HOME/runtimes/keet/4.22.0-linux-x64`,
 containing `bare`, `core-worker.bundle`, and the manifest-selected Linux x64
 native closure.
-Only Keet 4.21.0, `@holepunchto/keet-core` 4.21.5, ABI 35, and Linux x86-64
+Only Keet 4.22.0, `@holepunchto/keet-core` 4.22.20, ABI 35, and Linux x86-64
 are admitted. The Integration Core fails closed for other tuples.
 
 Keep runtime files outside the repository. The plugin creates the writable

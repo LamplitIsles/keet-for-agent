@@ -1,7 +1,7 @@
 /** The compatibility tuple admitted by this package. */
 export const KEET_COMPATIBILITY = Object.freeze({
-  appVersion: "4.21.0",
-  coreVersion: "4.21.5",
+  appVersion: "4.22.0",
+  coreVersion: "4.22.20",
   abi: 35,
   platform: "linux",
   arch: "x64",

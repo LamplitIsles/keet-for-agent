@@ -25,14 +25,14 @@ export const RPC_METHODS = {
   updateUsername: 199,
   checkUsername: 202,
   /** Native Managed DM read position; the worker enforces room/policy gates. */
-  setUnreadAnchor: 218,
+  setUnreadAnchor: 219,
   /** Native Managed DM typing timestamp refresh; the worker enforces room gates. */
-  updateTypingIndicator: 220,
+  updateTypingIndicator: 221,
   /** Native aggregate reaction mutation; the worker enforces room/message policy. */
   addReaction: 156,
   /** Current aggregate state for one exact message, including our own reactions. */
   getReactions: 159,
-  boot: 225,
+  boot: 226,
   /** Working pinned file lifecycle; addFile/addFileBlob are missing stubs. */
   saveFileBlob: 171,
   sendFile: 174,

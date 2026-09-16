@@ -6,8 +6,8 @@ private, while `@lamplitisles/dsh-keet` and `@lamplitisles/keet-mcp` are public 
 `.scratch/` wholly ignored; it contains local plans, tickets, deferred notes,
 and archived research only.
 
-Use pnpm 11.22.0 with Node.js and the pinned Keet 4.21.0 /
-`@holepunchto/keet-core` 4.21.5 / ABI 35 tuple on Linux x86-64. The official
+Use pnpm 11.22.0 with Node.js and the pinned Keet 4.22.0 /
+`@holepunchto/keet-core` 4.22.20 / ABI 35 tuple on Linux x86-64. The official
 runtime is operator-supplied and must remain outside package artifacts. The
 Core admits no other tuple and owns one identity-data directory exclusively per
 process. Tests use only fake workers, fixtures, and fresh test-owned temporary

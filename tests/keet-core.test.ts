@@ -161,8 +161,8 @@ function makeMockCore(options: MockOptions = {}): MockCore {
   }
   const status: KeetSidecarStatus = {
     state: "ready",
-    appVersion: "4.21.0",
-    coreVersion: "4.21.5",
+    appVersion: "4.22.0",
+    coreVersion: "4.22.20",
     abi: 35,
     swarming: false,
     ...options.status,
@@ -326,7 +326,7 @@ describe("typed Keet Integration Core unit behavior", () => {
 
   it("maps the public readiness contract and fails closed when identity data is absent", async () => {
     const ready = makeMockCore()
-    await expect(ready.core.status()).resolves.toEqual({ state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: "identity-self", displayName: "Fixture Bot" })
+    await expect(ready.core.status()).resolves.toEqual({ state: "ready", appVersion: "4.22.0", coreVersion: "4.22.20", abi: 35, swarming: false, identityId: "identity-self", displayName: "Fixture Bot" })
     const missing = makeMockCore({ identity: {} })
     await expect(missing.core.status()).rejects.toThrow("identity is unavailable")
   })
@@ -828,7 +828,7 @@ describe("Keet Integration Core fd-3 process contracts", () => {
     const logs: KeetSidecarLog[] = []
     const core = await KeetIntegrationCore.start(processOptions(data, (entry) => logs.push(entry)))
     try {
-      await expect(core.status()).resolves.toMatchObject({ state: "ready", appVersion: "4.21.0", coreVersion: "4.21.5", abi: 35, swarming: false, identityId: "identity-self", displayName: "Fixture Bot" })
+      await expect(core.status()).resolves.toMatchObject({ state: "ready", appVersion: "4.22.0", coreVersion: "4.22.20", abi: 35, swarming: false, identityId: "identity-self", displayName: "Fixture Bot" })
       await expect(core.listGroups()).resolves.toEqual([{ groupId: "group-test", title: "Test group", description: "fixture", roomType: "Default" }])
       await expect(core.listMembers("group-test")).resolves.toEqual([{ memberId: "identity-self", displayName: "Fixture Bot" }, { memberId: "member-alice", displayName: "Alice" }])
       await expect(core.readRecentMessages("group-test", 50)).resolves.toEqual(expect.arrayContaining([
@@ -838,6 +838,8 @@ describe("Keet Integration Core fd-3 process contracts", () => {
       await expect(core.readRecentMessages("group-test", 0)).rejects.toThrow("1 to 50")
       await expect(core.addReaction("group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽")).resolves.toBeUndefined()
       await expect(core.readReactions("group-test", { deviceId: "device-alice", seq: 1 })).resolves.toEqual([])
+      await expect(core.setUnreadAnchor("group-test", 3)).resolves.toBeUndefined()
+      await expect(core.updateTypingIndicator("group-test")).resolves.toBeUndefined()
       const receivedImage = await core.readImage("group-test", {
         file: { pointer: { externalBlob: { id: "fixture-image", blob: Buffer.from("streamed-image") } } },
         mediaType: "image/png",

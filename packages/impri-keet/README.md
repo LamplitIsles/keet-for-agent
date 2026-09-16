@@ -33,7 +33,7 @@ It needs no DSH conversation or plugin installation.
 ## Configure and onboard
 
 Prepare the [operator-supplied runtime](../../docs/runtime-extraction.md).
-The supported tuple is Keet 4.21.0 / Official Core 4.21.5 / ABI 35 on Linux
+The supported tuple is Keet 4.22.0 / Official Core 4.22.20 / ABI 35 on Linux
 x86-64. The runtime can be shared with DSH; the bot's identity must be separate.
 
 Create a private JSON config:
@@ -43,7 +43,7 @@ Create a private JSON config:
   "baseUrl": "http://localhost:8484",
   "inboxUrl": "http://localhost:5173",
   "apiKey": "im_replace_with_a_project_actions_key",
-  "runtimeDir": "/absolute/path/to/4.21.0-linux-x64",
+  "runtimeDir": "/absolute/path/to/4.22.0-linux-x64",
   "dataDir": "/absolute/path/to/impri-keet-data"
 }
 ```

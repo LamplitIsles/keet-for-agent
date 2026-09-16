@@ -3,7 +3,7 @@
 **`keet-mcpd` is one persistent, bearer-protected loopback gateway for five explicit Keet destination tools and CFL's incoming event feed.**
 
 ```bash
-KEET_MCP_RUNTIME_DIR=/opt/keet/4.21.0-linux-x64 \
+KEET_MCP_RUNTIME_DIR=/opt/keet/4.22.0-linux-x64 \
 KEET_MCP_IDENTITY_DIR=/var/lib/keet-mcp/identity \
 KEET_MCP_WORKSPACE_ROOT=/srv/keet-workspace \
 KEET_MCP_STATE_DIR=/var/lib/keet-mcp/state \
