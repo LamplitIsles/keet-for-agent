@@ -31,8 +31,9 @@ Impri Keet Approval Channel -> Integration Core (separate identity)
   (including optional reaction decoration on `keet_send_message`), setup
   executable, settings schema/client, and protocol rendering.
 - `tests/` uses fake workers and test-owned temporary paths for ordinary gates.
-- `scripts/pack-smoke.ts` verifies the actual packed tarball through the
-  installed DSH Loader and a disposable DSH home.
+- `scripts/mcp-pack-smoke.ts` verifies the packed MCP gateway's executable,
+  distributed contents, direct dependency, and notices without starting a
+  daemon. DSH artifact smoke is intentionally deferred.
 - `docs/runtime-extraction.md` is the operator guide for the private runtime.
 
 Core test boundary: Integration Core normalization, policy, orchestration,

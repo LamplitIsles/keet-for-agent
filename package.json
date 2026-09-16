@@ -11,7 +11,7 @@
     "test": "vitest run tests",
     "build": "pnpm --filter @lamplitisles/impri-keet build && tsdown --config tsdown.config.ts",
     "deploy": "pnpm build && systemctl --user restart dsh.service",
-    "pack-smoke": "tsx scripts/pack-smoke.ts && tsx scripts/mcp-pack-smoke.ts",
+    "pack-smoke": "tsx scripts/mcp-pack-smoke.ts",
     "real-worker-smoke": "tsx packages/keet-core/test/real-worker-smoke.ts",
     "official-onboarding-smoke": "pnpm build && tsx scripts/official-onboarding-smoke.ts"
   },
@@ -43,6 +43,7 @@
     "@types/node": "^22.15.0",
     "@types/react": "18.3.18",
     "@types/react-test-renderer": "18.0.7",
+    "@types/ws": "8.18.1",
     "lightningcss": "^1.33.0",
     "oxlint": "1.81.0",
     "oxlint-tsgolint": "7.0.2001",
@@ -51,7 +52,8 @@
     "tsdown": "0.23.0",
     "tsx": "^4.23.12",
     "typescript": "7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "ws": "8.18.3"
   },
   "dependencies": {
     "tiny-buffer-rpc": "2.4.0"

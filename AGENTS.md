@@ -32,10 +32,11 @@ pnpm build
 pnpm pack-smoke
 ```
 
-`pnpm pack-smoke` retains the DSH local artifact smoke through the real Loader
-in a disposable DSH home and adds a separate packed-gateway executable/content
-smoke. These are local/link or tarball operator paths. There is no publication,
-registry, or release workflow, and nothing may be pushed from this task.
+`pnpm pack-smoke` packs the MCP gateway and checks its distributed executable,
+content, dependency, and notice contract without starting Keet or DSH. DSH
+artifact smoke is intentionally deferred until its operator path is supported
+again. There is no publication, registry, or release workflow, and nothing may
+be pushed from this task.
 
 The local web profile links directly to `packages/dsh-keet`. To deploy that
 linked checkout, run `pnpm run deploy`; it builds first and restarts

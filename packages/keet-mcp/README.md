@@ -1,17 +1,19 @@
 # Keet MCP Gateway
 
-**`keet-mcpd` is one persistent, bearer-protected loopback MCP endpoint for the five explicit Keet destination tools.**
+**`keet-mcpd` is one persistent, bearer-protected loopback gateway for five explicit Keet destination tools and CFL's incoming text-event feed.**
 
 ```bash
 KEET_MCP_RUNTIME_DIR=/opt/keet/4.21.0-linux-x64 \
 KEET_MCP_IDENTITY_DIR=/var/lib/keet-mcp/identity \
 KEET_MCP_WORKSPACE_ROOT=/srv/keet-workspace \
+KEET_MCP_STATE_DIR=/var/lib/keet-mcp/state \
+KEET_CFL_EVENT_RETENTION=10000 \
 KEET_MCP_LISTEN=127.0.0.1:8765 \
 KEET_MCP_TOKEN="replace-with-a-secret-of-at-least-32-characters" \
 keet-mcpd
 ```
 
-Use `http://127.0.0.1:8765/mcp` with the token as an HTTP `Authorization: Bearer …` header. There is no unauthenticated health or control route.
+Use `http://127.0.0.1:8765/mcp` with the token as an HTTP `Authorization: Bearer …` header. CFL uses the same bearer token to connect to `ws://127.0.0.1:8765/cfl`. There is no unauthenticated health or control route.
 
 ## Install
 
@@ -31,10 +33,12 @@ The Keet runtime is deliberately not part of the package. Prepare the operator-s
 | `KEET_MCP_RUNTIME_DIR` | Absolute runtime directory containing `bare` and `core-worker.bundle`. |
 | `KEET_MCP_IDENTITY_DIR` | Absolute writable identity-data directory, created owner-only when missing. |
 | `KEET_MCP_WORKSPACE_ROOT` | Absolute existing root from which image paths may be sent. |
+| `KEET_MCP_STATE_DIR` | Required absolute owner-only directory for the CFL event journal and its temporary replacement file. It is not a media directory. |
+| `KEET_CFL_EVENT_RETENTION` | Optional positive number of retained CFL events; defaults to `10000`. |
 | `KEET_MCP_LISTEN` | Loopback-only `127.0.0.1:port` or `::1:port`. |
 | `KEET_MCP_TOKEN` | Bearer token at least 32 characters long. Never put it in a URL. |
 
-The runtime, identity, and workspace paths must not overlap. Configuration errors and Core ownership failures happen before a usable HTTP listener is exposed. A daemon has one immutable startup snapshot of eligible Default rooms, Broadcasts, and complete accepted DMs; restart it to discover later room changes.
+The runtime, identity, workspace, and state paths must not overlap. Configuration errors and Core ownership failures happen before a usable HTTP listener is exposed. A daemon has one immutable startup snapshot of eligible Default rooms, Broadcasts, and complete accepted DMs; restart it to discover later room changes.
 
 Each request to `/mcp`, including MCP `DELETE` session termination, requires the bearer token. The daemon retains at most 64 active MCP sessions; new session initialization receives `429` until an existing session is closed or terminated. This is a bounded local-service guard, not a substitute for operator authentication.
 
@@ -50,7 +54,45 @@ Core holds an exclusive kernel lock on the identity directory for its lifetime. 
 | `keet_send_message` | Sends non-empty text; regular groups support canonical replies and unique exact-name native mentions. |
 | `keet_send_image` | Sends a workspace-contained PNG, JPEG, WebP, or GIF, then an optional caption. Caption failure after image success is a no-retry partial delivery. |
 
-There are no subscriptions, incoming-message delivery, room onboarding, reactions, profiles, usernames, or stdio transport in this release. The daemon serializes sends per destination. Core remains the authority for current native posting permissions.
+## CFL event feed
+
+`/cfl` is a text-only WebSocket event feed for the CFL process; it is not an
+MCP tool and it never selects an Agent, injects context, stores a read receipt,
+or sends a Keet reply. It observes new non-self text records in the immutable
+admitted destination snapshot. Image-only records are omitted. A message with
+text and an image preserves its text but never includes image bytes, image
+metadata, filesystem paths, Core-private identifiers, reactions, prompts, or
+acknowledgements.
+
+The WebSocket upgrade requires the same `Authorization: Bearer …` header as
+`/mcp`. Compression is disabled. The first and only client frame must be:
+
+```json
+{"type":"hello","afterSequence":42}
+```
+
+The feed admits at most 64 active WebSocket clients and requires this `hello`
+within 10 seconds of connection; an idle or malformed client is closed without
+affecting another consumer.
+
+`afterSequence` is optional and is a CFL-owned durable checkpoint. The gateway
+first sends `ready`, containing the nullable retained range and the immutable
+`{ "groupName", "kind" }` destination snapshot. It then sends each retained
+`message` whose monotonically increasing `sequence` is greater than the
+checkpoint, followed by live messages in the same order. Each message contains
+only its sequence, canonical Keet message id, source timestamp, destination,
+bounded sender label, text, and an optional canonical reply id.
+
+If a supplied checkpoint is older than the retained window, the gateway sends
+one `resync_required` frame with that window's range and closes the socket. CFL
+must reconcile explicitly (for example with `keet_read_recent_messages`),
+deduplicate replayed events, persist its next checkpoint, and decide whether or
+how to inject the data into a Codex turn. Delivery is at least once across
+reconnects; the journal is a bounded replay buffer, not a per-CFL queue.
+
+There are no room-onboarding, reaction, profile, username, or stdio surfaces in
+this release. The daemon serializes sends per destination. Core remains the
+authority for current native posting permissions.
 
 ## Verification
 
@@ -61,7 +103,10 @@ pnpm build
 pnpm pack-smoke
 ```
 
-`pnpm pack-smoke` retains the DSH Loader artifact smoke and separately packs the gateway, checks machine-consumed contents, and runs its `--help` executable surface. It does not contact Keet. Official-runtime interoperability is not established by these checks.
+`pnpm pack-smoke` packs the gateway, checks its machine-consumed contents,
+direct WebSocket dependency, notices, and `--help` executable surface. It does
+not contact Keet or start DSH. Official-runtime interoperability is not
+established by these checks.
 
 ## License
 

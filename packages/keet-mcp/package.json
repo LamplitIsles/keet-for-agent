@@ -29,6 +29,7 @@
     "fs-native-extensions": "1.5.1",
     "sharp": "0.33.5",
     "tiny-buffer-rpc": "2.4.0",
+    "ws": "8.18.3",
     "zod": "4.5.4"
   }
 }

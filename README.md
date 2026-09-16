@@ -14,9 +14,11 @@ decide existing Impri actions. Action producers retain execution ownership.
 
 For conventional MCP clients, [@lamplitisles/keet-mcp](packages/keet-mcp/README.md)
 is a separate persistent loopback daemon with bearer authentication. It exposes
-the same five explicit destination operations without installing DSH, but it is
-its own Core owner and cannot share an identity directory with the DSH bridge
-or Impri adapter.
+the same five explicit destination operations without installing DSH and a
+separate authenticated `/cfl` WebSocket feed of durable incoming text events
+for CFL. The gateway neither injects these events into an Agent nor keeps
+CFL's checkpoint; CFL owns both decisions. It is its own Core owner and cannot
+share an identity directory with the DSH bridge or Impri adapter.
 
 ## Install locally
 
@@ -46,11 +48,11 @@ npm pack ./packages/dsh-keet --pack-destination .local
 dsh plugin --profile web add .local/lamplitisles-dsh-keet-0.1.0.tgz
 ```
 
-`pnpm pack-smoke` performs this operation in a fresh temporary DSH home,
-activates the real DSH Loader, and checks the Host, client, patch, CSS,
-readiness, and settings registrations. It also separately packs the MCP
-gateway, verifies its distributed contents and `keet-mcpd --help` executable,
-and rejects private material. Neither smoke contacts Keet.
+`pnpm pack-smoke` packs the MCP gateway, verifies its distributed contents,
+direct WebSocket dependency, notices, and `keet-mcpd --help` executable, and
+rejects private material. It does not contact Keet or start DSH. DSH artifact
+smoke is intentionally deferred until that local operator path is supported
+again.
 
 ## Prepare the private runtime
 
@@ -387,7 +389,7 @@ The complete `.scratch/` tree is local-only and ignored. Raw
 Hypercore/Hyperswarm transports are separate networks and are not Keet
 compatibility substitutes.
 
-MCP, OpenClaw, Hermes, a general chat CLI, multiple identities,
+OpenClaw, Hermes, a general chat CLI, multiple identities,
 automatic final-text delivery, non-image files/media/calls, role management or
 inspection, avatar removal, and private-only operation remain outside this v1
 slice.
