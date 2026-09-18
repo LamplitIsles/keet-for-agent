@@ -22,6 +22,10 @@
 !/docs/**
 !/tests/
 !/tests/**
+!/.agents/
+!/.agents/skills/
+!/.agents/skills/keet-avatar-null-patch/
+!/.agents/skills/keet-avatar-null-patch/SKILL.md
 
 # Dependencies and generated output are never source.
 node_modules/
