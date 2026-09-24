@@ -8,10 +8,11 @@ import { join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import WebSocket, { type RawData } from "ws"
+import sharp from "sharp"
 import { configurationFromEnvironment, KeetMcpGateway, type GatewayConfig } from "../packages/keet-mcp/src/index.js"
 import type { KeetCore, KeetMessage, KeetSubscription } from "@lamplitisles/keet-integration-core"
 
-const PNG_1X1 = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JgP8AAAAASUVORK5CYII=", "base64"))
+const PNG_1X1 = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"))
 const gateways: KeetMcpGateway[] = []
 let nextPort = 18765
 afterEach(async () => { await Promise.all(gateways.splice(0).map((gateway) => gateway.close())) })
@@ -40,7 +41,7 @@ function fakeCore() {
     listMembers: vi.fn(async () => [{ memberId: "alice", displayName: "Alice" }]),
     readRecentMessages: vi.fn(async () => { readState += 1; return [{ groupId: "group", messageId: { deviceId: "device", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "hello" }] }),
     sendMessage: vi.fn(async (_id: string, text: string) => { events.push(`text:${text}`); return { deviceId: "bot", seq: 2 } }), readImage: vi.fn(async () => PNG_1X1),
-    sendImage: vi.fn(async () => { events.push("image") }), close: vi.fn(async () => { closed = true }),
+    sendFile: vi.fn(async () => { events.push("file") }), close: vi.fn(async () => { closed = true }),
     watchMessages,
   } as unknown as KeetCore
   return { core, events, watchMessages, emit(groupId: string, message: KeetMessage) { watchers.get(groupId)?.(message) }, terminateWatcher(groupId: string) { terminateWatchers.get(groupId)?.("connection-failed") }, get closed() { return closed }, get readState() { return readState } }
@@ -109,13 +110,13 @@ describe("Keet MCP gateway", () => {
       const deniedPut = await fetch(gateway.address!, { method: "PUT" }); expect(deniedPut.status).toBe(401); expect(deniedPut.headers.get("www-authenticate")).toBe("Bearer")
       expect((await fetch(gateway.address!, { method: "PUT", headers: { authorization: `Bearer ${token}` } })).status).toBe(405)
       const client = new Client({ name: "test", version: "1" }); const transport = new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }); await client.connect(transport as never)
-      expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual(["keet_list_groups", "keet_list_members", "keet_read_recent_messages", "keet_send_image", "keet_send_message"])
-      expect(json(await client.callTool({ name: "keet_list_groups", arguments: {} }))).toEqual({ groups: [{ groupName: "Group", kind: "group" }, { groupName: "Peer DM", kind: "dm" }, { groupName: "News", kind: "broadcast" }] })
-      expect(json(await client.callTool({ name: "keet_list_members", arguments: { groupName: "Group" } }))).toEqual({ members: [{ displayName: "Alice" }] })
-      expect(json(await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Peer DM", last: 1 } }))).toEqual({ messages: [{ senderLabel: "Alice", timestamp: 1, text: "hello" }] })
-      expect(json(await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Group", last: 50 } }))).toMatchObject({ messages: [{ text: "hello" }] }); expect(fake.readState).toBe(3)
-      expect((await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Group", last: 51 } })).isError).toBe(true)
-      const unknown = await client.callTool({ name: "keet_list_members", arguments: { groupName: "Unknown" } }); expect(unknown.isError).toBe(true); expect(JSON.stringify(json(unknown))).toContain("not an allowed")
+      expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual(["list_destinations", "list_members", "read_recent_messages", "send_file", "send_message"])
+      expect(json(await client.callTool({ name: "list_destinations", arguments: {} }))).toEqual({ destinations: [{ destinationName: "Group", kind: "group" }, { destinationName: "Peer DM", kind: "dm" }, { destinationName: "News", kind: "broadcast" }] })
+      expect(json(await client.callTool({ name: "list_members", arguments: { destinationName: "Group" } }))).toEqual({ members: [{ displayName: "Alice" }] })
+      expect(json(await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Peer DM", last: 1 } }))).toEqual({ messages: [{ senderLabel: "Alice", timestamp: 1, text: "hello" }] })
+      expect(json(await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 50 } }))).toMatchObject({ messages: [{ text: "hello" }] }); expect(fake.readState).toBe(3)
+      expect((await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 51 } })).isError).toBe(true)
+      const unknown = await client.callTool({ name: "list_members", arguments: { destinationName: "Unknown" } }); expect(unknown.isError).toBe(true); expect(JSON.stringify(json(unknown))).toContain("not an allowed")
       expect(gateway.sessionCount).toBe(1); const terminated = await fetch(gateway.address!, { method: "DELETE", headers: { authorization: `Bearer ${token}`, "mcp-session-id": transport.sessionId! } }); expect(terminated.status).toBe(200); await new Promise((resolve) => setTimeout(resolve)); expect(gateway.sessionCount).toBe(0); await client.close()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
@@ -153,7 +154,7 @@ describe("Keet MCP gateway", () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
-  it("marks only DSH-equivalent Group and DM triggers without exposing identity state", async () => {
+  it("marks only eligible Group and DM triggers without exposing identity state", async () => {
     const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
     try {
       const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
@@ -165,7 +166,7 @@ describe("Keet MCP gateway", () => {
       await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 4 }, senderId: "alice", senderLabel: "Alice", timestamp: 5, text: "Bot, following up", replyTo: { deviceId: "bot", seq: 9 } })).resolves.toMatchObject({ trigger: "label" })
       await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 5 }, senderId: "alice", senderLabel: "Alice", timestamp: 6, text: "following up", replyTo: { deviceId: "bot", seq: 9 } })).resolves.toMatchObject({ trigger: "reply" })
       const mcp = new Client({ name: "test", version: "1" }); await mcp.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
-      expect(json(await mcp.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "sent through MCP" } }))).toEqual({ sent: true })
+      expect(json(await mcp.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "sent through MCP" } }))).toEqual({ sent: true })
       await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 6 }, senderId: "alice", senderLabel: "Alice", timestamp: 7, text: "MCP reply", replyTo: { deviceId: "bot", seq: 2 } })).resolves.toMatchObject({ trigger: "reply" })
       fake.core.readRecentMessages = vi.fn(async () => [{ groupId: "group", messageId: { deviceId: "bot", seq: 11 }, senderId: "bot", senderLabel: "Bot", timestamp: 7, text: "recovered anchor" }])
       await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 7 }, senderId: "alice", senderLabel: "Alice", timestamp: 8, text: "recovered reply", replyTo: { deviceId: "bot", seq: 11 } })).resolves.toMatchObject({ trigger: "reply" })
@@ -377,7 +378,7 @@ describe("Keet MCP gateway", () => {
       expect(gateway.destinations.map((destination) => destination.groupName)).not.toContain("Peer DM")
       await expect(gateway.start()).rejects.toThrow("already started")
       const client = new Client({ name: "test", version: "1" }); await client.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
-      expect(json(await client.callTool({ name: "keet_list_groups", arguments: {} }))).toEqual({ groups: [{ groupName: "Group", kind: "group" }, { groupName: "News", kind: "broadcast" }] }); await client.close()
+      expect(json(await client.callTool({ name: "list_destinations", arguments: {} }))).toEqual({ destinations: [{ destinationName: "Group", kind: "group" }, { destinationName: "News", kind: "broadcast" }] }); await client.close()
     } finally { await rm(root, { recursive: true, force: true }) }
     const broken = fakeCore(); broken.core.listPendingDmRequests = vi.fn(async () => { throw new Error("raw identity /secret") }); const failed = await startPendingFailure(broken.core); expect(failed.gateway.address).toBeUndefined(); expect(broken.closed).toBe(true); await rm(failed.root, { recursive: true, force: true })
   })
@@ -391,29 +392,31 @@ describe("Keet MCP gateway", () => {
     const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
     try {
       const client = new Client({ name: "test", version: "1" }); await client.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
-      for (const args of [{ replyTo: { deviceId: "x", seq: 1 } }, { mentions: ["Alice"] }]) { const result = await client.callTool({ name: "keet_send_message", arguments: { groupName: "News", text: "x", ...args } }); expect(result.isError).toBe(true) }
-      expect(json(await client.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "reply", replyTo: { deviceId: "device", seq: 1 }, mentions: ["Alice"] } }))).toEqual({ sent: true })
+      for (const args of [{ replyTo: { deviceId: "x", seq: 1 } }, { mentions: ["Alice"] }]) { const result = await client.callTool({ name: "send_message", arguments: { destinationName: "News", text: "x", ...args } }); expect(result.isError).toBe(true) }
+      expect(json(await client.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "reply", replyTo: { deviceId: "device", seq: 1 }, mentions: ["Alice"] } }))).toEqual({ sent: true })
       let release!: () => void; let sends = 0; fake.core.sendMessage = vi.fn(async (_group, text) => { fake.events.push(`start:${text}`); if (++sends === 1) await new Promise<void>((resolve) => { release = resolve }); fake.events.push(`done:${text}`); return { deviceId: "bot", seq: sends } })
-      const first = client.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "one" } }); while (!release) await new Promise((resolve) => setTimeout(resolve)); const second = client.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "two" } }); await new Promise((resolve) => setTimeout(resolve)); expect(fake.events.slice(-1)).toEqual(["start:one"]); release(); await Promise.all([first, second]); expect(fake.events.slice(-4)).toEqual(["start:one", "done:one", "start:two", "done:two"])
+      const first = client.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "one" } }); while (!release) await new Promise((resolve) => setTimeout(resolve)); const second = client.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "two" } }); await new Promise((resolve) => setTimeout(resolve)); expect(fake.events.slice(-1)).toEqual(["start:one"]); release(); await Promise.all([first, second]); expect(fake.events.slice(-4)).toEqual(["start:one", "done:one", "start:two", "done:two"])
       fake.core.readRecentMessages = vi.fn(async () => { throw new Error("/runtime/secret /identity/raw group-id") })
-      const failed = await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Group", last: 50 } }); expect(JSON.stringify(json(failed))).toContain("Keet recent messages are unavailable."); expect(JSON.stringify(json(failed))).not.toContain("secret")
-      expect((await client.callTool({ name: "keet_read_recent_messages", arguments: { groupName: "Group", last: 0 } })).isError).toBe(true); await client.close()
+      const failed = await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 50 } }); expect(JSON.stringify(json(failed))).toContain("Keet recent messages are unavailable."); expect(JSON.stringify(json(failed))).not.toContain("secret")
+      expect((await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 0 } })).isError).toBe(true); await client.close()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
-  it("serializes image/caption delivery and reports a caption partial failure", async () => {
+  it("sends ordinary files and preserves native image preview metadata", async () => {
     const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
     try {
-      await writeFile(join(root, "workspace", "image.png"), PNG_1X1)
+      const largePng = await sharp({ create: { width: 2_500, height: 2_500, channels: 3, background: "#2468ac" } }).png({ compressionLevel: 0 }).toBuffer()
+      expect(largePng.byteLength).toBeGreaterThan(16 * 1024 * 1024)
+      await writeFile(join(root, "workspace", "image.png"), PNG_1X1); await writeFile(join(root, "workspace", "large.png"), largePng); await writeFile(join(root, "workspace", "bundle.zip"), "PK\u0003\u0004fixture")
       const client = new Client({ name: "test", version: "1" }); await client.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
-      expect(json(await client.callTool({ name: "keet_send_image", arguments: { groupName: "Group", path: "image.png", caption: "caption" } }))).toEqual({ sent: true })
-      expect(fake.events).toEqual(["image", "text:caption"])
-      let release!: () => void; let images = 0; fake.core.sendImage = vi.fn(async () => { fake.events.push(`image:${++images}`); if (images === 1) await new Promise<void>((resolve) => { release = resolve }) }); fake.core.sendMessage = vi.fn(async (_group, text) => { fake.events.push(`caption:${text}`); return { deviceId: "bot", seq: images } })
-      const first = client.callTool({ name: "keet_send_image", arguments: { groupName: "Group", path: "image.png", caption: "one" } }); while (!release) await new Promise((resolve) => setTimeout(resolve)); const second = client.callTool({ name: "keet_send_image", arguments: { groupName: "Group", path: "image.png", caption: "two" } }); await new Promise((resolve) => setTimeout(resolve)); expect(fake.events.slice(-1)).toEqual(["image:1"]); release(); await Promise.all([first, second]); expect(fake.events.slice(-4)).toEqual(["image:1", "caption:one", "image:2", "caption:two"])
-      fake.core.sendMessage = vi.fn(async () => { throw new Error("failed") })
-      const partial = await client.callTool({ name: "keet_send_image", arguments: { groupName: "Group", path: "image.png", caption: "caption" } })
-      expect(partial.isError).toBe(true); expect(JSON.stringify(json(partial))).toContain("Image was delivered, but its caption was not sent; do not retry.")
-      await writeFile(join(root, "outside.png"), PNG_1X1); await symlink(join(root, "outside.png"), join(root, "workspace", "escape.png")); const escaped = await client.callTool({ name: "keet_send_image", arguments: { groupName: "Group", path: "escape.png" } }); expect(escaped.isError).toBe(true); expect(JSON.stringify(json(escaped))).toContain("workspace image could not be read.")
+      const sent: Array<{ mediaType: string; name: string; preview?: { bytes: Uint8Array; width: number; height: number } }> = []; fake.core.sendFile = vi.fn(async (_group, file) => { sent.push(file) })
+      expect(json(await client.callTool({ name: "send_file", arguments: { destinationName: "Group", path: "image.png" } }))).toEqual({ sent: true })
+      expect(sent[0]).toMatchObject({ mediaType: "image/png", name: "image.png", width: 1, height: 1, preview: { width: 1, height: 1 } }); expect(sent[0]!.preview!.bytes.byteLength).toBeGreaterThan(0)
+      expect(json(await client.callTool({ name: "send_file", arguments: { destinationName: "Peer DM", path: "bundle.zip" } }))).toEqual({ sent: true })
+      expect(sent[1]).toMatchObject({ mediaType: "application/zip", name: "bundle.zip" }); expect(sent[1]!.preview).toBeUndefined()
+      expect(json(await client.callTool({ name: "send_file", arguments: { destinationName: "Group", path: "large.png" } }))).toEqual({ sent: true })
+      expect(sent[2]).toMatchObject({ mediaType: "image/png", name: "large.png", width: 2_500, height: 2_500, preview: { width: 320, height: 320 } }); expect(sent[2]!.preview!.bytes.byteLength).toBeGreaterThan(0)
+      await writeFile(join(root, "outside.png"), PNG_1X1); await symlink(join(root, "outside.png"), join(root, "workspace", "escape.png")); const escaped = await client.callTool({ name: "send_file", arguments: { destinationName: "Group", path: "escape.png" } }); expect(escaped.isError).toBe(true); expect(JSON.stringify(json(escaped))).toContain("workspace file could not be read.")
       await client.close()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
@@ -437,7 +440,7 @@ describe("Keet MCP gateway", () => {
     const { gateway, root, token } = await start(fake.core)
     try {
       const client = new Client({ name: "test", version: "1" }); await client.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
-      const controller = new AbortController(); const call = client.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "cancel me" } }, undefined, { signal: controller.signal }); while (!send.mock.calls.length) await new Promise((resolve) => setTimeout(resolve)); controller.abort(); await expect(call).rejects.toThrow("aborted"); while (!observed) await new Promise((resolve) => setTimeout(resolve)); expect(fake.events).not.toContain("text:cancel me"); await client.close()
+      const controller = new AbortController(); const call = client.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "cancel me" } }, undefined, { signal: controller.signal }); while (!send.mock.calls.length) await new Promise((resolve) => setTimeout(resolve)); controller.abort(); await expect(call).rejects.toThrow("aborted"); while (!observed) await new Promise((resolve) => setTimeout(resolve)); expect(fake.events).not.toContain("text:cancel me"); await client.close()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
@@ -446,9 +449,9 @@ describe("Keet MCP gateway", () => {
     const { gateway, root, token } = await start(first.core)
     try {
       const firstClient = new Client({ name: "first", version: "1" }); const queuedClient = new Client({ name: "queued", version: "1" }); const transport = () => new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }); await firstClient.connect(transport() as never); await queuedClient.connect(transport() as never)
-      const firstAbort = new AbortController(); const queuedAbort = new AbortController(); const firstCall = firstClient.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "first" } }, undefined, { signal: firstAbort.signal }); void firstCall.catch(() => undefined); while (!firstSend.mock.calls.length) await new Promise((resolve) => setTimeout(resolve)); expect(firstSend.mock.calls.map((call) => call[1])).toEqual(["first"])
-      const queuedCall = queuedClient.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "queued" } }, undefined, { signal: queuedAbort.signal }); void queuedCall.catch(() => undefined); await new Promise((resolve) => setTimeout(resolve)); expect(firstSend.mock.calls.map((call) => call[1])).toEqual(["first"])
-      const endpoint = gateway.address!; await gateway.close(); expect(cancelled).toContain("first"); expect(gateway.address).toBeUndefined(); await expect(fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).rejects.toThrow(); (gateway.options as unknown as { createCore?: (_options: unknown) => Promise<KeetCore> }).createCore = async () => second.core; await gateway.start(); firstAbort.abort(); queuedAbort.abort(); await Promise.allSettled([firstCall, queuedCall]); expect(second.events).not.toContain("text:first"); expect(second.events).not.toContain("text:queued"); expect(secondSend).not.toHaveBeenCalled(); const restarted = new Client({ name: "restarted", version: "1" }); await restarted.connect(transport() as never); expect(json(await restarted.callTool({ name: "keet_send_message", arguments: { groupName: "Group", text: "after restart" } }))).toEqual({ sent: true }); expect(second.events).toEqual(["text:after restart"]); await restarted.close(); await firstClient.close().catch(() => undefined); await queuedClient.close().catch(() => undefined)
+      const firstAbort = new AbortController(); const queuedAbort = new AbortController(); const firstCall = firstClient.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "first" } }, undefined, { signal: firstAbort.signal }); void firstCall.catch(() => undefined); while (!firstSend.mock.calls.length) await new Promise((resolve) => setTimeout(resolve)); expect(firstSend.mock.calls.map((call) => call[1])).toEqual(["first"])
+      const queuedCall = queuedClient.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "queued" } }, undefined, { signal: queuedAbort.signal }); void queuedCall.catch(() => undefined); await new Promise((resolve) => setTimeout(resolve)); expect(firstSend.mock.calls.map((call) => call[1])).toEqual(["first"])
+      const endpoint = gateway.address!; await gateway.close(); expect(cancelled).toContain("first"); expect(gateway.address).toBeUndefined(); await expect(fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).rejects.toThrow(); (gateway.options as unknown as { createCore?: (_options: unknown) => Promise<KeetCore> }).createCore = async () => second.core; await gateway.start(); firstAbort.abort(); queuedAbort.abort(); await Promise.allSettled([firstCall, queuedCall]); expect(second.events).not.toContain("text:first"); expect(second.events).not.toContain("text:queued"); expect(secondSend).not.toHaveBeenCalled(); const restarted = new Client({ name: "restarted", version: "1" }); await restarted.connect(transport() as never); expect(json(await restarted.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "after restart" } }))).toEqual({ sent: true }); expect(second.events).toEqual(["text:after restart"]); await restarted.close(); await firstClient.close().catch(() => undefined); await queuedClient.close().catch(() => undefined)
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 })

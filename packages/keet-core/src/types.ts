@@ -57,7 +57,7 @@ export interface KeetReactionSummary {
   readonly own: boolean
 }
 
-/** Raster formats shared by Keet's file records and DSH image admission. */
+/** Raster formats supported by Keet native file records. */
 export type KeetImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif"
 
 /**
@@ -82,13 +82,13 @@ export interface KeetImagePreview {
   readonly height: number
 }
 
-/** Native image input for `sendImage`; source bytes remain unmodified. */
-export interface PreparedKeetImage {
+/** Native file input for `sendFile`; image metadata enables native previews. */
+export interface PreparedKeetFile {
   readonly bytes: Uint8Array
-  readonly mediaType: KeetImageMediaType
-  readonly width: number
-  readonly height: number
-  readonly name?: string
+  readonly mediaType: string
+  readonly name: string
+  readonly width?: number
+  readonly height?: number
   readonly preview?: KeetImagePreview
 }
 export interface KeetMember {
@@ -110,11 +110,6 @@ export interface KeetMessage {
   readonly text: string
   /** Ordered native image files attached to this chat record. */
   readonly images?: readonly KeetImageFile[]
-  /**
-   * Normalized top-level chat position retained for bridge-owned read state.
-   * Adapters must not render or expose this metadata to an Agent.
-   */
-  readonly chatIndex?: number
   readonly mentions?: readonly string[]
   readonly replyTo?: KeetMessageId
   readonly reactions?: readonly KeetReactionSummary[]
@@ -156,11 +151,11 @@ export interface PreparedAvatar {
   readonly large: PreparedAvatarVariant
 }
 
-/** Disposable interoperability helpers; never exposed by the DSH tools. */
+/** Disposable interoperability helpers; never exposed by agent tools. */
 export interface CreateGroupOptions {
   readonly title: string
   readonly description?: string
-  /** Disposable smoke helper room type; the DSH adapter never creates rooms. */
+  /** Disposable smoke helper room type; agent adapters never create rooms. */
   readonly roomType?: "Default" | "Broadcast"
 }
 
@@ -192,9 +187,9 @@ export interface KeetCore {
   status(): Promise<KeetReadiness>
   listGroups(): Promise<ManagedGroup[]>
   leaveGroup(groupId: string, signal?: AbortSignal): Promise<void>
-  /** Test/onboarding helper; normal DSH operation never creates rooms. */
+  /** Test/onboarding helper; normal gateway operation never creates rooms. */
   createRoom?(options: CreateGroupOptions): Promise<string>
-  /** Test/onboarding helper; normal DSH operation never creates invitations. */
+  /** Test/onboarding helper; normal gateway operation never creates invitations. */
   createInvitation?(groupId: string, options?: Record<string, unknown>): Promise<Invitation>
   /** Resolve an accepted direct message by the other participant's Member ID. */
   resolveDm(memberId: string, signal?: AbortSignal): Promise<KeetManagedDm>
@@ -208,13 +203,9 @@ export interface KeetCore {
   readReactions(groupId: string, messageId: KeetMessageId, signal?: AbortSignal): Promise<readonly KeetReactionSummary[] | null>
   /** Download and bound one live external-blob image record. */
   readImage(groupId: string, image: KeetImageFile, signal?: AbortSignal): Promise<Uint8Array>
-  /** Save and publish one native image record; no chat text is emitted. */
-  sendImage(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void>
+  /** Save and publish one native file record; no chat text is emitted. */
+  sendFile(groupId: string, file: PreparedKeetFile, signal?: AbortSignal): Promise<void>
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription
-  /** Mark a Managed DM read through the native chat-index boundary. */
-  setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void>
-  /** Publish one native Managed DM typing timestamp refresh. */
-  updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void>
   /** Add one native Unicode emoji reaction to an exact message. */
   addReaction(groupId: string, messageId: KeetMessageId, reaction: string, signal?: AbortSignal): Promise<void>
   /** Native mentions are Core-owned routing values and never model-visible. */

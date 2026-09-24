@@ -1,32 +1,15 @@
 # Prepare the private Keet runtime
 
-The public package contains TypeScript and DSH integration code only. It does
-not redistribute the official Keet executable, worker bundle, or native
-addons. An operator must obtain the official Linux x64 release privately and
-prepare the fixed local read-only runtime directory beneath `$DSH_HOME`.
+The public packages do not redistribute the official Keet executable, worker
+bundle, or native addons. An operator must obtain the official Linux x64
+release privately and prepare a local read-only runtime directory.
 
-The admitted compatibility tuple is:
+The admitted tuple is Keet 4.22.0, `@holepunchto/keet-core` 4.22.20, ABI 35,
+Linux x86-64 with glibc 2.34 or newer. The official archive SHA-256 is
+`36808af4f31ff65f7a766fbd5ead0cab5255a61c737941e8c166cece6d4ac6a9`.
+Core fails closed when this tuple or the native closure differs.
 
-| Component | Required value |
-| --- | --- |
-| Keet desktop release | `4.22.0` |
-| `@holepunchto/keet-core` | `4.22.20` |
-| Keet ABI | `35` |
-| Platform | Linux x86-64, glibc 2.34 or newer |
-| Verified environment | Debian 12 with Node.js 22 |
-| Official archive SHA-256 | `36808af4f31ff65f7a766fbd5ead0cab5255a61c737941e8c166cece6d4ac6a9` |
-
-The Integration Core fails closed when the tuple, platform, executable,
-bundle, or native closure does not match. The numeric RPC map is private to
-this exact release; do not substitute another release without a new verified
-compatibility tuple.
-
-## Prerequisites and extraction
-
-Install `curl`, `ca-certificates`, `p7zip-full`, `libatomic1`, and Node.js 22.
-The supplied executable is a glibc build; Alpine/musl is unsupported. Download
-only from the official versioned location and verify the archive before
-extraction:
+Install `curl`, `ca-certificates`, `p7zip-full`, and `libatomic1`, then run:
 
 ```sh
 set -eu
@@ -34,14 +17,13 @@ set -eu
 KEET_VERSION=4.22.0
 KEET_ARCHIVE_SHA256=36808af4f31ff65f7a766fbd5ead0cab5255a61c737941e8c166cece6d4ac6a9
 KEET_PREPARE_DIR="$(mktemp -d)"
-: "${DSH_HOME:?Set DSH_HOME to the home used by the target DSH profile}"
-KEET_RUNTIME_DIR="$DSH_HOME/runtimes/keet/$KEET_VERSION-linux-x64"
+: "${KEET_RUNTIME_ROOT:?Set KEET_RUNTIME_ROOT to the private runtime parent}"
+KEET_RUNTIME_DIR="$KEET_RUNTIME_ROOT/$KEET_VERSION-linux-x64"
 
 curl -fsSL \
   "https://static.keet.io/downloads/$KEET_VERSION/Keet-x64.tar.gz" \
   -o "$KEET_PREPARE_DIR/keet.tar.gz"
 echo "$KEET_ARCHIVE_SHA256  $KEET_PREPARE_DIR/keet.tar.gz" | sha256sum -c -
-
 tar -xzf "$KEET_PREPARE_DIR/keet.tar.gz" -C "$KEET_PREPARE_DIR"
 mkdir -p "$KEET_PREPARE_DIR/extracted"
 7z x -y -o"$KEET_PREPARE_DIR/extracted" \
@@ -70,150 +52,15 @@ mv "$KEET_PREPARE_DIR/extracted/resources/app/node_modules/bare-sidecar/prebuild
 rm -rf "$KEET_PREPARE_DIR/extracted/resources/app/node_modules/bare-sidecar"
 mv "$KEET_PREPARE_DIR/extracted/resources/app/node_modules" "$KEET_RUNTIME_DIR/node_modules"
 chmod 0755 "$KEET_RUNTIME_DIR/bare"
-
 echo "Runtime prepared at $KEET_RUNTIME_DIR"
 ```
 
-The temporary preparation directory is intentionally retained on failure for
-diagnosis. Remove it after inspecting a successful extraction. The resulting
-directory contains `bare`, `core-worker.bundle`, and the 25 native addons
-selected by the worker bundle manifest. Do not hand-maintain or copy that
-closure into the source package.
+The resulting directory contains `bare`, `core-worker.bundle`, and the 25
+native addons selected by the bundle manifest. Keep it outside this repository
+and package artifacts. Remove the temporary preparation directory only after a
+successful inspection.
 
-Keep the runtime beneath the target DSH home. It contains proprietary assets
-and must not be committed, packed, or published. There is no automatic
-downloader or release workflow. The public npm-shaped plugin artifact contains
-only source-derived integration code and discovers this fixed runtime path.
-
-## Identity and onboarding
-
-Choose the same DSH workspace in the plugin settings first. The Host and setup
-CLI create `<workspace>/.dsh/dsh-keet/identity` automatically with private
-directory permissions. One sidecar process owns it through an exclusive
-nonblocking kernel lock on the persistent mode-0600 `.keet-sidecar.lock` file;
-concurrent use is rejected immediately. Ownership follows the open descriptor,
-so the kernel releases it after an abnormal process death. The file is not a
-stale PID record and must never be deleted manually.
-
-Room access is authorized from the running settings card. When readiness is
-`Ready` or `Unbound`, open the card, paste one `keet://chat/<token>` invitation
-into the transient Invitation field, and choose `Join`. Open the Pending DM
-Request section to load bounded sender labels, use `Refresh` when needed, and
-choose `Accept` for the exact human-selected request. The bridge re-reads and
-fully initializes each resulting destination before publishing it to the
-current tools; a restart is not required. A connected `Unbound` bridge remains
-unbound if it has no existing DSH conversation, but can still admit a room.
-
-The running bridge must remain the sole Core owner for these settings actions.
-Do not invoke a second sidecar with invitation or DM-request data. The
-invitation is not persisted or logged, and pending request selectors and room
-IDs remain bridge-owned. If native authorization succeeds but admission fails,
-the settings card offers an admission-only retry and does not repeat the native
-mutation. Newly admitted groups and DMs establish their baseline before
-publication, so historical and pre-intake messages never trigger turns.
-
-Member Join Trigger is a separate live setting for ordinary Managed Groups. The
-card lists each currently managed group and stores its enabled state under the
-selected workspace and stable native group identity; missing preferences are
-off. DMs and Broadcasts have no toggle. Enabling a group starts a fresh roster
-baseline, so arrivals during the disabled period are not replayed. Disabling
-suppresses queued Member Join work without interrupting a turn already running.
-The fixed ten-second roster poll runs only while at least one ordinary group is
-enabled. These preferences apply without restarting DSH and do not change the
-ordinary group mention/reply triggers.
-
-The remaining human-only setup commands are for profile or username changes.
-Stop the running bridge before invoking either command, then restart it after
-the operation. For a systemd user service, use the wrapper from the root
-README. For example:
-
-```sh
-dsh-keet-setup profile \
-  --workspace /path/to/dsh-workspace \
-  --display-name "Keet Assistant"
-```
-
-`dsh-keet-setup` does not join rooms or list/accept DM requests. The profile
-operation can also prepare an avatar from a local PNG, JPEG, or WebP:
-
-```sh
-dsh-keet-setup profile \
-  --workspace /path/to/dsh-workspace \
-  --avatar /path/to/avatar.png
-```
-
-The input must be a readable image no larger than 8 MiB. Setup honors image
-orientation, center-crops a square, and emits deterministic 64, 128, and 256
-pixel PNG variants; each inline variant is bounded to 512 KiB. Official Keet
-clients apply their normal circular avatar mask, so the input should remain a
-square image rather than a pre-baked circle. Avatar-only updates preserve the
-current non-empty display name, and profile setup does not expose avatar
-removal.
-
-Reserve the identity's globally searchable username separately from its
-display name with the human-only setup command:
-
-```sh
-dsh-keet-setup username --workspace /path/to/dsh-workspace \
-  --username agent_name1
-```
-
-After local syntax and availability checks, setup submits the native
-registration or update and waits through the full 60-second lookup-convergence
-budget. It prints the existing success JSON only after the exact username
-resolves to this identity's Member ID. If the mutation was accepted but lookup
-is still pending, it exits 1 with one bounded JSON line such as
-`{"ok":false,"operation":"username","username":"agent_name1","status":"pending","submitted":true,"retryable":true}`.
-Retry the exact same username; `submitted: false` identifies the idempotent
-current-name verification path. Generic failures remain bounded and do not
-print identity keys. No background polling or alternate-name selection is
-created.
-
-## Managed DM image boundary
-
-The bridge accepts live external PNG, JPEG, WebP, and GIF images in Managed
-DMs. It sends exactly one argument tuple through the pinned `readFileStream`
-RPC, immediately half-closes that request side, and consumes the finite
-response stream. It then validates and saves the complete ordered batch with
-DSH's durable attachment service before starting one Agent turn. The complete
-batch has a fixed 60-second deadline; timeout or another failed read destroys
-the active stream. Failed admission creates no image session event or turn,
-sends at most one bounded failure notice, and retains a non-triggering failure
-record for the next successful turn in that DM, so later messages are not
-blocked. Startup snapshots, self-authored messages, Managed Groups,
-historical reads, and `keet_read_recent_messages` never download image bytes.
-
-The explicit `keet_send_image` tool supports every Managed Destination. It reads one image through the
-bound DSH `ctx.fs` Active Conversation workspace filesystem, requires a path contained by that
-workspace, detects the format from validated bytes, preserves the source for
-the native `saveFileBlob`/`sendFile` lifecycle (the Official pointer is
-`externalBlob.id` plus `blob`), and creates only a bounded preview. An optional
-caption is sent as adjacent ordinary text. URLs, outside
-workspace paths, unsupported or corrupt images, and oversized content fail
-before delivery; a caption failure after image delivery is reported as a
-bounded no-retry partial result. Images are never sent automatically after an
-Agent turn.
-
-These local fake-worker and Loader checks do not prove official-client image
-interoperability. No official-runtime image smoke is run without explicit
-authorization, so that compatibility and desktop/mobile rendering remain
-unverified for this feature.
-
-## Opt-in official checks
-
-Normal checks use fakes and temporary directories. To run the disposable
-single-sidecar Core smoke, provide fresh runtime inputs and opt in:
-
-```sh
-KEET_OFFICIAL_RUNTIME_SMOKE=1 \
-KEET_EXECUTABLE_PATH=/path/to/runtime/bare \
-KEET_BUNDLE_PATH=/path/to/runtime/core-worker.bundle \
-pnpm real-worker-smoke
-```
-
-The two-sidecar onboarding smoke additionally requires
-`KEET_OFFICIAL_ONBOARDING_SMOKE=1`; it creates and removes only fresh
-temporary identity directories and reports redacted counts. A skipped or fake
-pass is not an official-client interoperability claim. The single-sidecar
-real-worker smoke checks the official worker's Keet reply relation round-trip,
-not desktop UI rendering.
+Pass the resulting absolute directory as `KEET_MCP_RUNTIME_DIR` to `keet-mcpd`
+or as the corresponding runtime option to another Core owner. Each process
+must also have its own writable identity directory; never share an identity
+concurrently.

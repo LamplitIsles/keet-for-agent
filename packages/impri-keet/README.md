@@ -28,13 +28,14 @@ pnpm build
 ```
 
 The CLI runs directly from `packages/impri-keet/dist/cli.js` in this checkout.
-It needs no DSH conversation or plugin installation.
+It needs no agent conversation or MCP installation.
 
 ## Configure and onboard
 
 Prepare the [operator-supplied runtime](../../docs/runtime-extraction.md).
 The supported tuple is Keet 4.22.0 / Official Core 4.22.20 / ABI 35 on Linux
-x86-64. The runtime can be shared with DSH; the bot's identity must be separate.
+x86-64. Runtime files may be shared with another Core owner; the bot's identity
+must be separate.
 
 Create a private JSON config:
 

@@ -1,324 +1,48 @@
-# Keet for Agent
+# Keet for Agent context
 
-Keet for Agent exposes a deliberately narrow subset of Keet group and direct
-chat to local agents while keeping transport adapters separate from the
-reusable integration logic.
+## Managed Destination
 
-## Language
+A Keet room admitted to the MCP gateway's immutable startup collection. It is
+one of:
 
-**Integration Core**:
-The reusable TypeScript library that owns sidecar lifecycle and presents stable agent-facing Keet operations. It contains no MCP-, CLI-, or host-plugin-specific behavior.
-_Avoid_: Core, Keet Core, daemon
+- **Managed Group** — a joined Default room.
+- **Managed Broadcast** — a joined Broadcast room; native permissions decide
+  whether the integration identity may post.
+- **Managed DM** — a complete accepted Direct Message whose peer is not
+  pending.
 
-**Official Keet Core**:
-Holepunch's native Keet worker, controlled by the Integration Core through its pinned sidecar RPC interface.
-_Avoid_: Integration Core, protocol reimplementation
+The MCP name for its stable display selector is `destinationName`. CFL event
+records use the internal field `groupName`; that field is not an MCP argument.
 
-**Official Runtime**:
-The private, version-pinned executable, worker bundle, and native addons required to run the Official Keet Core. It is not part of the open-source distribution.
-_Avoid_: Published runtime, bundled dependency
+## Integration Identity
 
-**Adapter**:
-A thin host-specific interface over the Integration Core. The first Adapter is
-the DSH Keet Bridge; MCP, OpenClaw, Hermes, and a general CLI adapter are later
-work. The settings card performs live human room onboarding; the setup
-executable is intentionally narrower than a general CLI and only performs
-searchable-username reservation and profile updates. The private Impri Keet
-Approval Channel is a separate Adapter for human approval of Impri actions.
-_Avoid_: Independent client implementation
+The Keet identity exclusively owned by one running Core instance. An identity
+directory cannot be shared concurrently by MCP, Impri, another gateway, or an
+official-client process.
 
-**Managed Group**:
-A pre-existing Keet `Default` room, already joined by the bridge identity, that
-one DSH Keet Bridge discovers at startup or admits through human settings while
-running and exposes to its Active Conversation. Agents can read, reply to, and
-proactively send text or images in that group; destination tools select it by
-the exact admission-time `groupName`, never by an arbitrary room ID. Its Member
-Join Trigger is independently opt-in through settings and is off when no
-workspace/group preference exists.
-_Avoid_: Approved Room, arbitrary room, adapter-created group
+## Explicit Destination File Send
 
-**Managed Broadcast**:
-A pre-existing Keet `Broadcast` room, already joined by the bridge identity,
-that the DSH Keet Bridge discovers at startup or admits through human settings
-while running. Agents can read its plain-text history and proactively publish
-text or images, but its inbound messages do not trigger Agent turns or accept
-reply relations. It has no Bridge state,
-subscription, context buffer, typing/read activity, roster, or reaction
-path; the Official Keet Core decides each posting attempt from the identity's
-current native permission, so rejected posts are surfaced without retry.
-_Avoid_: Managed Group, role-cached broadcast, arbitrary room
+An agent-requested `send_file` operation for one workspace-contained local
+file. All ordinary file types are admitted up to 100 MiB. Supported raster
+images additionally carry native dimensions and preview metadata so Keet can
+present them as images; other files remain ordinary file cards. File delivery
+does not imply adjacent text delivery.
 
-**Managed DM**:
-An accepted complete one-to-one Keet room typed `DirectMessage`, discovered in
-the canonical joined-room list when its peer is absent from the bounded pending
-request snapshot or admitted through human settings while the bridge is
-running. It shares the Integration Identity and Active Conversation with every
-Managed Group and Managed Broadcast. Every new ordinary external DM text triggers a turn;
-DM prompts and history omit canonical message IDs and reply relations.
-_Avoid_: contact request, arbitrary private room, Agent-created DM
+## CFL Event Feed
 
-**Managed Destination**:
-One entry in the bridge's run-scoped allowlist: every joined `Default` room,
-joined `Broadcast` room, and accepted complete `DirectMessage` admitted from
-the bounded startup snapshot or by a human settings action. `keet_list_groups`
-returns these entries as an exact `groupName` and `kind`; the other Keet tools
-require the exact admitted name, also supplied by inbound context.
-_Avoid_: all joined rooms, implicit target, arbitrary destination
+The gateway-owned bounded, replayable WebSocket journal of incoming Keet
+events. It classifies relevant Group and DM triggers but does not choose an
+agent, inject context, or deliver replies.
 
-**Managed Destination Name**:
-The bounded, single-line name captured from a destination title when the bridge
-starts or when a human settings action admits it. Leading/trailing whitespace
-is trimmed and record-breaking line separators become spaces. Selectors trim
-their input, then compare the bridge-run collection exactly and
-case-sensitively. Equal names are ambiguous and fail selected operations
-closed.
-_Avoid_: alias, fuzzy name, live rename, group ID
+## CFL Media Library
 
-**Single-session multiplexing**:
-All discovered Managed Destinations share one existing DSH Active Conversation.
-Each destination keeps its own context buffer, while arrival classification and
-Agent turns remain serialized through that session.
-_Avoid_: one session per destination, session switching
+The durable local collection of inbound DM image files materialized by the
+gateway and referenced by CFL conversation history. Journal retention and
+media retention are separate ownership concerns.
 
-**Model-visible ID ownership**:
-Group IDs and Member IDs remain Bridge/Core-owned routing and classification
-state. Agent-visible list, roster, history, and send results omit those IDs;
-regular-group and Managed Broadcast history may retain canonical Keet Message
-IDs, while optional reply targets are useful only for regular-group sends.
-Managed DM records expose no message or reply IDs.
-_Avoid_: sender ID in prompts, roster Member ID, send receipt Message ID
+## Boundaries
 
-**DSH Keet Bridge**:
-The DSH Adapter that discovers or live-admits joined/accepted Managed
-Destinations, carries their new messages into one Active Conversation, and gives
-that conversation explicit-destination Keet tools backed by the Integration
-Core.
-_Avoid_: MCP server, Keet client implementation
-
-**CFL Event Feed**:
-The bearer-protected loopback stream through which the MCP Gateway exposes new
-external Managed Destination records to CFL. It labels the DSH-equivalent
-Group/DM trigger fact but does not select an Agent, buffer context, inject a
-turn, or own CFL's receipt.
-_Avoid_: MCP tool, Agent queue, automatic reply
-
-**CFL Media Library**:
-The KFA-owned durable collection of materialized Inbound DM Images referenced
-by safe generated names in CFL Event Feed records. Its lifetime is independent
-of the bounded event journal; CFL may read a validated file directly.
-_Avoid_: event replay cache, CFL workspace attachment directory, arbitrary path
-
-**Active Conversation**:
-The existing DSH conversation selected from the configured workspace when the DSH
-Keet Bridge starts. The bridge keeps that conversation for its lifetime and
-never creates or switches it; live onboarding uses the same conversation.
-_Avoid_: Keet conversation, configured session
-
-**Destination Context Buffer**:
-The bounded in-memory sequence of eligible messages for one Managed Destination
-not yet supplied to the Active Conversation. A group Reply Trigger or any new
-ordinary external DM text drains only that destination's buffer into one
-serialized Keet-initiated turn.
-_Avoid_: Durable queue, shared chat history
-
-**Canonical Keet Message ID**:
-The `{ deviceId, seq }` pair identifying one Keet message. It is distinct from
-the Keet Member ID of the identity that authored the message; the bridge may
-use an internal flattened key for set lookup, but never presents that key as
-message provenance.
-_Avoid_: Flattened message key, Member ID
-
-**Keet Member ID**:
-The stable identity identifier attached to a message sender or group member.
-A Keet reply relation does not carry the target author's Member ID; it carries
-only the target message's canonical Keet Message ID.
-_Avoid_: Message ID, device ID alone
-
-**Reply Trigger**:
-A new Managed Group message that mentions the Keet identity,
-contains its current non-empty group display label, or has a Keet replyTo
-relation to one of its messages. Ordinary group messages add context without
-independently starting a turn. Managed DM ordinary external text uses a
-separate every-message trigger and is not a Reply Trigger.
-_Avoid_: Every group message, mention only
-
-**Native Mention**:
-A regular Managed Group outbound message whose `mentions` are exact current
-member display names. The Bridge resolves each name to one current Member ID at
-send time and passes Keet's native `{ type: "mention", memberId }` record to
-the Core. Missing or duplicate display names fail closed; Member IDs never
-cross into Agent-visible prompts, tools, or results.
-_Avoid_: literal `@name` text as a substitute, Member ID tool arguments
-
-**Member Join Trigger**:
-A bridge-owned observation that a Member ID appears in a regular Managed Group
-roster after the first successful ten-second poll baseline for that admitted
-group. It is opt-in independently for each ordinary group: the settings card
-stores a durable preference under the workspace and stable native group ID,
-and an absent preference is off. DMs and Broadcasts have no preference. It
-carries only a bounded, untrusted display name and source `groupName` into one
-serialized Agent turn. A live preference change takes effect without restart;
-enabling establishes a fresh baseline, so arrivals while disabled are not
-replayed, and disabling does not interrupt a turn already running. Startup/
-admission-baseline members, missed-between-poll, failed-read, self, DM,
-Broadcast, and leave/rejoin observations do not trigger; a claimed `(group,
-member)` receipt remains consumed across DSH restarts.
-_Avoid_: native membership event, startup catch-up, automatic welcome, Member ID in a prompt
-
-**Durable Inbox Receipt**:
-The adapter-private identifier attached to one DSH user message for admission.
-DSH `agent/inbox/spliced` insertion makes a roster receipt pending; a
-non-canceled removal consumes it, while `outcome: "canceled"` leaves it
-eligible. A preference-driven cancellation of a queued Member Join turn is
-suppressed rather than retried when that group is enabled again. Incomplete
-workspace-session inspection suppresses roster intake for that bridge run
-without stopping ordinary message triggers.
-_Avoid_: plugin receipt database, exactly-once Keet delivery, outbound send receipt
-
-**DM Activity Signal**:
-
-Bridge-owned, best-effort native read-anchor and typing metadata for one active
-Managed DM turn. The read anchor is published from the triggering chat index
-plus one at follow-up dispatch; typing refreshes every four seconds and stops
-when that work settles, sends successfully, or its bridge owner is cancelled.
-The signal is never model-visible and regular groups never emit it.
-_Avoid_: Agent presence, delivery guarantee, group activity
-
-**Recent Destination Read**:
-A bounded retrieval of recent plain-text messages from one discovered
-destination. Regular-group results include canonical message IDs and reply
-targets and sender display labels; DM results include only display labels and
-message data. Valid edited records expose their current text in explicit reads;
-edited live updates remain suppressed and never independently start a turn.
-Reads provide context without creating a group or independently starting a turn.
-_Avoid_: Room export, automatic catch-up
-
-**Inbound DM Image**:
-One or more supported raster images received together in a new Managed DM
-message, optionally with caption text. The complete message starts one Agent
-turn; image retrieval from older messages is not part of a Recent Destination
-Read.
-_Avoid_: Historical image read, group image trigger, one turn per image
-
-**Inbound DM Image Failure**:
-A Managed DM image message that cannot be completely downloaded and admitted.
-The bounded admission deadline also covers an unavailable or stalled native
-file stream; expiry destroys that stream and uses the same one-notice path.
-It produces one bounded sender notice and one non-triggering Destination
-Context Buffer record for the next successful DM turn; no failed image bytes
-enter the Active Conversation.
-_Avoid_: Partial image turn, silent failure, automatic retry
-
-**Managed Group Roster**:
-The bounded list of current members in a selected Managed Destination rendered
-to the Agent as display names only. The Bridge keeps stable Member IDs
-internally for classification and setup, but the roster excludes them along
-with device details, presence, historical membership, and identity secrets.
-_Avoid_: Account directory, membership history
-
-**Explicit Destination Send**:
-A plain-text message deliberately sent by an Agent tool to one admitted
-destination selected by its exact admitted `groupName`. Regular-group sends
-may carry one exact canonical `replyTo` target; Managed DM sends are ordinary
-text and reject reply anchors. A send may optionally decorate the current Keet
-trigger with one native reaction after the text is delivered. Completing an
-Agent turn does not itself send anything to Keet.
-_Avoid_: Automatic reply, arbitrary-room send
-
-**Keet Reaction**:
-A native Unicode emoji or bounded Keet wire-shortcode reaction attached to one
-Keet message by a participant or assistant. In the DSH Keet Bridge, participant reactions are aggregate
-signals that can inform a later interaction in the same destination without
-starting one, and they do not imply reactor identity. Aggregate reaction
-context is delivered at most once for an exact target-message, emoji, and
-visible-count tuple, including across DSH restarts. A canceled inbox removal
-does not consume the receipt; removing and re-adding the same tuple remains
-suppressed, while a changed count is eligible once. The target is a
-whitespace-normalized prefix of at most 48 Unicode code points, with one
-ellipsis only when content was omitted. Wire tokens are an untrusted inbound
-display form; outbound reactions remain Unicode emoji.
-_Avoid_: Standalone response, sticker, reaction-triggered turn, reactor attribution
-
-**Reaction Response**:
-A written response sent through the explicit destination tool with an optional
-Keet Reaction attached to the message that prompted it. The text is always
-delivered first; the reaction is a best-effort decoration and never replaces
-the response or causes a confirmed text send to be retried.
-_Avoid_: Standalone reaction response, arbitrary historical target, automatic toggle/removal
-
-**Explicit Destination Image Send**:
-A supported raster image deliberately sent by an Agent tool to a Managed Destination,
-selected by exact `groupName` and read only from within the Active
-Conversation workspace. It may carry a caption; completing a turn or creating
-an image in DSH does not send it automatically.
-_Avoid_: Automatic image reply, arbitrary host file
-
-**Keet reply relation**:
-An Explicit Destination Send to a Managed Group that references one specific
-existing message in that same group through the canonical `replyTo` identifier
-so the official Keet worker records the reply relationship. Managed DM sends
-do not use this relation. Desktop UI rendering remains a separate disposable
-smoke.
-_Avoid_: Plain follow-up, quoted-text imitation
-
-**Group Onboarding**:
-The human settings operation that consumes an invitation to join the
-Integration Identity to a Keet group while the DSH Keet Bridge is running. The
-invitation is transient, and successful native joining is followed by admission
-of the fully initialized destination into the current bridge and Agent tools.
-The new destination starts with new messages only; its historical snapshot is
-not replayed. Normal Agent tools never create or reveal invitation material.
-_Avoid_: Agent invitation tool, automatic group creation, restart-required join
-
-**Pending DM Request**:
-A request from another Keet identity to open a direct conversation with the
-Integration Identity, awaiting a human's acceptance. It is not a Managed DM.
-_Avoid_: Agent approval request, accepted DM, group invitation
-
-**DM Request Acceptance**:
-The human decision to accept one Pending DM Request on behalf of the
-Integration Identity. Acceptance authorizes the direct conversation; the
-request itself is not an Agent instruction. The settings card submits the exact
-hidden peer selector and admits the resulting DM into the running bridge.
-_Avoid_: Automatic acceptance, Agent consent, group onboarding
-
-**Searchable Keet Username**:
-The human-managed, globally unique registry reservation that lets another Keet
-human find the dedicated Integration Identity and initiate a DM request. It is
-not the display name or profile. The setup CLI invokes the Integration Core's
-syntax validation, availability admission, native register/update selection,
-and bounded lookup convergence; the bridge, Agent tools, settings, and model
-context do not expose username mutation.
-_Avoid_: Display name, Agent-editable username, contact alias
-
-**Integration Identity Profile**:
-The human-managed display name and optional avatar of the dedicated Keet
-identity, updated through the narrow setup CLI. Setup converts a local PNG,
-JPEG, or WebP into deterministic square 64/128/256 PNG variants and preserves
-the current non-empty display name for avatar-only updates. Official clients
-apply the circular presentation mask.
-_Avoid_: Agent-editable identity, general profile manager
-
-**Impri Keet Approval Channel**:
-The Adapter that presents Impri actions and collects human decisions in one
-private Keet DM. Action execution belongs to the action producer.
-_Avoid_: PR merge executor, DSH conversation, Telegram callback emulation
-
-**Approval DM**:
-The private conversation selected by the operator for one Impri Keet Approval
-Channel. It is the boundary within which external approval choices count.
-_Avoid_: Any joined room, approver Member ID allowlist
-
-**Approval Message**:
-A bot-authored message presenting one Impri action for a human decision.
-_Avoid_: PR snapshot, executable instruction
-
-**Preset Approval Reaction**:
-The bot's own ✅ or ❌ on an Approval Message, providing a clickable choice
-without constituting a human decision.
-_Avoid_: Bot vote, automatic approval
-
-**External Approval Choice**:
-A ✅ or ❌ on an Approval Message contributed by someone other than the bot
-in its Approval DM. Both choices present together form an unresolved conflict.
-_Avoid_: Member-attributed review, quorum vote
+The official Keet sidecar is the only native transport. Integration Core owns
+normalization and bounded native operations; MCP owns agent-facing tools and
+workspace file admission. There is no DSH-specific agent-tool path. Future
+consumers should use MCP rather than duplicating those contracts.

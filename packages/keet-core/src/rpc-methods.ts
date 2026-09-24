@@ -24,10 +24,6 @@ export const RPC_METHODS = {
   registerUsername: 198,
   updateUsername: 199,
   checkUsername: 202,
-  /** Native Managed DM read position; the worker enforces room/policy gates. */
-  setUnreadAnchor: 219,
-  /** Native Managed DM typing timestamp refresh; the worker enforces room gates. */
-  updateTypingIndicator: 221,
   /** Native aggregate reaction mutation; the worker enforces room/message policy. */
   addReaction: 156,
   /** Current aggregate state for one exact message, including our own reactions. */

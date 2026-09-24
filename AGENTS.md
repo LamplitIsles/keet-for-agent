@@ -2,7 +2,7 @@
 
 Read `HANDOFF.md` before changing code. Implementation lives in the pnpm
 workspace packages under `packages/`: `@lamplitisles/keet-integration-core` is
-private, while `@lamplitisles/dsh-keet` and `@lamplitisles/keet-mcp` are public adapter packages. Keep
+private, while `@lamplitisles/keet-mcp` is the public agent adapter. Keep
 `.scratch/` wholly ignored; it contains local plans, tickets, deferred notes,
 and archived research only.
 
@@ -33,17 +33,8 @@ pnpm pack-smoke
 ```
 
 `pnpm pack-smoke` packs the MCP gateway and checks its distributed executable,
-content, dependency, and notice contract without starting Keet or DSH. DSH
-artifact smoke is intentionally deferred until its operator path is supported
-again. There is no publication, registry, or release workflow, and nothing may
-be pushed from this task.
-
-The local web profile links directly to `packages/dsh-keet`. To deploy that
-linked checkout, run `pnpm run deploy`; it builds first and restarts
-`dsh.service` only after the build succeeds. Verify deployment with
-`systemctl --user is-active dsh.service`. Use service health as the default
-deployment verification; run browser checks only when the user explicitly
-requests them.
+content, dependency, and notice contract without starting Keet. There is no
+publication, registry, or release workflow.
 
 ## Git and release audit
 
@@ -55,9 +46,8 @@ artifact or history risk.
 Official runtime tests are high-cost operator checks. Run them only when the
 user explicitly requests an official-runtime smoke in the current task; the
 opt-in environment variables enable execution but do not grant permission.
-`pnpm real-worker-smoke` requires `KEET_OFFICIAL_RUNTIME_SMOKE=1`; the
-two-sidecar onboarding smoke requires `KEET_OFFICIAL_ONBOARDING_SMOKE=1`.
-Both use fresh temporary identity paths. When they are not requested, report
+`pnpm real-worker-smoke` requires `KEET_OFFICIAL_RUNTIME_SMOKE=1` and uses a
+fresh temporary identity path. When it is not requested, report
 official-client interoperability as unverified rather than running them.
 Never infer it from fake-worker or Loader tests.
 

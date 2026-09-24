@@ -17,7 +17,7 @@ import {
   type KeetImageFile,
   type KeetImageMediaType,
   type KeetImagePreview,
-  type PreparedKeetImage,
+  type PreparedKeetFile,
   type KeetReadiness,
   type KeetSubscription,
   type ManagedGroup,
@@ -40,10 +40,6 @@ const MAX_DM_REQUESTS = 32
 const MAX_AVATAR_BYTES = 512 * 1024
 const MAX_USERNAME_LENGTH = 64
 const DM_REQUEST_PENDING = 3
-// The bridge acknowledges `chatIndex + 1`, so the retained position must
-// leave one safe integer available for that read length.
-const MAX_CHAT_INDEX = Number.MAX_SAFE_INTEGER - 1
-const MAX_CHAT_LENGTH = Number.MAX_SAFE_INTEGER
 const MAX_REACTIONS_PER_MESSAGE = 16
 const MAX_REACTION_GRAPHEME_CODE_POINTS = 64
 const MAX_REACTION_COUNT = 100_000
@@ -55,8 +51,9 @@ const KEET_WIRE_SHORTCODE_PATTERN = /^(?:[a-z0-9][a-z0-9_+-]*|[+-][0-9]+)$/
 // RegExp's `v` flag keeps the accepted value tied to the runtime's anchored
 // RGI emoji property without requiring a maintained Unicode sequence table.
 const RGI_EMOJI_PATTERN = new RegExp("^\\p{RGI_Emoji}$", "v")
-/** Transport-side bounds; DSH admission applies its own deployment limits. */
+/** Transport-side bounds for inbound images and outbound files. */
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024
+const MAX_FILE_BYTES = 100 * 1024 * 1024
 const MAX_IMAGE_COUNT = 16
 const MAX_IMAGE_MESSAGE_BYTES = 32 * 1024 * 1024
 const MAX_IMAGE_PIXELS = 100_000_000
@@ -67,13 +64,13 @@ const DEFAULT_IMAGE_ADMISSION_TIMEOUT_MS = 60_000
 type RawRecord = Record<string, unknown>
 
 /**
- * Typed Integration Core over the official fd-3 sidecar. No DSH concepts live
- * here; adapters consume only normalized records and bounded destination operations.
+ * Typed Integration Core over the official fd-3 sidecar. Adapters consume only
+ * normalized records and bounded destination operations.
  */
 export class KeetIntegrationCore implements KeetCore {
   readonly sidecar: KeetSidecar
   readonly #pairingTimeoutMs: number
-  /** Bounded Core-owned deadline used by the bridge for one inbound image batch. */
+  /** Bounded Core-owned deadline used by the MCP gateway for one inbound image batch. */
   readonly imageAdmissionTimeoutMs: number
   #selfId: string | undefined
   #selfLabel: string | undefined
@@ -249,8 +246,8 @@ export class KeetIntegrationCore implements KeetCore {
   }
 
   /**
-   * Create a disposable interoperability-test room. The DSH adapter never
-   * calls this capability and does not expose it as a setting or tool.
+   * Create a disposable interoperability-test room. Agent adapters never call
+   * this capability or expose it as a setting or tool.
    */
   async createRoom(options: CreateGroupOptions): Promise<string> {
     if (!options || typeof options.title !== "string" || !options.title.trim() || options.title.length > 512) {
@@ -463,15 +460,15 @@ export class KeetIntegrationCore implements KeetCore {
     }
   }
 
-  /** Save the source bytes and publish one native file/image record. */
-  async sendImage(groupId: string, image: PreparedKeetImage, signal?: AbortSignal): Promise<void> {
+  /** Save the source bytes and publish one native file record. */
+  async sendFile(groupId: string, input: PreparedKeetFile, signal?: AbortSignal): Promise<void> {
     const id = boundedId(groupId, "Managed Group ID")
-    const prepared = validatePreparedKeetImage(image)
+    const prepared = validatePreparedKeetFile(input)
     ensureSignal(signal)
     const metadata: Record<string, unknown> = {
       mimetype: prepared.mediaType,
-      dimensions: { width: prepared.width, height: prepared.height },
-      ...(prepared.name ? { name: prepared.name } : {}),
+      name: prepared.name,
+      ...(prepared.width && prepared.height ? { dimensions: { width: prepared.width, height: prepared.height } } : {}),
     }
     const saved = await this.callWithSignal("saveFileBlob", [id, Buffer.from(prepared.bytes), metadata], signal)
     const file = validateSavedFile(saved)
@@ -481,23 +478,6 @@ export class KeetIntegrationCore implements KeetCore {
     }
     await this.callWithSignal("sendFile", [id, payload], signal)
   }
-  async setUnreadAnchor(groupId: string, length: number, signal?: AbortSignal): Promise<void> {
-    const id = boundedId(groupId, "Managed Group ID")
-    if (!Number.isSafeInteger(length) || length < 0 || length > MAX_CHAT_LENGTH) {
-      throw publicError("unread anchor length must be a non-negative safe integer")
-    }
-    ensureSignal(signal)
-    const result = await this.callWithSignal("setUnreadAnchor", [id, length], signal)
-    validateVoidResult(result, "unread anchor")
-  }
-
-  async updateTypingIndicator(groupId: string, signal?: AbortSignal): Promise<void> {
-    const id = boundedId(groupId, "Managed Group ID")
-    ensureSignal(signal)
-    const result = await this.callWithSignal("updateTypingIndicator", [id], signal)
-    validateVoidResult(result, "typing indicator")
-  }
-
   watchMessages(groupId: string, handler: (message: KeetMessage) => void, signal?: AbortSignal): KeetSubscription {
     const id = boundedId(groupId, "Managed Group ID")
     if (typeof handler !== "function") throw publicError("message subscription handler is required")
@@ -982,9 +962,6 @@ function normalizeMessage(value: unknown, groupId: string, normalizeOptions: Nor
   const rawId = value.messageId ?? value.id ?? value.oplog ?? value.key ?? value
   const messageId = normalizeMessageId(rawId) ?? normalizeMessageId(value)
   if (!messageId) return undefined
-  const chatIndex = [value.chatIndex, value.clock, chat?.chatIndex, chat?.clock]
-    .map(normalizeChatIndex)
-    .find((candidate): candidate is number => candidate !== undefined)
   const member = isRecord(value.member) ? value.member : undefined
   const sender = isRecord(value.sender) ? value.sender : isRecord(value.author) ? value.author : isRecord(nestedMessage?.sender) ? nestedMessage.sender : member
   const senderId = firstString(value.senderId, value.memberId, sender?.memberId, sender?.id, member?.memberId, value.authorId, nestedMessage?.senderId, nestedMessage?.memberId)
@@ -1029,7 +1006,6 @@ function normalizeMessage(value: unknown, groupId: string, normalizeOptions: Nor
     timestamp: Number.isFinite(timestamp) ? timestamp : 0,
     text: text?.slice(0, MAX_TEXT) ?? "",
     ...(images && images.length > 0 ? { images } : {}),
-    ...(chatIndex !== undefined ? { chatIndex } : {}),
     ...(mentions && mentions.length > 0 ? { mentions } : {}),
     ...(replyTo ? { replyTo } : {}),
     ...(reactions ? { reactions } : {}),
@@ -1146,10 +1122,6 @@ function normalizeMessageId(value: unknown): KeetMessageId | undefined {
   return { deviceId, seq }
 }
 
-function normalizeChatIndex(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_CHAT_INDEX ? value : undefined
-}
-
 function extractMessageId(value: unknown): KeetMessageId | undefined {
   return normalizeMessageId(value) ?? (isRecord(value) ? normalizeMessageId(value.messageId ?? value.id) : undefined)
 }
@@ -1185,9 +1157,10 @@ function imageChunk(value: unknown): Uint8Array | undefined {
   return undefined
 }
 
-function validatePreparedKeetImage(image: PreparedKeetImage): PreparedKeetImage {
+function validatePreparedImageFile(file: PreparedKeetFile): PreparedKeetFile {
+  const image = file as PreparedKeetFile & { readonly mediaType: KeetImageMediaType; readonly width: number; readonly height: number }
   if (!image || typeof image !== "object" || !IMAGE_MEDIA_TYPES.has(image.mediaType)) throw publicError("Keet image is unsupported")
-  if (!(image.bytes instanceof Uint8Array) || image.bytes.byteLength < 1 || image.bytes.byteLength > MAX_IMAGE_BYTES) throw publicError("Keet image exceeds the supported size")
+  if (!(image.bytes instanceof Uint8Array) || image.bytes.byteLength < 1 || image.bytes.byteLength > MAX_FILE_BYTES) throw publicError("Keet image exceeds the supported size")
   if (!Number.isSafeInteger(image.width) || !Number.isSafeInteger(image.height) || image.width < 1 || image.height < 1 || image.width > MAX_IMAGE_DIMENSION || image.height > MAX_IMAGE_DIMENSION || image.width * image.height > MAX_IMAGE_PIXELS) throw publicError("Keet image dimensions are invalid")
   const detected = detectImageMediaType(image.bytes)
   if (detected !== image.mediaType) throw publicError("Keet image format is unsupported")
@@ -1197,14 +1170,23 @@ function validatePreparedKeetImage(image: PreparedKeetImage): PreparedKeetImage 
     if (!Number.isSafeInteger(preview.width) || !Number.isSafeInteger(preview.height) || preview.width < 1 || preview.height < 1 || preview.width > 2_048 || preview.height > 2_048 || preview.width * preview.height > 4_000_000) throw publicError("Keet image preview is invalid")
     if (detectImageMediaType(preview.bytes) !== preview.mediaType) throw publicError("Keet image preview is invalid")
   }
-  const name = image.name ? sanitizeFileName(image.name) : ""
-  return name ? { ...image, name } : {
-    bytes: image.bytes,
-    mediaType: image.mediaType,
-    width: image.width,
-    height: image.height,
-    ...(image.preview ? { preview: image.preview } : {}),
+  const name = sanitizeFileName(image.name)
+  if (!name) throw publicError("Keet file name is invalid")
+  return { ...image, name }
+}
+
+function validatePreparedKeetFile(file: PreparedKeetFile): PreparedKeetFile {
+  if (!file || typeof file !== "object" || !(file.bytes instanceof Uint8Array) || file.bytes.byteLength < 1 || file.bytes.byteLength > MAX_FILE_BYTES) throw publicError("Keet file exceeds the supported size")
+  if (typeof file.mediaType !== "string" || file.mediaType.length < 3 || file.mediaType.length > 255 || !/^[\w!#$&^_.+-]+\/[\w!#$&^_.+-]+$/.test(file.mediaType)) throw publicError("Keet file media type is invalid")
+  const name = sanitizeFileName(file.name)
+  if (!name) throw publicError("Keet file name is invalid")
+  if (IMAGE_MEDIA_TYPES.has(file.mediaType as KeetImageMediaType)) {
+    if (file.width === undefined || file.height === undefined) throw publicError("Keet image dimensions are invalid")
+    const image = validatePreparedImageFile({ bytes: file.bytes, mediaType: file.mediaType, width: file.width, height: file.height, name, ...(file.preview ? { preview: file.preview } : {}) })
+    return { ...image, name }
   }
+  if (file.width !== undefined || file.height !== undefined || file.preview !== undefined) throw publicError("Keet non-image file metadata is invalid")
+  return { bytes: file.bytes, mediaType: file.mediaType, name }
 }
 
 function detectImageMediaType(bytes: Uint8Array): KeetImageMediaType | undefined {
@@ -1216,7 +1198,7 @@ function detectImageMediaType(bytes: Uint8Array): KeetImageMediaType | undefined
 }
 
 function validateSavedFile(value: unknown): RawRecord {
-  if (!isRecord(value) || !isRecord(value.pointer) || !hasExternalBlobPointer(value.pointer.externalBlob)) throw publicError("Keet image save failed")
+  if (!isRecord(value) || !isRecord(value.pointer) || !hasExternalBlobPointer(value.pointer.externalBlob)) throw publicError("Keet file save failed")
   return value
 }
 

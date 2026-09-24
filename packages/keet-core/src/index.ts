@@ -15,7 +15,7 @@ export type {
   KeetImageFile,
   KeetImageMediaType,
   KeetImagePreview,
-  PreparedKeetImage,
+  PreparedKeetFile,
   KeetReadiness,
   KeetRuntimeManifest,
   KeetSubscription,

@@ -10,7 +10,6 @@ import { fileURLToPath } from "node:url"
 import type { KeetSidecarStatus, KeetSidecarLog } from "../packages/keet-core/src/sidecar.js"
 import { KeetIntegrationCore, KeetSidecar, validateAdmission, validateKeetReaction, type PreparedAvatar, type ManagedGroup } from "../packages/keet-core/src/index.js"
 import type { RpcMethodName } from "../packages/keet-core/src/rpc-methods.js"
-import { classifyTrigger } from "../packages/dsh-keet/src/keet-protocol.js"
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-worker.mjs", import.meta.url))
 const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")
@@ -196,8 +195,6 @@ function makeMockCore(options: MockOptions = {}): MockCore {
       }
       case "getDmRequestsByStatus": return state.pending
       case "acceptDmRequest": state.accepted = true; state.pending = []; return {}
-      case "setUnreadAnchor":
-      case "updateTypingIndicator":
       case "updateIdentityProfile": return {}
       case "getLinkInfo": return { isRoomInvitation: args[0] === "fixture-token", title: "Test group" }
       case "startPairingRoom": return { roomId: "group-joined" }
@@ -341,7 +338,6 @@ describe("typed Keet Integration Core unit behavior", () => {
       senderLabel: "Official Alice",
       timestamp: 4,
       text: "official mention",
-      chatIndex: 17,
       mentions: ["identity-self"],
     }, {
       messageId: { deviceId: "device-alice", seq: 12 },
@@ -352,7 +348,6 @@ describe("typed Keet Integration Core unit behavior", () => {
       text: "edited official record",
     }])
     expect(history[0]).not.toHaveProperty("replyTo")
-    expect(classifyTrigger(history[0]!, { memberId: "identity-self", displayName: "Fixture Bot" }, new Set())?.triggerKind).toBe("mention")
   })
 
   it("normalizes the official reaction digest, own reactions, and malformed-entry bounds", async () => {
@@ -508,20 +503,6 @@ describe("typed Keet Integration Core unit behavior", () => {
       { memberId: "member-a", displayName: "Alice" },
       { memberId: "member-z", displayName: "Aaron" },
     ])
-  })
-
-  it("maps DM activity calls and validates their bounded inputs and results", async () => {
-    const harness = makeMockCore()
-    await harness.core.setUnreadAnchor("group-dm", 18)
-    await harness.core.updateTypingIndicator("group-dm")
-    expect(harness.state.calls.filter(({ name }) => name === "setUnreadAnchor" || name === "updateTypingIndicator")).toEqual([
-      { name: "setUnreadAnchor", args: ["group-dm", 18] },
-      { name: "updateTypingIndicator", args: ["group-dm"] },
-    ])
-    await expect(harness.core.setUnreadAnchor("group-dm", -1)).rejects.toThrow("safe integer")
-    await expect(harness.core.setUnreadAnchor("group-dm", 1.5)).rejects.toThrow("safe integer")
-    const invalid = makeMockCore({ handlers: { updateTypingIndicator: () => "unexpected" } })
-    await expect(invalid.core.updateTypingIndicator("group-dm")).rejects.toThrow("invalid typing indicator result")
   })
 
   it("suppresses the stream snapshot, filters records, deduplicates, and isolates handler errors", async () => {
@@ -838,14 +819,15 @@ describe("Keet Integration Core fd-3 process contracts", () => {
       await expect(core.readRecentMessages("group-test", 0)).rejects.toThrow("1 to 50")
       await expect(core.addReaction("group-test", { deviceId: "device-alice", seq: 1 }, "👍🏽")).resolves.toBeUndefined()
       await expect(core.readReactions("group-test", { deviceId: "device-alice", seq: 1 })).resolves.toEqual([])
-      await expect(core.setUnreadAnchor("group-test", 3)).resolves.toBeUndefined()
-      await expect(core.updateTypingIndicator("group-test")).resolves.toBeUndefined()
       const receivedImage = await core.readImage("group-test", {
         file: { pointer: { externalBlob: { id: "fixture-image", blob: Buffer.from("streamed-image") } } },
         mediaType: "image/png",
       })
       expect(Buffer.from(receivedImage)).toEqual(Buffer.from("streamed-image"))
-      await expect(core.sendImage("group-test", { bytes: PNG_1X1, mediaType: "image/png", width: 1, height: 1 })).resolves.toBeUndefined()
+      await expect(core.sendFile("group-test", { bytes: Uint8Array.from(Buffer.from("PK\u0003\u0004fixture")), mediaType: "application/zip", name: "bundle.zip" })).resolves.toBeUndefined()
+      const imageOverLegacyLimit = new Uint8Array(16 * 1024 * 1024 + 1)
+      imageOverLegacyLimit.set(PNG_1X1)
+      await expect(core.sendFile("group-test", { bytes: imageOverLegacyLimit, mediaType: "image/png", name: "large.png", width: 1, height: 1 })).resolves.toBeUndefined()
       expect((await core.readRecentMessages("group-test", 50)).some((message) => message.reactions?.length)).toBe(false)
       const rendered = JSON.stringify(logs)
       expect(rendered).not.toContain(data)

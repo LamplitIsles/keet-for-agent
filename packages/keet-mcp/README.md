@@ -33,7 +33,7 @@ The Keet runtime is deliberately not part of the package. Prepare the operator-s
 | --- | --- |
 | `KEET_MCP_RUNTIME_DIR` | Absolute runtime directory containing `bare` and `core-worker.bundle`. |
 | `KEET_MCP_IDENTITY_DIR` | Absolute writable identity-data directory, created owner-only when missing. |
-| `KEET_MCP_WORKSPACE_ROOT` | Absolute existing root from which image paths may be sent. |
+| `KEET_MCP_WORKSPACE_ROOT` | Absolute existing root from which file paths may be sent. |
 | `KEET_MCP_STATE_DIR` | Required absolute owner-only directory for the CFL event journal and its temporary replacement file. It is not a media directory. |
 | `KEET_CFL_MEDIA_DIR` | Required absolute owner-only durable media library for materialized inbound DM images. It is written only by the daemon and read locally by CFL under the same service account. |
 | `KEET_CFL_EVENT_RETENTION` | Optional positive number of retained CFL events; defaults to `10000`. |
@@ -44,17 +44,17 @@ The runtime, identity, workspace, state, and media paths must not overlap. Confi
 
 Each request to `/mcp`, including MCP `DELETE` session termination, requires the bearer token. The daemon retains at most 64 active MCP sessions; new session initialization receives `429` until an existing session is closed or terminated. This is a bounded local-service guard, not a substitute for operator authentication.
 
-Core holds an exclusive kernel lock on the identity directory for its lifetime. Stop the DSH Keet bridge, Impri adapter, or another gateway using that same identity before starting this daemon. Do not delete `.keet-sidecar.lock`: the open kernel lock, not file presence, denotes ownership.
+Core holds an exclusive kernel lock on the identity directory for its lifetime. Stop the Impri adapter, another gateway, or any other process using that same identity before starting this daemon. Do not delete `.keet-sidecar.lock`: the open kernel lock, not file presence, denotes ownership.
 
 ## MCP tools
 
 | Tool | Scope |
 | --- | --- |
-| `keet_list_groups` | Lists the admitted startup destinations as `{ groupName, kind }`. |
-| `keet_list_members` | Lists bounded display names for a group or DM; Broadcast rosters are rejected. |
-| `keet_read_recent_messages` | Reads 1–50 text-only records without changing read state. DM records omit IDs and reply provenance. |
-| `keet_send_message` | Sends non-empty text; regular groups support canonical replies and unique exact-name native mentions. |
-| `keet_send_image` | Sends a workspace-contained PNG, JPEG, WebP, or GIF, then an optional caption. Caption failure after image success is a no-retry partial delivery. |
+| `list_destinations` | Lists the admitted startup destinations as `{ destinationName, kind }`. |
+| `list_members` | Lists bounded display names for a group or DM; Broadcast rosters are rejected. |
+| `read_recent_messages` | Reads 1–50 text-only records without changing read state. DM records omit IDs and reply provenance. |
+| `send_message` | Sends non-empty text; regular groups support canonical replies and unique exact-name native mentions. |
+| `send_file` | Sends one workspace-contained ordinary file up to 100 MiB. PNG, JPEG, WebP, and GIF files retain native image presentation and a generated preview. |
 
 ## CFL event feed
 
@@ -106,7 +106,7 @@ not manually delete a file while CFL history still references it.
 
 If a supplied checkpoint is older than the retained window, the gateway sends
 one `resync_required` frame with that window's range and closes the socket. CFL
-must reconcile explicitly (for example with `keet_read_recent_messages`),
+must reconcile explicitly (for example with `read_recent_messages`),
 deduplicate replayed events, persist its next checkpoint, and decide whether or
 how to inject the data into a Codex turn. Delivery is at least once across
 reconnects; the journal is a bounded replay buffer, not a per-CFL queue.
@@ -126,7 +126,7 @@ pnpm pack-smoke
 
 `pnpm pack-smoke` packs the gateway, checks its machine-consumed contents,
 direct WebSocket dependency, notices, and `--help` executable surface. It does
-not contact Keet or start DSH. Official-runtime interoperability is not
+not contact Keet. Official-runtime interoperability is not
 established by these checks.
 
 ## License
