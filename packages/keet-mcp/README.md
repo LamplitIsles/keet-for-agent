@@ -46,6 +46,53 @@ Each request to `/mcp`, including MCP `DELETE` session termination, requires the
 
 Core holds an exclusive kernel lock on the identity directory for its lifetime. Stop the Impri adapter, another gateway, or any other process using that same identity before starting this daemon. Do not delete `.keet-sidecar.lock`: the open kernel lock, not file presence, denotes ownership.
 
+## Human identity setup
+
+`keet-mcp-setup` uses the same pinned runtime and identity as `keet-mcpd`, but
+does not need the gateway token or expose these mutations as Agent tools. Set
+`KEET_MCP_RUNTIME_DIR` and `KEET_MCP_IDENTITY_DIR` to the gateway's exact values.
+The identity directory must already exist; a missing path cannot create a new identity.
+Stop the process holding that identity before running a command, then restart
+the gateway to refresh its admitted destination snapshot. CFL reconnects to the
+gateway; its service does not need to stop.
+
+```text
+keet-mcp-setup status
+keet-mcp-setup list
+keet-mcp-setup inspect                       # invitation from stdin
+keet-mcp-setup join                          # invitation from stdin
+keet-mcp-setup dm-requests
+keet-mcp-setup dm-accept --member-id ID
+keet-mcp-setup leave --group-id ID --yes     # joined Default groups only
+keet-mcp-setup profile --display-name NAME [--avatar FILE]
+keet-mcp-setup profile --avatar FILE
+keet-mcp-setup username --username NAME
+```
+
+`join` and `inspect` accept one `keet://chat/...` URL, up to 8192 bytes, from
+stdin only. Keep invitations out of command arguments, shell history, files,
+logs, and exported environment variables. A terminal can read one without echoing it:
+
+```sh
+(
+  set -e
+  trap 'systemctl --user start keet-mcp.service' EXIT
+  systemctl --user stop keet-mcp.service
+  read -r -s -p 'Keet invitation: ' invitation
+  printf '\n'
+  printf '%s' "$invitation" | keet-mcp-setup join
+)
+```
+
+This example assumes the two path variables are already exported and the
+named service is the one that owns that identity. It does not stop a separate
+Impri identity or a Partner service. Avoid joining during active group traffic:
+the gateway cannot observe messages while stopped. `leave` requires `--yes`
+and checks the selected room is a joined ordinary group before native departure.
+Profile avatars accept local PNG, JPEG, or WebP files up to 8 MiB and are
+prepared as three bounded square variants. A username result of `pending`
+returns a nonzero exit code; inspect the JSON result before retrying.
+
 ## MCP tools
 
 | Tool | Scope |
@@ -111,9 +158,10 @@ deduplicate replayed events, persist its next checkpoint, and decide whether or
 how to inject the data into a Codex turn. Delivery is at least once across
 reconnects; the journal is a bounded replay buffer, not a per-CFL queue.
 
-There are no room-onboarding, reaction, profile, username, or stdio surfaces in
-this release. The daemon serializes sends per destination. Core remains the
-authority for current native posting permissions.
+The gateway exposes no room-onboarding, reaction, profile, username, or stdio
+tools; human setup uses the separate local CLI above. The daemon serializes
+sends per destination. Core remains the authority for current native posting
+permissions.
 
 ## Verification
 

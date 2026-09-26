@@ -8,7 +8,8 @@
   native text/file delivery.
 - `packages/keet-mcp/src/` owns the bearer-protected MCP gateway, its immutable
   Managed Destination snapshot, workspace-contained file preparation, the CFL
-  event journal, and the inbound-DM media library.
+  event journal, the inbound-DM media library, and the human-only local setup
+  CLI over the same Core identity.
 - `packages/impri-keet/src/` owns the independent Impri approval channel.
 - `tests/` uses fake workers, fixtures, and test-owned temporary paths.
 

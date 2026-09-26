@@ -1,7 +1,7 @@
 import { defineConfig, type UserConfig } from "tsdown"
 
 const mcpBuild: UserConfig = {
-  entry: { index: "packages/keet-mcp/src/index.ts", cli: "packages/keet-mcp/src/cli.ts" },
+  entry: { index: "packages/keet-mcp/src/index.ts", cli: "packages/keet-mcp/src/cli.ts", setup: "packages/keet-mcp/src/setup.ts" },
   format: ["esm"],
   platform: "node",
   target: "node22",

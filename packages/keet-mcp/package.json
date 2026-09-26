@@ -12,7 +12,8 @@
     }
   },
   "bin": {
-    "keet-mcpd": "./dist/cli.js"
+    "keet-mcpd": "./dist/cli.js",
+    "keet-mcp-setup": "./dist/setup.js"
   },
   "files": [
     "dist",

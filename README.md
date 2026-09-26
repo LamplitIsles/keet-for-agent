@@ -13,8 +13,8 @@ removed; agent integrations use MCP.
   approval-channel adapter and owns a different Keet identity.
 
 See the [MCP gateway guide](packages/keet-mcp/README.md) for configuration and
-the [runtime guide](docs/runtime-extraction.md) for the operator-supplied pinned
-Keet runtime.
+human identity setup with `keet-mcp-setup`, and the [runtime guide](docs/runtime-extraction.md)
+for the operator-supplied pinned Keet runtime.
 
 ## Development
 
