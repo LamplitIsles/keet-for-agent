@@ -9,6 +9,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { KeetIntegrationCore, KEET_COMPATIBILITY, validateKeetReaction, type KeetCore, type KeetCoreOptions, type KeetMember, type KeetMessage, type KeetMessageId, type PreparedKeetFile } from "@lamplitisles/keet-integration-core"
 import * as z from "zod/v4"
 import { WebhookEventFeed, type WebhookDestination } from "./webhook-event-feed.js"
+import { InboundImageStore } from "./inbound-image-store.js"
 
 export type DestinationKind = "group" | "broadcast" | "dm"
 export interface Destination { readonly groupId: string; readonly groupName: string; readonly kind: DestinationKind }
@@ -67,7 +68,7 @@ function mediaType(bytes: Uint8Array): "image/png" | "image/jpeg" | "image/webp"
 export class KeetMcpGateway {
   #core: KeetCore | undefined; #destinations: readonly Destination[] = []; #server: Server | undefined; #workspaceRoot: string | undefined; #starting = false; #closing = false; #startPromise: Promise<void> | undefined; #closePromise: Promise<void> | undefined; #operationAbort = new AbortController()
   #sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>(); #sendTails = new Map<string, Promise<void>>()
-  #eventFeed: WebhookEventFeed | undefined; #failure: Error | undefined
+  #eventFeed: WebhookEventFeed | undefined; #imageStore: InboundImageStore | undefined; #failure: Error | undefined
   constructor(readonly options: GatewayOptions) {}
   get address(): string | undefined { const address = this.#server?.address(); return address && typeof address !== "string" ? `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}/mcp` : undefined }
   get destinations(): readonly Destination[] { return this.#destinations.map((item) => ({ ...item })) }
@@ -94,19 +95,32 @@ export class KeetMcpGateway {
       if (new Set(destinations.map((value) => value.groupId)).size !== destinations.length) throw new Error("Keet destination snapshot contains duplicate rooms.")
       if (new Set(destinations.map((value) => value.groupName)).size !== destinations.length) throw new Error("Keet destination names are ambiguous.")
       if (this.#closing) throw new Error("Keet gateway is closing."); this.#workspaceRoot = config.workspaceRoot; this.#destinations = Object.freeze(destinations)
+      const imageStore = new InboundImageStore(config.stateDir); await imageStore.start(); this.#imageStore = imageStore
       if (config.webhookUrl) {
-        const feed = new WebhookEventFeed({ stateDir: config.stateDir, url: new URL(config.webhookUrl), ...(config.webhookBearerToken ? { bearerToken: config.webhookBearerToken } : {}), core, identityId: readiness.identityId, ...(readiness.displayName ? { identityLabel: readiness.displayName } : {}), destinations: destinations as readonly WebhookDestination[], onFatal: (error) => { this.fail(error) } })
+        const feed = new WebhookEventFeed({ stateDir: config.stateDir, imageStore, url: new URL(config.webhookUrl), ...(config.webhookBearerToken ? { bearerToken: config.webhookBearerToken } : {}), core, identityId: readiness.identityId, ...(readiness.displayName ? { identityLabel: readiness.displayName } : {}), destinations: destinations as readonly WebhookDestination[], onFatal: (error) => { this.fail(error) } })
         createdFeed = feed; await feed.start(); if (this.#closing) throw new Error("Keet gateway is closing."); this.#eventFeed = feed
       }
       this.#server = createServer((request, response) => { void this.handle(request, response) })
       await new Promise<void>((resolve, reject) => { this.#server!.once("error", reject); this.#server!.listen(config.port, config.host, () => { this.#server!.off("error", reject); resolve() }) })
       if (this.#closing) throw new Error("Keet gateway is closing.")
-    } catch (error) { const server = this.#server; const serverClosed = server && new Promise<void>((resolve) => server.close(() => resolve())); server?.closeAllConnections(); this.#server = undefined; const feed = this.#eventFeed ?? createdFeed; this.#eventFeed = undefined; await feed?.close().catch(() => undefined); await serverClosed; const core = this.#core ?? created; this.#core = undefined; this.#workspaceRoot = undefined; if (core) await core.close().catch(() => undefined); throw error }
+    } catch (error) { const server = this.#server; const serverClosed = server && new Promise<void>((resolve) => server.close(() => resolve())); server?.closeAllConnections(); this.#server = undefined; const feed = this.#eventFeed ?? createdFeed; this.#eventFeed = undefined; this.#imageStore = undefined; await feed?.close().catch(() => undefined); await serverClosed; const core = this.#core ?? created; this.#core = undefined; this.#workspaceRoot = undefined; if (core) await core.close().catch(() => undefined); throw error }
   }
   async close(): Promise<void> { if (this.#closePromise) return await this.#closePromise; const closing = this.closeImpl(); this.#closePromise = closing; try { await closing } finally { if (this.#closePromise === closing) this.#closePromise = undefined } }
-  private async closeImpl(): Promise<void> { this.#closing = true; this.#operationAbort.abort(); try { await this.#startPromise?.catch(() => undefined); const server = this.#server; const serverClosed = server && new Promise<void>((resolve) => server.close(() => resolve())); server?.closeAllConnections(); for (const { transport, server } of this.#sessions.values()) { await transport.close().catch(() => undefined); await server.close().catch(() => undefined) }; this.#sessions.clear(); this.#sendTails.clear(); this.#server = undefined; const feed = this.#eventFeed; this.#eventFeed = undefined; await feed?.close().catch(() => undefined); await serverClosed; const core = this.#core; this.#core = undefined; this.#workspaceRoot = undefined; if (core) await core.close() } finally { this.#closing = false } }
+  private async closeImpl(): Promise<void> { this.#closing = true; this.#operationAbort.abort(); try { await this.#startPromise?.catch(() => undefined); const server = this.#server; const serverClosed = server && new Promise<void>((resolve) => server.close(() => resolve())); server?.closeAllConnections(); for (const { transport, server } of this.#sessions.values()) { await transport.close().catch(() => undefined); await server.close().catch(() => undefined) }; this.#sessions.clear(); this.#sendTails.clear(); this.#server = undefined; const feed = this.#eventFeed; this.#eventFeed = undefined; await feed?.close().catch(() => undefined); this.#imageStore = undefined; await serverClosed; const core = this.#core; this.#core = undefined; this.#workspaceRoot = undefined; if (core) await core.close() } finally { this.#closing = false } }
   private async handle(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse): Promise<void> {
-    if (new URL(request.url ?? "/", "http://localhost").pathname !== "/mcp") { response.writeHead(404).end(); return }
+    const url = new URL(request.url ?? "/", "http://localhost")
+    if (url.pathname.startsWith("/images/")) {
+      if (!authorized(request, this.options.config.token)) { response.writeHead(401, { "www-authenticate": "Bearer" }).end(); return }
+      if (request.method !== "GET") { response.writeHead(405, { allow: "GET" }).end(); return }
+      if (url.search || url.hash) { response.writeHead(404).end(); return }
+      try {
+        const image = await this.#imageStore?.read(url.pathname.slice("/images/".length))
+        if (!image) { response.writeHead(404).end(); return }
+        response.writeHead(200, { "content-type": image.mediaType, "content-length": image.bytes.byteLength, "cache-control": "private, no-store", "x-content-type-options": "nosniff" }).end(image.bytes)
+      } catch { response.writeHead(500).end() }
+      return
+    }
+    if (url.pathname !== "/mcp") { response.writeHead(404).end(); return }
     if (!authorized(request, this.options.config.token)) { response.writeHead(401, { "www-authenticate": "Bearer" }).end(); return }
     if (!["POST", "GET", "DELETE"].includes(request.method ?? "")) { response.writeHead(405, { allow: "GET, POST, DELETE" }).end(); return }
     const sessionId = request.headers["mcp-session-id"]

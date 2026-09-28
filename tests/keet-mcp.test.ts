@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createServer } from "node:http"
-import { mkdir, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, rm, symlink, writeFile, stat } from "node:fs/promises"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -92,7 +92,45 @@ describe("Keet MCP gateway", () => {
   })
 
   it("validates webhook configuration and leaves MCP usable without one", async () => { const fake = fakeCore(); const { gateway, root } = await start(fake.core); try { expect(gateway.address).toBeDefined(); expect(() => configurationFromEnvironment({ KEET_MCP_RUNTIME_DIR: "/r", KEET_MCP_IDENTITY_DIR: "/i", KEET_MCP_WORKSPACE_ROOT: "/w", KEET_MCP_STATE_DIR: "/s", KEET_MCP_LISTEN: "127.0.0.1:1", KEET_MCP_TOKEN: "t".repeat(32), KEET_WEBHOOK_BEARER_TOKEN: "x" })).toThrow("requires KEET_WEBHOOK_URL") } finally { await rm(root, { recursive: true, force: true }) } })
-  it("posts text-only group, DM, and broadcast events with trigger facts", async () => { const target = await receiver([204, 204, 204, 204]); const fake = fakeCore(); const { root } = await start(fake.core, { webhookUrl: target.url, webhookBearerToken: "secret" }); try { fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "ordinary" }); fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "Bot", mentions: ["bot"] }); fake.emit("dm", { groupId: "dm", messageId: { deviceId: "d", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 3, text: "DM" }); fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "n", seq: 1 }, senderId: "author", senderLabel: "Author", timestamp: 4, text: "caption", images: [{ file: {}, mediaType: "image/png" }] }); while (target.received.length < 4) await pause(); expect(target.received.map((entry) => entry.body.sequence)).toEqual([1, 2, 3, 4]); expect(target.received[1]!.body.trigger).toBe("mention"); expect(target.received[2]!.body.trigger).toBe("dm"); expect(target.received[3]!.body.images).toBeUndefined(); expect(target.received[0]!.auth).toBe("Bearer secret") } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
+  it("posts group, DM, and broadcast events with trigger facts", async () => { const target = await receiver([204, 204, 204, 204]); const fake = fakeCore(); const { root } = await start(fake.core, { webhookUrl: target.url, webhookBearerToken: "secret" }); try { fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "ordinary" }); fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "Bot", mentions: ["bot"] }); fake.emit("dm", { groupId: "dm", messageId: { deviceId: "d", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 3, text: "DM" }); fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "n", seq: 1 }, senderId: "author", senderLabel: "Author", timestamp: 4, text: "caption", images: [{ file: {}, mediaType: "image/png" }] }); while (target.received.length < 4) await pause(); expect(target.received.map((entry) => entry.body.sequence)).toEqual([1, 2, 3, 4]); expect(target.received[1]!.body.trigger).toBe("mention"); expect(target.received[2]!.body.trigger).toBe("dm"); expect(target.received[3]!.body.images).toMatchObject([{ status: "available", mediaType: "image/png" }]); expect(target.received[0]!.auth).toBe("Bearer secret") } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
+
+  it("serves retained originals and keeps mixed image results stable across a restart", async () => {
+    const target = await receiver([500, 204, 204, 204])
+    const fake = fakeCore()
+    fake.core.readImage = vi.fn(async (_group, image) => { if (image.name === "broken.png") throw new Error("native pointer unavailable"); if (image.name === "corrupt.png") return Uint8Array.from([1, 2, 3]); return PNG_1X1 })
+    const { gateway, root, token } = await start(fake.core, { webhookUrl: target.url })
+    const endpoint = gateway.address!.replace(/\/mcp$/, "")
+    try {
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "Bot caption", mentions: ["bot"], images: [{ file: {}, mediaType: "image/png", name: "first.png" }, { file: {}, mediaType: "image/png", name: "broken.png" }, { file: {}, mediaType: "image/png", name: "corrupt.png" }] })
+      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "d", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 2, text: "", images: [{ file: {}, mediaType: "image/png" }] })
+      fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "b", seq: 1 }, senderId: "author", senderLabel: "Author", timestamp: 3, text: "", images: [{ file: {}, mediaType: "image/png" }] })
+      while (target.received.length < 1) await pause()
+      const first = target.received[0]!.body
+      expect(first.trigger).toBe("mention")
+      expect(first.images).toMatchObject([{ status: "available", mediaType: "image/png", name: "first.png" }, { status: "unavailable", mediaType: "image/png", name: "broken.png" }, { status: "unavailable", mediaType: "image/png", name: "corrupt.png" }])
+      expect(first.images[1].ref).toBeUndefined()
+      const reference = first.images[0].ref as string
+      const imageUrl = `${endpoint}/images/${reference}`
+      expect((await fetch(imageUrl)).status).toBe(401)
+      expect((await fetch(imageUrl, { method: "POST", headers: { authorization: `Bearer ${token}` } })).status).toBe(405)
+      expect((await fetch(`${endpoint}/images/../CONTEXT.md`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(404)
+      await gateway.close()
+      const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); gateways.push(restarted); await restarted.start()
+      while (target.received.length < 4) await pause()
+      expect(target.received[1]!.body).toEqual(first)
+      expect(target.received.slice(1, 4).map((entry) => entry.body.sequence)).toEqual([1, 2, 3])
+      expect(target.received[2]!.body).toMatchObject({ text: "", trigger: "dm", images: [{ status: "available" }] })
+      expect(target.received[3]!.body).toMatchObject({ text: "", images: [{ status: "available" }] })
+      const fetched = await fetch(imageUrl, { headers: { authorization: `Bearer ${token}` } })
+      expect(fetched.status).toBe(200); expect(fetched.headers.get("content-type")).toBe("image/png")
+      expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(PNG_1X1)
+      const stored = join(root, "state", "images", reference)
+      expect((await stat(stored)).mode & 0o777).toBe(0o600)
+      await rm(stored)
+      expect((await fetch(imageUrl, { headers: { authorization: `Bearer ${token}` } })).status).toBe(404)
+      await restarted.close()
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
+  })
   it("adds bounded external reaction context only to qualifying Group and DM text", async () => {
     const target = await receiver([204, 204, 204, 204]); const fake = fakeCore()
     const own = { groupId: "group", messageId: { deviceId: "bot-device", seq: 7 }, senderId: "bot", senderLabel: "Bot", timestamp: 1, text: "🙂".repeat(60), reactions: [{ emoji: "👍", count: 3, own: false }, { emoji: "✅", count: 1, own: false }, { emoji: ":custom:", count: 2, own: false }] }
@@ -167,6 +205,19 @@ describe("Keet MCP gateway", () => {
     } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
   })
   it("fails closed and reports a fatal daemon error when persistence fails", async () => { const target = await receiver([204]); const fake = fakeCore(); const fatal = vi.fn(); const { gateway, root } = await start(fake.core, { webhookUrl: target.url }, fatal); try { await mkdir(join(root, "state", "webhook-events.ndjson")); fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "fail" }); while (!fake.closed) await pause(); expect(gateway.address).toBeUndefined(); expect(fatal).toHaveBeenCalledOnce(); expect(target.received).toEqual([]) } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
+
+  it("treats a saved-image write failure as fatal without publishing an available reference", async () => {
+    const target = await receiver([204]); const fake = fakeCore(); const fatal = vi.fn()
+    const { gateway, root } = await start(fake.core, { webhookUrl: target.url }, fatal)
+    try {
+      await rm(join(root, "state", "images"), { recursive: true })
+      await writeFile(join(root, "state", "images"), "blocked")
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "", images: [{ file: {}, mediaType: "image/png" }] })
+      while (!fake.closed) await pause()
+      expect(fatal).toHaveBeenCalledOnce(); expect(target.received).toEqual([])
+      expect(gateway.address).toBeUndefined()
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
+  })
   it("reports a persistence failure even if shutdown has begun", async () => {
     const target = await receiver([]); const fake = fakeCore(); const fatal = vi.fn(); const { gateway, root } = await start(fake.core, { webhookUrl: target.url }, fatal)
     try {
@@ -203,7 +254,7 @@ describe("Keet MCP gateway", () => {
       expect(gateway.address).toBeUndefined()
     } finally { server.close(); await rm(root, { recursive: true, force: true }) }
   })
-  it("classifies label and own-message replies while excluding self and image-only events", async () => {
+  it("classifies label and own-message replies while excluding self", async () => {
     const target = await receiver([204, 204, 204, 204])
     const fake = fakeCore()
     fake.core.readRecentMessages = vi.fn(async () => [{ groupId: "group", messageId: { deviceId: "bot-device", seq: 7 }, senderId: "bot", senderLabel: "Bot", timestamp: 1, text: "old reply anchor" }])
@@ -215,12 +266,13 @@ describe("Keet MCP gateway", () => {
       fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 5, text: "thread reply", replyTo: { deviceId: "bot-device", seq: 7 } })
       fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 3 }, senderId: "alice", senderLabel: "Alice", timestamp: 6, text: `${" ".repeat(16_001)}bounded` })
       fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 4 }, senderId: "private-member-id", senderLabel: "private-member-id", timestamp: 7, text: "unnamed sender" })
-      while (target.received.length < 4) await pause()
-      expect(target.received.map((entry) => entry.body.trigger)).toEqual(["label", "reply", undefined, undefined])
-      expect(target.received.map((entry) => entry.body.sequence)).toEqual([1, 2, 3, 4])
-      expect(target.received[2]!.body.text).toBe("bounded")
-      expect(target.received[3]!.body.senderLabel).toBe("Unknown sender")
-      expect(JSON.stringify(target.received[3]!.body)).not.toContain("private-member-id")
+      while (target.received.length < 5) await pause()
+      expect(target.received.map((entry) => entry.body.trigger)).toEqual(["dm", "label", "reply", undefined, undefined])
+      expect(target.received.map((entry) => entry.body.sequence)).toEqual([1, 2, 3, 4, 5])
+      expect(target.received[0]!.body.text).toBe("")
+      expect(target.received[3]!.body.text).toBe("bounded")
+      expect(target.received[4]!.body.senderLabel).toBe("Unknown sender")
+      expect(JSON.stringify(target.received[4]!.body)).not.toContain("private-member-id")
       expect(target.received[0]!.auth).toBeUndefined()
     } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
   })

@@ -1,7 +1,9 @@
 import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import path from "node:path"
+import sharp from "sharp"
 import { validateKeetReaction, type KeetCore, type KeetMessage, type KeetMessageId, type KeetSubscription } from "@lamplitisles/keet-integration-core"
+import { InboundImageStore } from "./inbound-image-store.js"
 
 const MAX_TEXT = 16_000
 const MAX_NAME = 512
@@ -13,6 +15,7 @@ const MAX_REACTION_CONTEXT = 16
 const MAX_REACTION_READS = 16
 const MAX_REACTION_EXCERPT = 48
 const MAX_EVENT_BYTES = 112 * 1024
+const MAX_IMAGE_MESSAGE_BYTES = 32 * 1024 * 1024
 
 export type WebhookDestinationKind = "group" | "broadcast" | "dm"
 type Trigger = "mention" | "label" | "reply" | "dm"
@@ -29,13 +32,16 @@ interface Event {
   readonly replyTo?: KeetMessageId
   readonly trigger?: Trigger
   readonly reactionContext?: readonly ReactionContext[]
+  readonly images?: readonly ImageEntry[]
 }
+type ImageEntry = { readonly status: "available"; readonly mediaType: string; readonly name?: string; readonly ref: string } | { readonly status: "unavailable"; readonly mediaType: string; readonly name?: string }
 interface ReactionContext { readonly targetMessageId: KeetMessageId; readonly targetText: string; readonly emoji: string; readonly externalCount: number }
 interface Options {
   readonly stateDir: string
   readonly url: URL
   readonly bearerToken?: string
   readonly core: KeetCore
+  readonly imageStore: InboundImageStore
   readonly identityId: string
   readonly identityLabel?: string
   readonly destinations: readonly WebhookDestination[]
@@ -92,7 +98,7 @@ export class WebhookEventFeed {
   observe(destination: WebhookDestination, message: KeetMessage): void {
     if (!this.#started || this.#closed || this.#failure) return
     if (message.senderId === this.options.identityId) { this.rememberOwnMessage(destination, message.messageId); return }
-    if (!message.text?.trim() || !canonicalId(message.messageId)) return
+    if ((!message.text?.trim() && !message.images?.length) || !canonicalId(message.messageId)) return
     if (this.#queued >= MAX_PENDING) { this.#fail(new Error("Webhook event persistence queue is full.")); return }
     this.#queued += 1
     void this.#serialized(async () => {
@@ -101,14 +107,34 @@ export class WebhookEventFeed {
         const trigger = await this.#trigger(destination, message)
         const event = eventFromMessage(destination, message, this.#nextSequence, trigger)
         if (!event) return
+        if (message.images?.length) {
+          const images: ImageEntry[] = []
+          let imageBytes = 0
+          for (const image of message.images) {
+            const name = safeImageName(image.name)
+            const base = { mediaType: image.mediaType, ...(name ? { name } : {}) }
+            let bytes: Uint8Array
+            try {
+              bytes = await this.options.core.readImage(destination.groupId, image, this.#closeAbort.signal)
+              imageBytes += bytes.byteLength
+              if (imageBytes > MAX_IMAGE_MESSAGE_BYTES) throw new Error("Inbound image message exceeds the supported size.")
+              await validateImage(bytes, image.mediaType)
+            }
+            catch { images.push({ ...base, status: "unavailable" }); continue }
+            const ref = await this.options.imageStore.save(bytes, image.mediaType)
+            images.push({ ...base, status: "available", ref })
+          }
+          Object.assign(event, { images })
+        }
         if (trigger && destination.kind !== "broadcast") {
           try {
             const history = await this.options.core.readRecentMessages(destination.groupId, 50)
             const context = await reactionContext(this.options.core, destination.groupId, history, this.options.identityId)
             while (context.length && Buffer.byteLength(JSON.stringify({ ...event, reactionContext: context }), "utf8") > MAX_EVENT_BYTES) context.pop()
             if (context.length) Object.assign(event, { reactionContext: context })
-          } catch { /* Snapshot collection is best effort; the text event still persists. */ }
+          } catch { /* Snapshot collection is best effort; the message event still persists. */ }
         }
+        if (Buffer.byteLength(JSON.stringify(event), "utf8") > MAX_EVENT_BYTES) throw new Error("Webhook event exceeds the supported size.")
         await this.#writeNextSequence(this.#nextSequence + 1)
         await this.#append(event)
         this.#nextSequence += 1
@@ -179,7 +205,7 @@ export class WebhookEventFeed {
 
 function eventFromMessage(destination: WebhookDestination, message: KeetMessage, sequence: number, trigger?: Trigger): Event | undefined {
   const messageId = canonicalId(message.messageId)
-  if (!message.text?.trim() || !messageId || !Number.isSafeInteger(sequence) || sequence < 1) return undefined
+  if ((!message.text?.trim() && !message.images?.length) || !messageId || !Number.isSafeInteger(sequence) || sequence < 1) return undefined
   const sourceText = Array.from(message.text).slice(0, MAX_TEXT).join("")
   const text = sourceText.trim() ? sourceText : Array.from(message.text.trim()).slice(0, MAX_TEXT).join("")
   const replyTo = canonicalId(message.replyTo)
@@ -192,11 +218,14 @@ function eventFromMessage(destination: WebhookDestination, message: KeetMessage,
   }
 }
 function eventFromJournal(value: unknown): Event | undefined {
-  if (!record(value) || !onlyKeys(value, ["type", "eventId", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "trigger", "reactionContext"])) return undefined
+  if (!record(value) || !onlyKeys(value, ["type", "eventId", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "trigger", "reactionContext", "images"])) return undefined
   const destination = value.destination
   if (value.type !== "message" || typeof value.eventId !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.eventId) || !positive(value.sequence) || !strictId(value.messageId) || !Number.isSafeInteger(value.timestamp)) return undefined
   if (!record(destination) || !onlyKeys(destination, ["groupName", "kind"]) || !boundedExact(destination.groupName) || !kind(destination.kind) || !boundedExact(value.senderLabel)) return undefined
-  if (typeof value.text !== "string" || !value.text.trim() || Array.from(value.text).length > MAX_TEXT) return undefined
+  if (typeof value.text !== "string" || Array.from(value.text).length > MAX_TEXT || (!value.text.trim() && !value.images?.length)) return undefined
+  const images = value.images
+  if (images !== undefined && (!Array.isArray(images) || !images.length || images.length > 16 || !images.every(validImageEntry))) return undefined
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_EVENT_BYTES) return undefined
   const replyTo = value.replyTo === undefined ? undefined : strictId(value.replyTo)
   const trigger = value.trigger === undefined ? undefined : triggerValue(value.trigger)
   if ((value.replyTo !== undefined && !replyTo) || (value.trigger !== undefined && !trigger)) return undefined
@@ -206,7 +235,7 @@ function eventFromJournal(value: unknown): Event | undefined {
   return {
     type: "message", eventId: value.eventId, sequence: value.sequence, messageId: strictId(value.messageId)!, timestamp: value.timestamp,
     destination: { groupName: destination.groupName, kind: destination.kind }, senderLabel: value.senderLabel, text: value.text,
-    ...(replyTo ? { replyTo } : {}), ...(trigger ? { trigger } : {}), ...(reactionContext ? { reactionContext } : {}),
+    ...(replyTo ? { replyTo } : {}), ...(trigger ? { trigger } : {}), ...(reactionContext ? { reactionContext } : {}), ...(images ? { images } : {}),
   }
 }
 async function reactionContext(core: KeetCore, groupId: string, history: readonly KeetMessage[], identityId: string): Promise<ReactionContext[]> {
@@ -233,6 +262,15 @@ async function reactionContext(core: KeetCore, groupId: string, history: readonl
 }
 function validEmoji(value: unknown): value is string { if (typeof value !== "string" || Array.from(value).length > 66 || Buffer.byteLength(value, "utf8") > 258) return false; try { validateKeetReaction(value); return true } catch { return /^:(?:[a-z0-9][a-z0-9_+-]*|[+-][0-9]+):$/.test(value) } }
 function validReactionContext(value: unknown): boolean { return record(value) && onlyKeys(value, ["targetMessageId", "targetText", "emoji", "externalCount"]) && !!strictId(value.targetMessageId) && Array.from(value.targetMessageId.deviceId).length <= 128 && typeof value.targetText === "string" && value.targetText.trim().length > 0 && Array.from(value.targetText).length <= MAX_REACTION_EXCERPT && validEmoji(value.emoji) && positive(value.externalCount) && value.externalCount <= 100_000 }
+function validImageEntry(value: unknown): boolean { return record(value) && onlyKeys(value, ["status", "mediaType", "name", "ref"]) && ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(value.mediaType) && (value.name === undefined || boundedExact(value.name)) && (value.status === "unavailable" && value.ref === undefined || value.status === "available" && typeof value.ref === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.(?:png|jpg|webp|gif)$/.test(value.ref)) }
+function safeImageName(value: string | undefined): string | undefined { const name = bounded(value?.replace(/\\/g, "/").split("/").at(-1), ""); return name && name !== "." && name !== ".." ? name : undefined }
+async function validateImage(bytes: Uint8Array, mediaType: string): Promise<void> {
+  const image = sharp(Buffer.from(bytes), { limitInputPixels: 100_000_000, failOn: "error" })
+  const metadata = await image.metadata()
+  const expected = mediaType === "image/jpeg" ? "jpeg" : mediaType.slice(6)
+  if (metadata.format !== expected || !metadata.width || !metadata.height || metadata.width > 20_000 || metadata.height > 20_000 || metadata.width * metadata.height > 100_000_000) throw new Error("Inbound image format is invalid.")
+  await image.stats()
+}
 function canonicalId(value: unknown): KeetMessageId | undefined { return record(value) && typeof value.deviceId === "string" && value.deviceId.trim().length > 0 && Array.from(value.deviceId).length <= MAX_NAME && Number.isSafeInteger(value.seq) && value.seq >= 0 ? { deviceId: value.deviceId, seq: value.seq } : undefined }
 function bounded(value: unknown, fallback: string): string { const text = typeof value === "string" ? Array.from(value).slice(0, MAX_NAME).join("").replace(/[\r\n\u2028\u2029]+/g, " ").trim() : ""; return text || fallback }
 function boundedExact(value: unknown): value is string { return typeof value === "string" && value.length > 0 && bounded(value, "") === value }

@@ -1,6 +1,6 @@
 # Keet MCP Gateway
 
-**`keet-mcpd` is one persistent, bearer-protected loopback gateway for five explicit Keet destination tools and an optional incoming-text webhook.**
+**`keet-mcpd` is one persistent, bearer-protected loopback gateway for five explicit Keet destination tools and an optional incoming-message webhook.**
 
 ```bash
 KEET_MCP_RUNTIME_DIR=/opt/keet/4.22.0-linux-x64 \
@@ -14,7 +14,7 @@ KEET_MCP_TOKEN="replace-with-a-secret-of-at-least-32-characters" \
 keet-mcpd
 ```
 
-Use `http://127.0.0.1:8765/mcp` with the token as an HTTP `Authorization: Bearer …` header. The webhook bearer token, if set, is separate from the MCP token. There is no unauthenticated health or control route.
+Use `http://127.0.0.1:8765/mcp` with the token as an HTTP `Authorization: Bearer …` header. The same MCP token protects `GET /images/{ref}`. The webhook bearer token, if set, is separate from the MCP token. There is no unauthenticated health or control route.
 
 ## Install
 
@@ -34,7 +34,7 @@ The Keet runtime is deliberately not part of the package. Prepare the operator-s
 | `KEET_MCP_RUNTIME_DIR` | Absolute runtime directory containing `bare` and `core-worker.bundle`. |
 | `KEET_MCP_IDENTITY_DIR` | Absolute writable identity-data directory, created owner-only when missing. |
 | `KEET_MCP_WORKSPACE_ROOT` | Absolute existing root from which file paths may be sent. |
-| `KEET_MCP_STATE_DIR` | Required absolute owner-only directory for pending webhook events and sequence state. |
+| `KEET_MCP_STATE_DIR` | Required absolute owner-only directory for pending webhook events, sequence state, and retained original images. |
 | `KEET_WEBHOOK_URL` | Optional HTTPS or loopback-HTTP receiver URL. Credentials and fragments are rejected. |
 | `KEET_WEBHOOK_BEARER_TOKEN` | Optional separate bearer token; requires `KEET_WEBHOOK_URL` and never belongs in its URL. |
 | `KEET_MCP_LISTEN` | Loopback-only `127.0.0.1:port` or `::1:port`. |
@@ -105,17 +105,29 @@ returns a nonzero exit code; inspect the JSON result before retrying.
 
 ## Incoming webhook
 
-When `KEET_WEBHOOK_URL` is set, KFA observes every admitted non-self,
-text-bearing Group, DM, and Broadcast message and POSTs it to that URL. A
-captioned image contributes its text only; image-only messages are omitted.
+When `KEET_WEBHOOK_URL` is set, KFA observes every admitted non-self Group,
+DM, and Broadcast message with text or images and POSTs it to that URL. A
+captioned image keeps both its text and images; pure image messages have empty
+`text` and a nonempty `images` array.
 Each JSON body has `type: "message"`, UUID `eventId`, positive `sequence`,
 canonical `messageId`, safe-integer `timestamp`, `destination`, `senderLabel`,
 bounded text, and optional `replyTo` and `trigger` (`mention`, `label`,
 `reply`, or `dm`). It includes only canonical message IDs for the event,
 optional reply, and reaction targets; it excludes group and sender IDs, native
-records, image data, paths, and credentials.
+records, image data, paths, and credentials. The ordered `images` array has one
+entry per admitted native image: `mediaType`, optional safe `name`, and
+`status: "available"` with an opaque `ref`, or `status: "unavailable"` without
+one. Read or validation failure for one image does not suppress other images
+or the message. Core admits at most 16 images, 16 MiB each, and 32 MiB per
+message; KFA retains the validated original bytes without transcoding.
 
-A qualifying Group or DM text trigger can also carry `reactionContext`: up to
+Fetch an available image using `GET /images/{ref}` on the same listener, with
+`Authorization: Bearer <KEET_MCP_TOKEN>`. The response contains the original
+bytes and their image media type. Missing or malformed references, including
+images removed by an operator, return 404; missing credentials return 401.
+The route accepts only GET and never accepts a filesystem path.
+
+A qualifying Group or DM message trigger can also carry `reactionContext`: up to
 16 `{ targetMessageId, targetText, emoji, externalCount }` entries from the
 latest 50 messages in that destination. KFA makes at most 16 strict complete
 reaction reads for identity-authored candidate messages with apparent
@@ -123,11 +135,12 @@ reactions. History alone cannot establish ownership: a target whose complete
 read fails or is unavailable is omitted. `targetText` is an untrusted excerpt
 of at most 48 Unicode code points. `externalCount` subtracts this identity's own
 reaction, and entries with zero external reactions are omitted. Inbound emoji
-may be Unicode or a bounded Keet shortcode. The complete event with context
-is capped at 112 KiB; entries are dropped to fit. A history-read failure
-leaves the text event intact, and a later qualifying trigger can collect a new
-snapshot. Reaction changes alone create no webhook event. Ordinary Group text
-and all Broadcast text carry no reaction context. The receiver handles its own
+may be Unicode or a bounded Keet shortcode. The complete event, including
+images and context, is capped at 112 KiB; reaction entries are dropped to fit.
+A history-read failure leaves the message event intact, and a later qualifying
+trigger can collect a new snapshot. Reaction changes alone create no webhook
+event. Ordinary Group messages and all Broadcast messages carry no reaction
+context. The receiver handles its own
 deduplication and delivery receipts; KFA does not identify reactors.
 
 KFA appends and syncs an event before its first request. It sends one event at
@@ -139,6 +152,14 @@ is no `/cfl` route, WebSocket replay protocol, or local inbound-media library.
 If event persistence or intake fails, the daemon reports a fatal error and
 exits nonzero. A graceful shutdown finishes accepted persistence work before
 releasing the Core identity; an interrupted HTTP request may be retried.
+
+Validated originals are synced under `KEET_MCP_STATE_DIR/images/` before an
+event with their references is journaled. That directory is owner-only; files
+are owner-readable. Webhook acknowledgement and gateway restart do not remove
+images. The operator may manually remove retained files when they are no
+longer needed. A removed file makes its historical reference return 404,
+including during webhook retries. Keep the state directory on persistent
+storage and plan its capacity; KFA has no automatic image expiry or cleanup.
 
 `send_message` still requires nonblank `text`. It may include
 `reaction: { targetMessageId: { deviceId, seq }, emoji }`, where `emoji` is

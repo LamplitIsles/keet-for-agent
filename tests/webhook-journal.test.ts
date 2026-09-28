@@ -16,6 +16,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 })
 
 import { WebhookEventFeed } from "../packages/keet-mcp/src/webhook-event-feed.js"
+import { InboundImageStore } from "../packages/keet-mcp/src/inbound-image-store.js"
 
 const destination = { groupId: "group", groupName: "Group", kind: "group" as const }
 const message = (sequence: number): KeetMessage => ({ groupId: "group", messageId: { deviceId: "alice", seq: sequence }, senderId: "alice", senderLabel: "Alice", timestamp: sequence, text: `message ${sequence}` })
@@ -27,7 +28,7 @@ describe("webhook journal", () => {
     const root = await mkdtemp(join(tmpdir(), "keet-webhook-journal-"))
     const event = { type: "message", eventId: "00000000-0000-0000-0000-000000000001", sequence: 1, messageId: { deviceId: "peer", seq: 1 }, timestamp: 1, destination: { groupName: "Group", kind: "group" }, senderLabel: "Peer", text: "hello Bot", trigger: "label", reactionContext: [{ targetMessageId: { deviceId: "bot", seq: 1 }, targetText: "old", emoji: "plain text", externalCount: 1 }] }
     const core = { readRecentMessages: vi.fn(async () => []), watchMessages: vi.fn() } as unknown as KeetCore
-    const feed = new WebhookEventFeed({ stateDir: root, url: new URL("http://127.0.0.1:1/events"), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
+    const feed = new WebhookEventFeed({ stateDir: root, imageStore: new InboundImageStore(root), url: new URL("http://127.0.0.1:1/events"), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
     try {
       await writeFile(join(root, "webhook-events.ndjson"), `${JSON.stringify(event)}\n`)
       await expect(feed.start()).rejects.toThrow("invalid data")
@@ -54,7 +55,7 @@ describe("webhook journal", () => {
     const address = server.address()! as import("node:net").AddressInfo
     let watcher!: (value: KeetMessage) => void
     const core = { readRecentMessages: vi.fn(async () => []), watchMessages: vi.fn((_id: string, handler: (value: KeetMessage) => void) => { watcher = handler; return { closed: false, close: async () => undefined } as KeetSubscription }) } as unknown as KeetCore
-    const feed = new WebhookEventFeed({ stateDir: root, url: new URL(`http://127.0.0.1:${address.port}/api/keet/events`), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
+    const feed = new WebhookEventFeed({ stateDir: root, imageStore: new InboundImageStore(root), url: new URL(`http://127.0.0.1:${address.port}/api/keet/events`), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
     feeds.push(feed)
     let enteredRename!: () => void
     const renaming = new Promise<void>((resolve) => { enteredRename = resolve })
@@ -77,7 +78,7 @@ describe("webhook journal", () => {
     const root = await mkdtemp(join(tmpdir(), "keet-webhook-journal-"))
     let watcher!: (value: KeetMessage) => void
     const core = { readRecentMessages: vi.fn(async () => []), watchMessages: vi.fn((_id: string, handler: (value: KeetMessage) => void) => { watcher = handler; return { closed: false, close: async () => undefined } as KeetSubscription }) } as unknown as KeetCore
-    const feed = new WebhookEventFeed({ stateDir: root, url: new URL("http://127.0.0.1:1/api/keet/events"), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
+    const feed = new WebhookEventFeed({ stateDir: root, imageStore: new InboundImageStore(root), url: new URL("http://127.0.0.1:1/api/keet/events"), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
     feeds.push(feed)
     try {
       await feed.start()

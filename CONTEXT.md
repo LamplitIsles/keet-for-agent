@@ -2,74 +2,59 @@
 
 ## Managed Destination
 
-A Keet room admitted to the MCP gateway's immutable startup collection. It is
-one of:
-
-- **Managed Group** — a joined Default room.
-- **Managed Broadcast** — a joined Broadcast room; native permissions decide
-  whether the integration identity may post.
-- **Managed DM** — a complete accepted Direct Message whose peer is not
-  pending.
-
-The MCP name for its stable display selector is `destinationName`. Webhook event
-records use the internal field `groupName`; that field is not an MCP argument.
+A Keet conversation admitted for agent interaction: a joined Default Group, a
+joined Broadcast, or a complete accepted Direct Message whose peer is no longer
+pending. Native Keet permissions still govern actions in it.
 
 ## Integration Identity
 
-The Keet identity exclusively owned by one running Core instance. An identity
-directory cannot be shared concurrently by MCP, Impri, another gateway, or an
-official-client process.
+The Keet participant whose conversations the integration observes and in whose
+name it acts. One running integration owns that identity at a time.
 
 ## Explicit Destination File Send
 
-An agent-requested `send_file` operation for one workspace-contained local
-file. All ordinary file types are admitted up to 100 MiB. Supported raster
-images additionally carry native dimensions and preview metadata so Keet can
-present them as images; other files remain ordinary file cards. File delivery
-does not imply adjacent text delivery.
+An agent-requested delivery of one local file to a Managed Destination. File
+delivery is separate from text delivery, even when the file is an image.
 
-## Incoming Webhook
+## Incoming Message Event
 
-The optional ordered HTTP delivery path for admitted non-self text messages.
-KFA persists each event before its first POST and retains it until a receiver
-returns a 2xx response. `eventId` identifies at-least-once redelivery; no image
-bytes, image-only event, local media path, group ID, or sender ID is delivered.
+An ordered report of a non-self text or image message in a Managed Destination,
+including a message containing only images. A receiver decides whether the
+message calls for agent action and whether to retrieve its images.
 
-## Boundaries
+## Inbound Keet Image
 
-The official Keet sidecar is the only native transport. Integration Core owns
-normalization and bounded native operations; MCP owns agent-facing tools and
-workspace file admission. There is no DSH-specific agent-tool path. Future
-consumers should use MCP rather than duplicating those contracts.
+An image attached to an incoming message. KFA owns a retained copy of each
+image it can read and validate; that copy persists until an operator manually
+removes it, independently of event acknowledgement.
+
+## Image Reference
+
+An opaque reference in an Incoming Message Event to a retained Inbound Keet
+Image. An event's available-image fact and reference remain unchanged on
+redelivery and after an operator removes the retained copy; retrieval then fails.
+
+## Unavailable Image
+
+An Inbound Keet Image that KFA could not read or validate while processing its
+message. Its absence does not suppress the event, so the receiver can handle
+the missing image explicitly.
 
 ## Triggering Message
 
-An incoming message from another Keet participant that gives an agent a reason
-to respond: an accepted DM, a Group mention of the Integration Identity, a
-Group message containing its current display label, or a Group reply to one of
-its messages. Other Group messages and Broadcast messages are observable but do
-not trigger an agent. A webhook delivery may carry either kind of incoming
-message; it is not a separate Keet message.
+An incoming message that gives an agent a reason to respond: an accepted DM, a
+Group mention of the Integration Identity, a Group message containing its
+current display label, or a Group reply to one of its messages. Other Group
+messages and Broadcast messages remain observable without triggering an agent.
 
 ## Keet Reaction
 
-An emoji signal attached to one exact Keet message. The visible reaction state
-is an aggregate count, with no attribution to individual reactors; a reaction
-can inform a later agent interaction without itself being a text message.
-On a qualifying Group or DM text trigger, the webhook may carry bounded
-`reactionContext` entries: canonical target message ID, untrusted 48-code-point
-excerpt, emoji, and external aggregate count after subtracting the Integration
-Identity's own reaction. The receiver owns fact deduplication; KFA owns neither
-reactor attribution nor per-receiver receipts. A candidate target is included
-only when Core provides a complete aggregate reaction snapshot; a failed read
-omits the target without dropping the triggering text.
+An emoji signal attached to one exact Keet message, visible as an aggregate
+without attribution to individual reactors. Its context may inform a later
+triggering message; a reaction change alone is not a message.
 
 ## Reaction Response
 
 An agent-requested text message paired with an optional Keet Reaction on an
-explicitly identified message in the same Managed Group or DM. The text is
-delivered first; the reaction is a best-effort addition to that response, never
-a standalone send.
-The MCP `send_message` result distinguishes confirmed text plus reaction
-success from confirmed text plus reaction failure. A Group target may be a
-known historical message; a DM receiver binds the target to its active turn.
+explicitly identified message in the same Managed Group or DM. Text is
+delivered first; the reaction is best effort and never a standalone send.

@@ -8,8 +8,8 @@
   native text/file delivery.
 - `packages/keet-mcp/src/` owns the bearer-protected MCP gateway, its immutable
   Managed Destination snapshot, workspace-contained file preparation, the
-  optional durable incoming-text webhook, and the human-only local setup CLI
-  over the same Core identity.
+  optional durable incoming-message webhook and retained original images, plus
+  the human-only local setup CLI over the same Core identity.
 - `packages/impri-keet/src/` owns the independent Impri approval channel.
 - `tests/` uses fake workers, fixtures, and test-owned temporary paths.
 
@@ -27,7 +27,7 @@ field.
 reaction to a canonical target in the same Managed Group or DM. The text is
 sent first; reaction success or failure is reported separately from confirmed
 text delivery. Broadcast and standalone reaction sends are unsupported.
-Qualifying Group and DM webhook text events may include a bounded snapshot of
+Qualifying Group and DM webhook message events may include a bounded snapshot of
 external aggregate reactions to recent identity-authored messages. Reaction
 changes alone do not create events. Core's complete reaction read verifies
 ownership for each candidate; a failed read omits that target and preserves
@@ -41,9 +41,13 @@ separately with `send_message`.
 
 The gateway admits joined Default rooms, Broadcasts, and complete accepted
 Direct Messages from one bounded startup snapshot. Native Keet permissions
-remain authoritative. The optional webhook observes non-self text events,
-persists them before delivery, and retries in order until a 2xx acknowledgement.
-It never injects model context or sends replies. The `/cfl` route is removed.
+remain authoritative. The optional webhook observes non-self text and image
+messages, including pure images, persists validated originals and then their
+reference events, and retries in order until a 2xx acknowledgement. Failed
+image reads or validation are marked unavailable without dropping the message.
+Originals remain under `KEET_MCP_STATE_DIR/images/` until manually removed;
+`GET /images/{ref}` uses the MCP bearer and returns 404 after removal. It never
+injects model context or sends replies. The `/cfl` route is removed.
 
 ## Compatibility and safety
 
