@@ -6,7 +6,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto"
 import { lookup as lookupMediaType } from "mime-types"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
-import { KeetIntegrationCore, KEET_COMPATIBILITY, type KeetCore, type KeetCoreOptions, type KeetMember, type KeetMessage, type KeetMessageId, type PreparedKeetFile } from "@lamplitisles/keet-integration-core"
+import { KeetIntegrationCore, KEET_COMPATIBILITY, validateKeetReaction, type KeetCore, type KeetCoreOptions, type KeetMember, type KeetMessage, type KeetMessageId, type PreparedKeetFile } from "@lamplitisles/keet-integration-core"
 import * as z from "zod/v4"
 import { WebhookEventFeed, type WebhookDestination } from "./webhook-event-feed.js"
 
@@ -37,7 +37,7 @@ function optional(env: NodeJS.ProcessEnv, name: string): string | undefined { co
 function textResult(value: unknown) { return { content: [{ type: "text" as const, text: JSON.stringify(value) }] } }
 function toolError(error: unknown, fallback: string, signal?: AbortSignal) {
   const message = error instanceof Error ? error.message : ""
-  const allowed = ["destinationName is not an allowed Managed Destination.", "Managed Destination name is ambiguous.", "Managed Broadcast rosters are unavailable.", "DM sends do not support replyTo.", "Managed Broadcast sends do not support replyTo.", "native mentions are supported only for regular Managed Groups.", "each mention must name one current unique member.", "text must be non-empty and at most 16,000 characters.", "path must be a workspace-contained file path.", "path must stay inside the workspace.", "workspace file could not be read.", "workspace file is missing or exceeds the 100 MiB limit.", "workspace image format is unsupported or corrupt."]
+  const allowed = ["destinationName is not an allowed Managed Destination.", "Managed Destination name is ambiguous.", "Managed Broadcast rosters are unavailable.", "Managed Broadcast sends do not support reactions.", "reaction target is not a valid Keet message ID.", "reaction must be exactly one Unicode emoji", "reaction must be exactly one bounded Unicode emoji", "DM sends do not support replyTo.", "Managed Broadcast sends do not support replyTo.", "native mentions are supported only for regular Managed Groups.", "each mention must name one current unique member.", "text must be non-empty and at most 16,000 characters.", "path must be a workspace-contained file path.", "path must stay inside the workspace.", "workspace file could not be read.", "workspace file is missing or exceeds the 100 MiB limit.", "workspace image format is unsupported or corrupt."]
   const publicMessage = signal?.aborted ? "Keet operation cancelled." : allowed.includes(message) ? message : fallback
   return { content: [{ type: "text" as const, text: JSON.stringify({ error: publicMessage }) }], isError: true }
 }
@@ -128,7 +128,49 @@ export class KeetMcpGateway {
     server.registerTool("list_destinations", { description: "List destinations admitted in this daemon's immutable startup snapshot.", inputSchema: {} }, async () => textResult({ destinations: this.#destinations.map(({ groupName, kind }) => ({ destinationName: groupName, kind })) }))
     server.registerTool("list_members", { description: "List current members of an admitted group or DM. Broadcast rosters are unavailable.", inputSchema: { destinationName: z.string() } }, async ({ destinationName }, extra) => { const signal = this.operationSignal(extra.signal); try { const destination = this.destination(destinationName); if (destination.kind === "broadcast") throw new Error("Managed Broadcast rosters are unavailable."); const members = await this.core().listMembers(destination.groupId, signal); return textResult({ members: members.slice(0, 128).map((member: KeetMember) => ({ displayName: normalizeName(member.displayName, "Unknown member") })) }) } catch (error) { return toolError(error, "Keet member roster is unavailable.", signal) } })
     server.registerTool("read_recent_messages", { description: "Read 1-50 latest text messages without changing read state.", inputSchema: { destinationName: z.string(), last: z.number().int().min(1).max(50) } }, async ({ destinationName, last }, extra) => { const signal = this.operationSignal(extra.signal); try { const destination = this.destination(destinationName); const messages = await this.core().readRecentMessages(destination.groupId, last, signal); return textResult({ messages: messages.slice(-last).map((message) => messageRecord(message, destination.kind)).filter(Boolean) }) } catch (error) { return toolError(error, "Keet recent messages are unavailable.", signal) } })
-    server.registerTool("send_message", { description: "Send text to an admitted destination. Groups may use canonical replyTo and exact unique current-member display-name mentions.", inputSchema: { destinationName: z.string(), text: z.string().min(1).max(MAX_TEXT), replyTo: z.object({ deviceId: z.string().min(1).max(MAX_NAME), seq: z.number().int().nonnegative() }).optional(), mentions: z.array(z.string().min(1).max(MAX_NAME)).min(1).max(128).optional() } }, async ({ destinationName, text, replyTo, mentions }, extra) => { const signal = this.operationSignal(extra.signal); try { const destination = this.destination(destinationName); const core = this.core(); if (!text.trim()) throw new Error("text must be non-empty and at most 16,000 characters."); if (destination.kind !== "group" && replyTo) throw new Error(destination.kind === "dm" ? "DM sends do not support replyTo." : "Managed Broadcast sends do not support replyTo."); if (destination.kind !== "group" && mentions) throw new Error("native mentions are supported only for regular Managed Groups."); let ids: readonly string[] | undefined; if (mentions) { const members = await core.listMembers(destination.groupId, signal); ids = mentions.map((name) => { const match = members.filter((member) => member.displayName === name.trim()); if (match.length !== 1 || !match[0]!.memberId) throw new Error("each mention must name one current unique member."); return match[0]!.memberId }) }; const messageId = await this.serialized(destination.groupId, () => core.sendMessage(destination.groupId, text, replyTo, signal, ids)); this.#eventFeed?.rememberOwnMessage(destination, messageId); return textResult({ sent: true }) } catch (error) { return toolError(error, "Keet message was not sent.", signal) } })
+    server.registerTool("send_message", {
+      description: "Send required text to an admitted destination, then optionally add one Unicode emoji reaction to a specified message in that Group or DM.",
+      inputSchema: {
+        destinationName: z.string(), text: z.string().min(1).max(MAX_TEXT),
+        replyTo: z.object({ deviceId: z.string().min(1).max(MAX_NAME), seq: z.number().int().nonnegative() }).optional(),
+        mentions: z.array(z.string().min(1).max(MAX_NAME)).min(1).max(128).optional(),
+        reaction: z.object({ targetMessageId: z.object({ deviceId: z.string(), seq: z.number() }).strict(), emoji: z.string() }).strict().optional(),
+      },
+    }, async ({ destinationName, text, replyTo, mentions, reaction }, extra) => {
+      const signal = this.operationSignal(extra.signal)
+      try {
+        const destination = this.destination(destinationName)
+        const core = this.core()
+        if (!text.trim()) throw new Error("text must be non-empty and at most 16,000 characters.")
+        if (destination.kind !== "group" && replyTo) throw new Error(destination.kind === "dm" ? "DM sends do not support replyTo." : "Managed Broadcast sends do not support replyTo.")
+        if (destination.kind !== "group" && mentions) throw new Error("native mentions are supported only for regular Managed Groups.")
+        if (reaction) {
+          if (destination.kind === "broadcast") throw new Error("Managed Broadcast sends do not support reactions.")
+          if (!validMessageId(reaction.targetMessageId) || Array.from(reaction.targetMessageId.deviceId).length > MAX_NAME) throw new Error("reaction target is not a valid Keet message ID.")
+          validateKeetReaction(reaction.emoji)
+        }
+        let ids: readonly string[] | undefined
+        if (mentions) {
+          const members = await core.listMembers(destination.groupId, signal)
+          ids = mentions.map((name) => {
+            const match = members.filter((member) => member.displayName === name.trim())
+            if (match.length !== 1 || !match[0]!.memberId) throw new Error("each mention must name one current unique member.")
+            return match[0]!.memberId
+          })
+        }
+        return await this.serialized(destination.groupId, async () => {
+          const messageId = await core.sendMessage(destination.groupId, text, replyTo, signal, ids)
+          this.#eventFeed?.rememberOwnMessage(destination, messageId)
+          if (!reaction) return textResult({ sent: true })
+          try {
+            await core.addReaction(destination.groupId, reaction.targetMessageId, reaction.emoji, signal)
+            return textResult({ sent: true, reacted: true })
+          } catch {
+            return textResult({ sent: true, reacted: false, reactionError: "Keet reaction could not be added." })
+          }
+        })
+      } catch (error) { return toolError(error, "Keet message was not sent.", signal) }
+    })
     server.registerTool("send_file", { description: "Send one ordinary workspace-contained file up to 100 MiB. Supported images retain native image presentation and preview metadata.", inputSchema: { destinationName: z.string(), path: z.string().min(1).max(4096) } }, async ({ destinationName, path: input }, extra) => { const signal = this.operationSignal(extra.signal); try { const destination = this.destination(destinationName); const file = await prepareFile(this.workspaceRoot(), input, signal); if (signal.aborted) throw new Error("cancelled"); await this.serialized(destination.groupId, async () => { if (signal.aborted) throw new Error("cancelled"); await this.core().sendFile(destination.groupId, file, signal) }); return textResult({ sent: true }) } catch (error) { return toolError(error, "Keet file was not sent.", signal) } })
     return server
   }

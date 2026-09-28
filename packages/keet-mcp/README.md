@@ -100,7 +100,7 @@ returns a nonzero exit code; inspect the JSON result before retrying.
 | `list_destinations` | Lists the admitted startup destinations as `{ destinationName, kind }`. |
 | `list_members` | Lists bounded display names for a group or DM; Broadcast rosters are rejected. |
 | `read_recent_messages` | Reads 1–50 text-only records without changing read state. DM records omit IDs and reply provenance. |
-| `send_message` | Sends non-empty text; regular groups support canonical replies and unique exact-name native mentions. |
+| `send_message` | Sends non-empty text; regular groups support canonical replies and unique exact-name native mentions. An optional reaction adds one Unicode emoji to a specified Group or DM message after text is sent. |
 | `send_file` | Sends one workspace-contained ordinary file up to 100 MiB. PNG, JPEG, WebP, and GIF files retain native image presentation and a generated preview. |
 
 ## Incoming webhook
@@ -111,8 +111,24 @@ captioned image contributes its text only; image-only messages are omitted.
 Each JSON body has `type: "message"`, UUID `eventId`, positive `sequence`,
 canonical `messageId`, safe-integer `timestamp`, `destination`, `senderLabel`,
 bounded text, and optional `replyTo` and `trigger` (`mention`, `label`,
-`reply`, or `dm`). It never includes Keet IDs other than the message ID, native
-records, image data, paths, or credentials.
+`reply`, or `dm`). It includes only canonical message IDs for the event,
+optional reply, and reaction targets; it excludes group and sender IDs, native
+records, image data, paths, and credentials.
+
+A qualifying Group or DM text trigger can also carry `reactionContext`: up to
+16 `{ targetMessageId, targetText, emoji, externalCount }` entries from the
+latest 50 messages in that destination. KFA makes at most 16 strict complete
+reaction reads for identity-authored candidate messages with apparent
+reactions. History alone cannot establish ownership: a target whose complete
+read fails or is unavailable is omitted. `targetText` is an untrusted excerpt
+of at most 48 Unicode code points. `externalCount` subtracts this identity's own
+reaction, and entries with zero external reactions are omitted. Inbound emoji
+may be Unicode or a bounded Keet shortcode. The complete event with context
+is capped at 112 KiB; entries are dropped to fit. A history-read failure
+leaves the text event intact, and a later qualifying trigger can collect a new
+snapshot. Reaction changes alone create no webhook event. Ordinary Group text
+and all Broadcast text carry no reaction context. The receiver handles its own
+deduplication and delivery receipts; KFA does not identify reactors.
 
 KFA appends and syncs an event before its first request. It sends one event at
 a time; only a 2xx response removes the head event. Timeouts, network errors,
@@ -124,10 +140,23 @@ If event persistence or intake fails, the daemon reports a fatal error and
 exits nonzero. A graceful shutdown finishes accepted persistence work before
 releasing the Core identity; an interrupted HTTP request may be retried.
 
-The gateway exposes no room-onboarding, reaction, profile, username, or stdio
-tools; human setup uses the separate local CLI above. The daemon serializes
-sends per destination. Core remains the authority for current native posting
-permissions.
+`send_message` still requires nonblank `text`. It may include
+`reaction: { targetMessageId: { deviceId, seq }, emoji }`, where `emoji` is
+exactly one Unicode emoji. The target must be in the same admitted Group or
+DM; Core checks its existence and native permission. A Group target may be an
+older message and may differ from `replyTo`. A DM receiver should supply only
+its active turn's triggering message ID, even if later DMs are queued; KFA
+cannot infer turn ownership. Broadcast reactions and reaction-only sends are
+rejected before text delivery. With no reaction request the result is
+`{ sent: true }`. With one, the result is `{ sent: true, reacted: true }` or
+`{ sent: true, reacted: false, reactionError: "Keet reaction could not be added." }`.
+The latter confirms text delivery; do not resend it. A text-send failure is a
+tool error. Text and its reaction attempt are serialized with other sends to
+that destination.
+
+The gateway exposes no room-onboarding, standalone reaction, profile,
+username, or stdio tools; human setup uses the separate local CLI above. Core
+remains the authority for current native posting permissions.
 
 ## Verification
 

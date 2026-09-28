@@ -7,8 +7,9 @@ removed; agent integrations use MCP.
 ## Packages
 
 - [`@lamplitisles/keet-mcp`](packages/keet-mcp) exposes destination discovery,
-  history, text delivery, arbitrary workspace-contained file delivery, and an
-  optional durable incoming-text webhook for an external agent receiver.
+  history, text delivery with an optional single emoji reaction, arbitrary
+  workspace-contained file delivery, and an optional durable incoming-text
+  webhook with bounded aggregate reaction context for an external receiver.
 - `@lamplitisles/keet-integration-core` is the private typed sidecar boundary.
 - [`@lamplitisles/impri-keet`](packages/impri-keet) is the separate private
   approval-channel adapter and owns a different Keet identity.

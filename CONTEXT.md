@@ -33,7 +33,7 @@ does not imply adjacent text delivery.
 The optional ordered HTTP delivery path for admitted non-self text messages.
 KFA persists each event before its first POST and retains it until a receiver
 returns a 2xx response. `eventId` identifies at-least-once redelivery; no image
-bytes, image-only event, local media path, or native identifier is delivered.
+bytes, image-only event, local media path, group ID, or sender ID is delivered.
 
 ## Boundaries
 
@@ -50,3 +50,26 @@ Group message containing its current display label, or a Group reply to one of
 its messages. Other Group messages and Broadcast messages are observable but do
 not trigger an agent. A webhook delivery may carry either kind of incoming
 message; it is not a separate Keet message.
+
+## Keet Reaction
+
+An emoji signal attached to one exact Keet message. The visible reaction state
+is an aggregate count, with no attribution to individual reactors; a reaction
+can inform a later agent interaction without itself being a text message.
+On a qualifying Group or DM text trigger, the webhook may carry bounded
+`reactionContext` entries: canonical target message ID, untrusted 48-code-point
+excerpt, emoji, and external aggregate count after subtracting the Integration
+Identity's own reaction. The receiver owns fact deduplication; KFA owns neither
+reactor attribution nor per-receiver receipts. A candidate target is included
+only when Core provides a complete aggregate reaction snapshot; a failed read
+omits the target without dropping the triggering text.
+
+## Reaction Response
+
+An agent-requested text message paired with an optional Keet Reaction on an
+explicitly identified message in the same Managed Group or DM. The text is
+delivered first; the reaction is a best-effort addition to that response, never
+a standalone send.
+The MCP `send_message` result distinguishes confirmed text plus reaction
+success from confirmed text plus reaction failure. A Group target may be a
+known historical message; a DM receiver binds the target to its active turn.

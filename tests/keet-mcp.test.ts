@@ -93,7 +93,68 @@ describe("Keet MCP gateway", () => {
 
   it("validates webhook configuration and leaves MCP usable without one", async () => { const fake = fakeCore(); const { gateway, root } = await start(fake.core); try { expect(gateway.address).toBeDefined(); expect(() => configurationFromEnvironment({ KEET_MCP_RUNTIME_DIR: "/r", KEET_MCP_IDENTITY_DIR: "/i", KEET_MCP_WORKSPACE_ROOT: "/w", KEET_MCP_STATE_DIR: "/s", KEET_MCP_LISTEN: "127.0.0.1:1", KEET_MCP_TOKEN: "t".repeat(32), KEET_WEBHOOK_BEARER_TOKEN: "x" })).toThrow("requires KEET_WEBHOOK_URL") } finally { await rm(root, { recursive: true, force: true }) } })
   it("posts text-only group, DM, and broadcast events with trigger facts", async () => { const target = await receiver([204, 204, 204, 204]); const fake = fakeCore(); const { root } = await start(fake.core, { webhookUrl: target.url, webhookBearerToken: "secret" }); try { fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "ordinary" }); fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "Bot", mentions: ["bot"] }); fake.emit("dm", { groupId: "dm", messageId: { deviceId: "d", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 3, text: "DM" }); fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "n", seq: 1 }, senderId: "author", senderLabel: "Author", timestamp: 4, text: "caption", images: [{ file: {}, mediaType: "image/png" }] }); while (target.received.length < 4) await pause(); expect(target.received.map((entry) => entry.body.sequence)).toEqual([1, 2, 3, 4]); expect(target.received[1]!.body.trigger).toBe("mention"); expect(target.received[2]!.body.trigger).toBe("dm"); expect(target.received[3]!.body.images).toBeUndefined(); expect(target.received[0]!.auth).toBe("Bearer secret") } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
-  it("retries in order with an identical event after restart", async () => { const target = await receiver([500, 204, 204]); const first = fakeCore(); const { gateway, root } = await start(first.core, { webhookUrl: target.url }); try { first.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "first" }); first.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "second" }); while (target.received.length < 1) await pause(); await gateway.close(); const second = fakeCore(); const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => second.core }); gateways.push(restarted); await restarted.start(); while (target.received.length < 3) await pause(); expect(target.received.map((entry) => entry.body.text)).toEqual(["first", "first", "second"]); expect(target.received[0]!.body.eventId).toBe(target.received[1]!.body.eventId); await restarted.close() } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
+  it("adds bounded external reaction context only to qualifying Group and DM text", async () => {
+    const target = await receiver([204, 204, 204, 204]); const fake = fakeCore()
+    const own = { groupId: "group", messageId: { deviceId: "bot-device", seq: 7 }, senderId: "bot", senderLabel: "Bot", timestamp: 1, text: "🙂".repeat(60), reactions: [{ emoji: "👍", count: 3, own: false }, { emoji: "✅", count: 1, own: false }, { emoji: ":custom:", count: 2, own: false }] }
+    const readRecent = vi.fn(async (id: string) => id === "dm" ? [{ ...own, groupId: "dm" }] : [own]); fake.core.readRecentMessages = readRecent
+    const readReactions = vi.fn(async () => [{ emoji: "👍", count: 3, own: true }, { emoji: "✅", count: 1, own: true }, { emoji: ":custom:", count: 2, own: false }]); fake.core.readReactions = readReactions
+    const { root } = await start(fake.core, { webhookUrl: target.url })
+    try {
+      const incoming = (groupId: string, seq: number, text: string, mentions?: string[]) => ({ groupId, messageId: { deviceId: "peer", seq }, senderId: "peer", senderLabel: "Peer", timestamp: seq, text, ...(mentions ? { mentions } : {}) })
+      fake.emit("group", incoming("group", 1, "ordinary"))
+      fake.emit("group", incoming("group", 2, "hello Bot", ["bot"]))
+      fake.emit("dm", incoming("dm", 3, "hello"))
+      fake.emit("broadcast", incoming("broadcast", 4, "caption"))
+      fake.emit("group", { ...incoming("group", 5, ""), reactions: [{ emoji: "👍", count: 4, own: false }] })
+      while (target.received.length < 4) await pause()
+      expect(target.received[0]!.body.reactionContext).toBeUndefined()
+      expect(target.received[1]!.body.reactionContext).toEqual([
+        { targetMessageId: own.messageId, targetText: "🙂".repeat(48), emoji: "👍", externalCount: 2 },
+        { targetMessageId: own.messageId, targetText: "🙂".repeat(48), emoji: ":custom:", externalCount: 2 },
+      ])
+      expect(target.received[2]!.body.reactionContext).toEqual(target.received[1]!.body.reactionContext)
+      expect(target.received[3]!.body.reactionContext).toBeUndefined()
+      expect(target.received).toHaveLength(4)
+      expect(readRecent.mock.calls).toContainEqual(["group", 50])
+      expect(readReactions.mock.calls).toContainEqual(["group", own.messageId])
+      fake.core.readRecentMessages = vi.fn(async () => Array.from({ length: 25 }, (_, index) => ({ ...own, messageId: { deviceId: "bot-device", seq: index }, reactions: [{ emoji: "👍", count: 2, own: false }] })))
+      readReactions.mockClear()
+      readReactions.mockResolvedValue([{ emoji: "👍", count: 2, own: false }])
+      fake.emit("group", incoming("group", 6, "Bot", ["bot"]))
+      while (target.received.length < 5) await pause()
+      expect(target.received[4]!.body.reactionContext).toHaveLength(16)
+      expect(target.received[4]!.body.reactionContext[0].targetMessageId.seq).toBe(24)
+      expect(readReactions).toHaveBeenCalledTimes(16)
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("keeps triggering text when reaction history cannot be read", async () => {
+    const target = await receiver([204]); const fake = fakeCore()
+    fake.core.readRecentMessages = vi.fn(async () => { throw new Error("private runtime path") })
+    const { root } = await start(fake.core, { webhookUrl: target.url })
+    try {
+      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "hello" })
+      while (!target.received.length) await pause()
+      expect(target.received[0]!.body).toMatchObject({ text: "hello", trigger: "dm" })
+      expect(target.received[0]!.body.reactionContext).toBeUndefined()
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("omits a target when its complete reaction read fails while preserving trigger text", async () => {
+    const target = await receiver([204]); const fake = fakeCore()
+    fake.core.readRecentMessages = vi.fn(async () => [{ groupId: "dm", messageId: { deviceId: "bot", seq: 4 }, senderId: "bot", senderLabel: "Bot", timestamp: 1, text: "prior", reactions: [{ emoji: "👍", count: 1, own: false }] }])
+    const readReactions = vi.fn(async () => { throw new Error("invalid complete reaction snapshot") }); fake.core.readReactions = readReactions
+    const { root } = await start(fake.core, { webhookUrl: target.url })
+    try {
+      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "hello" })
+      while (!target.received.length) await pause()
+      expect(target.received[0]!.body).toMatchObject({ text: "hello", trigger: "dm" })
+      expect(target.received[0]!.body.reactionContext).toBeUndefined()
+      expect(readReactions).toHaveBeenCalledOnce()
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("retries in order with an identical event after restart", async () => { const target = await receiver([500, 204, 204]); const first = fakeCore(); first.core.readRecentMessages = vi.fn(async () => [{ groupId: "group", messageId: { deviceId: "bot", seq: 8 }, senderId: "bot", senderLabel: "Bot", timestamp: 1, text: "prior", reactions: [{ emoji: "👍", count: 2, own: false }] }]); first.core.readReactions = vi.fn(async () => [{ emoji: "👍", count: 2, own: true }]); const { gateway, root } = await start(first.core, { webhookUrl: target.url }); try { first.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "first Bot" }); first.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "second" }); while (target.received.length < 1) await pause(); await gateway.close(); const second = fakeCore(); const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => second.core }); gateways.push(restarted); await restarted.start(); while (target.received.length < 3) await pause(); expect(target.received.map((entry) => entry.body.text)).toEqual(["first Bot", "first Bot", "second"]); expect(target.received[0]!.body).toEqual(target.received[1]!.body); expect(target.received[0]!.body.reactionContext).toEqual([{ targetMessageId: { deviceId: "bot", seq: 8 }, targetText: "prior", emoji: "👍", externalCount: 1 }]); await restarted.close() } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
   it("does not follow redirects or advance past non-2xx responses", async () => {
     const target = await receiver([302, 401, 503, 204, 204]); const fake = fakeCore(); const { root } = await start(fake.core, { webhookUrl: target.url })
     try {
@@ -197,6 +258,29 @@ describe("Keet MCP gateway", () => {
       const failed = await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 50 } }); expect(JSON.stringify(json(failed))).toContain("Keet recent messages are unavailable."); expect(JSON.stringify(json(failed))).not.toContain("secret")
       expect((await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 0 } })).isError).toBe(true); await client.close()
     } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("sends text then one reaction, and reports partial success without resending text", async () => {
+    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
+    const client = new Client({ name: "reaction-test", version: "1" })
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
+      const target = { deviceId: "historical-device", seq: 19 }
+      const addReaction = vi.fn(async (_group, _id, _emoji) => { fake.events.push("reaction") }); fake.core.addReaction = addReaction
+      const sendMessage = vi.fn(async (_group: string, text: string) => { fake.events.push(`text:${text}`); return { deviceId: "bot", seq: 2 } }); fake.core.sendMessage = sendMessage
+      const call = (destinationName: string, text: string, reaction: unknown, replyTo?: unknown) => client.callTool({ name: "send_message", arguments: { destinationName, text, reaction, ...(replyTo ? { replyTo } : {}) } })
+      for (const reaction of [{ targetMessageId: target, emoji: "plain" }, { targetMessageId: { deviceId: "", seq: 1 }, emoji: "👍" }]) expect((await call("Group", "invalid", reaction)).isError).toBe(true)
+      expect((await call("News", "invalid", { targetMessageId: target, emoji: "👍" })).isError).toBe(true)
+      expect((await call("Unknown", "invalid", { targetMessageId: target, emoji: "👍" })).isError).toBe(true)
+      expect(sendMessage).not.toHaveBeenCalled()
+      expect(json(await call("Group", "historical", { targetMessageId: target, emoji: "👍" }, { deviceId: "other", seq: 4 }))).toEqual({ sent: true, reacted: true })
+      expect(addReaction).toHaveBeenCalledWith("group", target, "👍", expect.any(AbortSignal))
+      expect(fake.events).toEqual(["text:historical", "reaction"])
+      fake.core.addReaction = vi.fn(async () => { throw new Error("/identity/private target") })
+      expect(json(await call("Peer DM", "dm reply", { targetMessageId: { deviceId: "peer", seq: 5 }, emoji: "❤️" }))).toEqual({ sent: true, reacted: false, reactionError: "Keet reaction could not be added." })
+      expect(fake.events).toEqual(["text:historical", "reaction", "text:dm reply"])
+      expect(sendMessage).toHaveBeenCalledTimes(2)
+    } finally { await client.close().catch(() => undefined); await rm(root, { recursive: true, force: true }) }
   })
 
   it("sends ordinary files and preserves native image preview metadata", async () => {

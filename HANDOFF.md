@@ -23,6 +23,16 @@ The tools are `list_destinations`, `list_members`, `read_recent_messages`,
 `destinationName`; webhook events retain the event-owned `groupName`
 field.
 
+`send_message` requires nonblank text and may request one Unicode emoji
+reaction to a canonical target in the same Managed Group or DM. The text is
+sent first; reaction success or failure is reported separately from confirmed
+text delivery. Broadcast and standalone reaction sends are unsupported.
+Qualifying Group and DM webhook text events may include a bounded snapshot of
+external aggregate reactions to recent identity-authored messages. Reaction
+changes alone do not create events. Core's complete reaction read verifies
+ownership for each candidate; a failed read omits that target and preserves
+text delivery.
+
 `send_file` supports every admitted Managed Destination. It accepts one
 workspace-contained ordinary file up to 100 MiB. PNG, JPEG, WebP, and GIF
 retain their source bytes and include dimensions plus a generated native

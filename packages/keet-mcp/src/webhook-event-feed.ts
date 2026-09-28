@@ -1,7 +1,7 @@
 import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import path from "node:path"
-import type { KeetCore, KeetMessage, KeetMessageId, KeetSubscription } from "@lamplitisles/keet-integration-core"
+import { validateKeetReaction, type KeetCore, type KeetMessage, type KeetMessageId, type KeetSubscription } from "@lamplitisles/keet-integration-core"
 
 const MAX_TEXT = 16_000
 const MAX_NAME = 512
@@ -9,6 +9,10 @@ const MAX_PENDING = 1024
 const REQUEST_TIMEOUT_MS = 10_000
 const RETRY_MIN_MS = 50
 const RETRY_MAX_MS = 5_000
+const MAX_REACTION_CONTEXT = 16
+const MAX_REACTION_READS = 16
+const MAX_REACTION_EXCERPT = 48
+const MAX_EVENT_BYTES = 112 * 1024
 
 export type WebhookDestinationKind = "group" | "broadcast" | "dm"
 type Trigger = "mention" | "label" | "reply" | "dm"
@@ -24,7 +28,9 @@ interface Event {
   readonly text: string
   readonly replyTo?: KeetMessageId
   readonly trigger?: Trigger
+  readonly reactionContext?: readonly ReactionContext[]
 }
+interface ReactionContext { readonly targetMessageId: KeetMessageId; readonly targetText: string; readonly emoji: string; readonly externalCount: number }
 interface Options {
   readonly stateDir: string
   readonly url: URL
@@ -95,6 +101,14 @@ export class WebhookEventFeed {
         const trigger = await this.#trigger(destination, message)
         const event = eventFromMessage(destination, message, this.#nextSequence, trigger)
         if (!event) return
+        if (trigger && destination.kind !== "broadcast") {
+          try {
+            const history = await this.options.core.readRecentMessages(destination.groupId, 50)
+            const context = await reactionContext(this.options.core, destination.groupId, history, this.options.identityId)
+            while (context.length && Buffer.byteLength(JSON.stringify({ ...event, reactionContext: context }), "utf8") > MAX_EVENT_BYTES) context.pop()
+            if (context.length) Object.assign(event, { reactionContext: context })
+          } catch { /* Snapshot collection is best effort; the text event still persists. */ }
+        }
         await this.#writeNextSequence(this.#nextSequence + 1)
         await this.#append(event)
         this.#nextSequence += 1
@@ -178,7 +192,7 @@ function eventFromMessage(destination: WebhookDestination, message: KeetMessage,
   }
 }
 function eventFromJournal(value: unknown): Event | undefined {
-  if (!record(value) || !onlyKeys(value, ["type", "eventId", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "trigger"])) return undefined
+  if (!record(value) || !onlyKeys(value, ["type", "eventId", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "trigger", "reactionContext"])) return undefined
   const destination = value.destination
   if (value.type !== "message" || typeof value.eventId !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.eventId) || !positive(value.sequence) || !strictId(value.messageId) || !Number.isSafeInteger(value.timestamp)) return undefined
   if (!record(destination) || !onlyKeys(destination, ["groupName", "kind"]) || !boundedExact(destination.groupName) || !kind(destination.kind) || !boundedExact(value.senderLabel)) return undefined
@@ -187,12 +201,38 @@ function eventFromJournal(value: unknown): Event | undefined {
   const trigger = value.trigger === undefined ? undefined : triggerValue(value.trigger)
   if ((value.replyTo !== undefined && !replyTo) || (value.trigger !== undefined && !trigger)) return undefined
   if ((destination.kind === "dm" && trigger !== "dm") || (destination.kind !== "dm" && trigger === "dm") || (destination.kind === "broadcast" && trigger)) return undefined
+  const reactionContext = value.reactionContext
+  if (reactionContext !== undefined && (!trigger || destination.kind === "broadcast" || !Array.isArray(reactionContext) || !reactionContext.length || reactionContext.length > MAX_REACTION_CONTEXT || !reactionContext.every(validReactionContext) || Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_EVENT_BYTES)) return undefined
   return {
     type: "message", eventId: value.eventId, sequence: value.sequence, messageId: strictId(value.messageId)!, timestamp: value.timestamp,
     destination: { groupName: destination.groupName, kind: destination.kind }, senderLabel: value.senderLabel, text: value.text,
-    ...(replyTo ? { replyTo } : {}), ...(trigger ? { trigger } : {}),
+    ...(replyTo ? { replyTo } : {}), ...(trigger ? { trigger } : {}), ...(reactionContext ? { reactionContext } : {}),
   }
 }
+async function reactionContext(core: KeetCore, groupId: string, history: readonly KeetMessage[], identityId: string): Promise<ReactionContext[]> {
+  const result: ReactionContext[] = []
+  let reads = 0
+  for (const message of history.slice(-50).reverse()) {
+    if (message.senderId !== identityId || !strictId(message.messageId) || Array.from(message.messageId.deviceId).length > 128 || !message.text?.trim() || !message.reactions?.length) continue
+    const targetText = Array.from(message.text).slice(0, MAX_REACTION_EXCERPT).join("").trim()
+    if (!targetText) continue
+    if (reads >= MAX_REACTION_READS) break
+    reads += 1
+    let complete: Awaited<ReturnType<KeetCore["readReactions"]>>
+    try { complete = await core.readReactions(groupId, message.messageId) }
+    catch { continue }
+    if (!complete) continue
+    for (const reaction of complete) {
+      const externalCount = reaction.count - (reaction.own ? 1 : 0)
+      if (!validEmoji(reaction.emoji) || !positive(externalCount) || externalCount > 100_000) continue
+      result.push({ targetMessageId: message.messageId, targetText, emoji: reaction.emoji, externalCount })
+      if (result.length >= MAX_REACTION_CONTEXT) return result
+    }
+  }
+  return result
+}
+function validEmoji(value: unknown): value is string { if (typeof value !== "string" || Array.from(value).length > 66 || Buffer.byteLength(value, "utf8") > 258) return false; try { validateKeetReaction(value); return true } catch { return /^:(?:[a-z0-9][a-z0-9_+-]*|[+-][0-9]+):$/.test(value) } }
+function validReactionContext(value: unknown): boolean { return record(value) && onlyKeys(value, ["targetMessageId", "targetText", "emoji", "externalCount"]) && !!strictId(value.targetMessageId) && Array.from(value.targetMessageId.deviceId).length <= 128 && typeof value.targetText === "string" && value.targetText.trim().length > 0 && Array.from(value.targetText).length <= MAX_REACTION_EXCERPT && validEmoji(value.emoji) && positive(value.externalCount) && value.externalCount <= 100_000 }
 function canonicalId(value: unknown): KeetMessageId | undefined { return record(value) && typeof value.deviceId === "string" && value.deviceId.trim().length > 0 && Array.from(value.deviceId).length <= MAX_NAME && Number.isSafeInteger(value.seq) && value.seq >= 0 ? { deviceId: value.deviceId, seq: value.seq } : undefined }
 function bounded(value: unknown, fallback: string): string { const text = typeof value === "string" ? Array.from(value).slice(0, MAX_NAME).join("").replace(/[\r\n\u2028\u2029]+/g, " ").trim() : ""; return text || fallback }
 function boundedExact(value: unknown): value is string { return typeof value === "string" && value.length > 0 && bounded(value, "") === value }
