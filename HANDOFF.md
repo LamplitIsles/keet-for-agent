@@ -7,9 +7,9 @@
   native reads, reactions, onboarding primitives, profile operations, and
   native text/file delivery.
 - `packages/keet-mcp/src/` owns the bearer-protected MCP gateway, its immutable
-  Managed Destination snapshot, workspace-contained file preparation, the CFL
-  event journal, the inbound-DM media library, and the human-only local setup
-  CLI over the same Core identity.
+  Managed Destination snapshot, workspace-contained file preparation, the
+  optional durable incoming-text webhook, and the human-only local setup CLI
+  over the same Core identity.
 - `packages/impri-keet/src/` owns the independent Impri approval channel.
 - `tests/` uses fake workers, fixtures, and test-owned temporary paths.
 
@@ -20,7 +20,7 @@ consume the MCP surface instead of adding another model-tool adapter to Core.
 
 The tools are `list_destinations`, `list_members`, `read_recent_messages`,
 `send_message`, and `send_file`. Destination-facing arguments and results use
-`destinationName`; the internal CFL feed retains its event-owned `groupName`
+`destinationName`; webhook events retain the event-owned `groupName`
 field.
 
 `send_file` supports every admitted Managed Destination. It accepts one
@@ -31,8 +31,9 @@ separately with `send_message`.
 
 The gateway admits joined Default rooms, Broadcasts, and complete accepted
 Direct Messages from one bounded startup snapshot. Native Keet permissions
-remain authoritative. The CFL WebSocket feed observes bounded incoming events
-but never injects model context or sends replies.
+remain authoritative. The optional webhook observes non-self text events,
+persists them before delivery, and retries in order until a 2xx acknowledgement.
+It never injects model context or sends replies. The `/cfl` route is removed.
 
 ## Compatibility and safety
 

@@ -8,12 +8,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { KeetIntegrationCore, KEET_COMPATIBILITY, type KeetCore, type KeetCoreOptions, type KeetMember, type KeetMessage, type KeetMessageId, type PreparedKeetFile } from "@lamplitisles/keet-integration-core"
 import * as z from "zod/v4"
-import { CflEventFeed, type CflDestination } from "./cfl-event-feed.js"
+import { WebhookEventFeed, type WebhookDestination } from "./webhook-event-feed.js"
 
 export type DestinationKind = "group" | "broadcast" | "dm"
 export interface Destination { readonly groupId: string; readonly groupName: string; readonly kind: DestinationKind }
-export interface GatewayConfig { readonly runtimeDir: string; readonly identityDir: string; readonly workspaceRoot: string; readonly stateDir: string; readonly mediaDir: string; readonly eventRetention: number; readonly listen: string; readonly token: string }
-export interface GatewayOptions { readonly config: GatewayConfig; readonly createCore?: (options: KeetCoreOptions) => Promise<KeetCore> }
+export interface GatewayConfig { readonly runtimeDir: string; readonly identityDir: string; readonly workspaceRoot: string; readonly stateDir: string; readonly listen: string; readonly token: string; readonly webhookUrl?: string; readonly webhookBearerToken?: string }
+export interface GatewayOptions { readonly config: GatewayConfig; readonly createCore?: (options: KeetCoreOptions) => Promise<KeetCore>; readonly onFatal?: () => void }
 
 const MAX_TEXT = 16_000
 const MAX_NAME = 512
@@ -24,13 +24,16 @@ const imageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"
 const MAX_SESSIONS = 64
 
 export function configurationFromEnvironment(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
+  const webhookUrl = optional(env, "KEET_WEBHOOK_URL"); const webhookBearerToken = optional(env, "KEET_WEBHOOK_BEARER_TOKEN")
+  if (webhookBearerToken && !webhookUrl) throw new Error("KEET_WEBHOOK_BEARER_TOKEN requires KEET_WEBHOOK_URL.")
+  if (webhookUrl) validateWebhookUrl(webhookUrl)
   return {
     runtimeDir: required(env, "KEET_MCP_RUNTIME_DIR"), identityDir: required(env, "KEET_MCP_IDENTITY_DIR"),
-    workspaceRoot: required(env, "KEET_MCP_WORKSPACE_ROOT"), stateDir: required(env, "KEET_MCP_STATE_DIR"), mediaDir: required(env, "KEET_CFL_MEDIA_DIR"), eventRetention: positiveInteger(env.KEET_CFL_EVENT_RETENTION, "KEET_CFL_EVENT_RETENTION", 10_000), listen: required(env, "KEET_MCP_LISTEN"), token: required(env, "KEET_MCP_TOKEN"),
+    workspaceRoot: required(env, "KEET_MCP_WORKSPACE_ROOT"), stateDir: required(env, "KEET_MCP_STATE_DIR"), listen: required(env, "KEET_MCP_LISTEN"), token: required(env, "KEET_MCP_TOKEN"), ...(webhookUrl ? { webhookUrl } : {}), ...(webhookBearerToken ? { webhookBearerToken } : {}),
   }
 }
 function required(env: NodeJS.ProcessEnv, name: string): string { const value = env[name]?.trim(); if (!value) throw new Error(`Missing ${name}.`); return value }
-function positiveInteger(value: string | undefined, name: string, fallback: number): number { if (value === undefined || !value.trim()) return fallback; const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer.`); return parsed }
+function optional(env: NodeJS.ProcessEnv, name: string): string | undefined { const value = env[name]?.trim(); return value || undefined }
 function textResult(value: unknown) { return { content: [{ type: "text" as const, text: JSON.stringify(value) }] } }
 function toolError(error: unknown, fallback: string, signal?: AbortSignal) {
   const message = error instanceof Error ? error.message : ""
@@ -62,9 +65,9 @@ function mediaType(bytes: Uint8Array): "image/png" | "image/jpeg" | "image/webp"
 }
 
 export class KeetMcpGateway {
-  #core: KeetCore | undefined; #destinations: readonly Destination[] = []; #server: Server | undefined; #workspaceRoot: string | undefined; #starting = false; #closing = false; #startPromise: Promise<void> | undefined; #operationAbort = new AbortController()
+  #core: KeetCore | undefined; #destinations: readonly Destination[] = []; #server: Server | undefined; #workspaceRoot: string | undefined; #starting = false; #closing = false; #startPromise: Promise<void> | undefined; #closePromise: Promise<void> | undefined; #operationAbort = new AbortController()
   #sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>(); #sendTails = new Map<string, Promise<void>>()
-  #eventFeed: CflEventFeed | undefined; #failure: Error | undefined
+  #eventFeed: WebhookEventFeed | undefined; #failure: Error | undefined
   constructor(readonly options: GatewayOptions) {}
   get address(): string | undefined { const address = this.#server?.address(); return address && typeof address !== "string" ? `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}/mcp` : undefined }
   get destinations(): readonly Destination[] { return this.#destinations.map((item) => ({ ...item })) }
@@ -78,7 +81,7 @@ export class KeetMcpGateway {
     try { await attempt } finally { if (this.#startPromise === attempt) this.#startPromise = undefined; this.#starting = false }
   }
   private async startImpl(): Promise<void> {
-    let created: KeetCore | undefined; let createdFeed: CflEventFeed | undefined
+    let created: KeetCore | undefined; let createdFeed: WebhookEventFeed | undefined
     try {
       const config = await validateConfig(this.options.config)
       const coreOptions: KeetCoreOptions = { executablePath: path.join(config.runtimeDir, "bare"), bundlePath: path.join(config.runtimeDir, "core-worker.bundle"), dataPath: config.identityDir, appVersion: KEET_COMPATIBILITY.appVersion, expectedCoreVersion: KEET_COMPATIBILITY.coreVersion, expectedAbi: KEET_COMPATIBILITY.abi }
@@ -91,23 +94,17 @@ export class KeetMcpGateway {
       if (new Set(destinations.map((value) => value.groupId)).size !== destinations.length) throw new Error("Keet destination snapshot contains duplicate rooms.")
       if (new Set(destinations.map((value) => value.groupName)).size !== destinations.length) throw new Error("Keet destination names are ambiguous.")
       if (this.#closing) throw new Error("Keet gateway is closing."); this.#workspaceRoot = config.workspaceRoot; this.#destinations = Object.freeze(destinations)
-      const feed = new CflEventFeed({ stateDir: config.stateDir, mediaDir: config.mediaDir, retention: config.eventRetention, core, identityId: readiness.identityId, ...(readiness.displayName ? { identityLabel: readiness.displayName } : {}), destinations: destinations as readonly CflDestination[], isAuthorized: (request) => authorized(request, config.token), onFatal: (error) => { this.fail(error) } })
-      createdFeed = feed
-      await feed.start()
-      if (this.#closing) throw new Error("Keet gateway is closing.")
-      this.#eventFeed = feed
+      if (config.webhookUrl) {
+        const feed = new WebhookEventFeed({ stateDir: config.stateDir, url: new URL(config.webhookUrl), ...(config.webhookBearerToken ? { bearerToken: config.webhookBearerToken } : {}), core, identityId: readiness.identityId, ...(readiness.displayName ? { identityLabel: readiness.displayName } : {}), destinations: destinations as readonly WebhookDestination[], onFatal: (error) => { this.fail(error) } })
+        createdFeed = feed; await feed.start(); if (this.#closing) throw new Error("Keet gateway is closing."); this.#eventFeed = feed
+      }
       this.#server = createServer((request, response) => { void this.handle(request, response) })
-      this.#server.on("upgrade", (request, socket, head) => {
-        if (new URL(request.url ?? "/", "http://localhost").pathname !== "/cfl") { socket.destroy(); return }
-        const feed = this.#eventFeed
-        if (feed) feed.handleUpgrade(request, socket, head)
-        else socket.destroy()
-      })
       await new Promise<void>((resolve, reject) => { this.#server!.once("error", reject); this.#server!.listen(config.port, config.host, () => { this.#server!.off("error", reject); resolve() }) })
       if (this.#closing) throw new Error("Keet gateway is closing.")
     } catch (error) { const server = this.#server; const serverClosed = server && new Promise<void>((resolve) => server.close(() => resolve())); server?.closeAllConnections(); this.#server = undefined; const feed = this.#eventFeed ?? createdFeed; this.#eventFeed = undefined; await feed?.close().catch(() => undefined); await serverClosed; const core = this.#core ?? created; this.#core = undefined; this.#workspaceRoot = undefined; if (core) await core.close().catch(() => undefined); throw error }
   }
-  async close(): Promise<void> { this.#closing = true; this.#operationAbort.abort(); try { await this.#startPromise?.catch(() => undefined); const server = this.#server; const serverClosed = server && new Promise<void>((resolve) => server.close(() => resolve())); server?.closeAllConnections(); for (const { transport, server } of this.#sessions.values()) { await transport.close().catch(() => undefined); await server.close().catch(() => undefined) }; this.#sessions.clear(); this.#sendTails.clear(); this.#server = undefined; const feed = this.#eventFeed; this.#eventFeed = undefined; await feed?.close().catch(() => undefined); await serverClosed; const core = this.#core; this.#core = undefined; this.#workspaceRoot = undefined; if (core) await core.close() } finally { this.#closing = false } }
+  async close(): Promise<void> { if (this.#closePromise) return await this.#closePromise; const closing = this.closeImpl(); this.#closePromise = closing; try { await closing } finally { if (this.#closePromise === closing) this.#closePromise = undefined } }
+  private async closeImpl(): Promise<void> { this.#closing = true; this.#operationAbort.abort(); try { await this.#startPromise?.catch(() => undefined); const server = this.#server; const serverClosed = server && new Promise<void>((resolve) => server.close(() => resolve())); server?.closeAllConnections(); for (const { transport, server } of this.#sessions.values()) { await transport.close().catch(() => undefined); await server.close().catch(() => undefined) }; this.#sessions.clear(); this.#sendTails.clear(); this.#server = undefined; const feed = this.#eventFeed; this.#eventFeed = undefined; await feed?.close().catch(() => undefined); await serverClosed; const core = this.#core; this.#core = undefined; this.#workspaceRoot = undefined; if (core) await core.close() } finally { this.#closing = false } }
   private async handle(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse): Promise<void> {
     if (new URL(request.url ?? "/", "http://localhost").pathname !== "/mcp") { response.writeHead(404).end(); return }
     if (!authorized(request, this.options.config.token)) { response.writeHead(401, { "www-authenticate": "Bearer" }).end(); return }
@@ -137,22 +134,24 @@ export class KeetMcpGateway {
   }
   private core(): KeetCore { if (!this.#core) throw new Error("Keet gateway is not ready."); return this.#core }
   private workspaceRoot(): string { if (!this.#workspaceRoot) throw new Error("Keet file was not sent."); return this.#workspaceRoot }
-  private fail(error: Error): void { if (this.#failure || this.#closing) return; this.#failure = error; void this.close().catch(() => undefined) }
+  private fail(error: Error): void { if (this.#failure) return; this.#failure = error; this.options.onFatal?.(); if (!this.#closing) void this.close().catch(() => undefined) }
 }
 
 interface CheckedConfig extends GatewayConfig { readonly host: "127.0.0.1" | "::1"; readonly port: number }
 async function validateConfig(config: GatewayConfig): Promise<CheckedConfig> {
-  for (const [name, value] of Object.entries({ runtimeDir: config.runtimeDir, identityDir: config.identityDir, workspaceRoot: config.workspaceRoot, stateDir: config.stateDir, mediaDir: config.mediaDir })) if (!path.isAbsolute(value)) throw new Error(`${name} must be an absolute path.`)
+  for (const [name, value] of Object.entries({ runtimeDir: config.runtimeDir, identityDir: config.identityDir, workspaceRoot: config.workspaceRoot, stateDir: config.stateDir })) if (!path.isAbsolute(value)) throw new Error(`${name} must be an absolute path.`)
   if (config.token.length < 32) throw new Error("KEET_MCP_TOKEN must be at least 32 characters.")
-  if (!Number.isSafeInteger(config.eventRetention) || config.eventRetention < 1) throw new Error("KEET_CFL_EVENT_RETENTION must be a positive integer.")
+  if (config.webhookBearerToken && !config.webhookUrl) throw new Error("KEET_WEBHOOK_BEARER_TOKEN requires KEET_WEBHOOK_URL.")
+  if (config.webhookUrl) validateWebhookUrl(config.webhookUrl)
   const match = /^(127\.0\.0\.1|::1):(\d{1,5})$/.exec(config.listen); if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535) throw new Error("KEET_MCP_LISTEN must be a loopback host and port.")
-  const runtime = await realpath(config.runtimeDir); const workspace = await realpath(config.workspaceRoot); await stat(path.join(runtime, "bare")); await stat(path.join(runtime, "core-worker.bundle")); assertSeparate([runtime, workspace, await existingOrAbsolute(config.identityDir), await existingOrAbsolute(config.stateDir), await existingOrAbsolute(config.mediaDir)]); await mkdir(config.identityDir, { recursive: true, mode: 0o700 }); const identity = await realpath(config.identityDir); await mkdir(config.stateDir, { recursive: true, mode: 0o700 }); await chmod(config.stateDir, 0o700); const state = await realpath(config.stateDir); await mkdir(config.mediaDir, { recursive: true, mode: 0o700 }); await chmod(config.mediaDir, 0o700); const media = await realpath(config.mediaDir)
-  assertSeparate([runtime, identity, workspace, state, media])
-  return { ...config, runtimeDir: runtime, identityDir: identity, workspaceRoot: workspace, stateDir: state, mediaDir: media, host: match[1] as "127.0.0.1" | "::1", port: Number(match[2]) }
+  const runtime = await realpath(config.runtimeDir); const workspace = await realpath(config.workspaceRoot); await stat(path.join(runtime, "bare")); await stat(path.join(runtime, "core-worker.bundle")); assertSeparate([runtime, workspace, await existingOrAbsolute(config.identityDir), await existingOrAbsolute(config.stateDir)]); await mkdir(config.identityDir, { recursive: true, mode: 0o700 }); const identity = await realpath(config.identityDir); await mkdir(config.stateDir, { recursive: true, mode: 0o700 }); await chmod(config.stateDir, 0o700); const state = await realpath(config.stateDir)
+  assertSeparate([runtime, identity, workspace, state])
+  return { ...config, runtimeDir: runtime, identityDir: identity, workspaceRoot: workspace, stateDir: state, host: match[1] as "127.0.0.1" | "::1", port: Number(match[2]) }
 }
+function validateWebhookUrl(value: string): void { let url: URL; try { url = new URL(value) } catch { throw new Error("KEET_WEBHOOK_URL must be an HTTPS URL or loopback HTTP URL.") }; if (url.username || url.password || value.includes("#") || (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)))) throw new Error("KEET_WEBHOOK_URL must be an HTTPS URL or loopback HTTP URL.") }
 function authorized(request: import("node:http").IncomingMessage, token: string): boolean { const presented = request.headers.authorization; const expected = `Bearer ${token}`; return !!presented && presented.length === expected.length && timingSafeEqual(Buffer.from(presented), Buffer.from(expected)) }
 async function existingOrAbsolute(input: string): Promise<string> { try { return await realpath(input) } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return path.resolve(input); throw error } }
-function assertSeparate(locations: readonly string[]): void { for (const [index, left] of locations.entries()) for (const right of locations.slice(index + 1)) if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) throw new Error("runtime, identity, workspace, state, and media locations must not overlap.") }
+function assertSeparate(locations: readonly string[]): void { for (const [index, left] of locations.entries()) for (const right of locations.slice(index + 1)) if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) throw new Error("runtime, identity, workspace, and state locations must not overlap.") }
 async function prepareFile(root: string, input: string, signal: AbortSignal): Promise<PreparedKeetFile> {
   if (signal.aborted) throw new Error("cancelled")
   if (input.includes("\0") || /^[a-z][a-z\d+.-]*:/i.test(input) || input.includes("://")) throw new Error("path must be a workspace-contained file path.")

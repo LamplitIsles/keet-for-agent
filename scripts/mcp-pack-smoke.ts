@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     for (const required of ["package/dist/index.js", "package/dist/cli.js", "package/dist/setup.js", "package/package.json", "package/README.md", "package/LICENSE", "package/THIRD_PARTY_NOTICES.md"]) if (!files.includes(required)) throw new Error(`gateway artifact missing ${required}`)
     if (files.some((file) => file.includes(".scratch") || /(?:runtime|identity|invitation|message-data|\.(?:png|jpe?g|webp|gif|key|pem))$/i.test(file))) throw new Error("gateway artifact contains private material")
     const metadata = JSON.parse((await run("tar", ["-xOf", artifact, "package/package.json"])).stdout) as { dependencies?: Record<string, string> }
-    if (metadata.dependencies?.ws !== "8.18.3") throw new Error("gateway artifact does not declare its WebSocket runtime dependency")
+    if (metadata.dependencies?.ws) throw new Error("gateway artifact must not declare the removed WebSocket dependency")
     const installed = join(temp, "installed")
     await run("npm", ["install", "--ignore-scripts", "--prefix", installed, artifact])
     const { stdout: help } = await run(process.execPath, [join(installed, "node_modules", ".bin", "keet-mcpd"), "--help"])

@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { once } from "node:events"
-import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import { createServer } from "node:http"
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { mkdtemp } from "node:fs/promises"
-import { createConnection, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-import WebSocket, { type RawData } from "ws"
 import sharp from "sharp"
 import { configurationFromEnvironment, KeetMcpGateway, type GatewayConfig } from "../packages/keet-mcp/src/index.js"
 import type { KeetCore, KeetMessage, KeetSubscription } from "@lamplitisles/keet-integration-core"
@@ -46,46 +44,19 @@ function fakeCore() {
   } as unknown as KeetCore
   return { core, events, watchMessages, emit(groupId: string, message: KeetMessage) { watchers.get(groupId)?.(message) }, terminateWatcher(groupId: string) { terminateWatchers.get(groupId)?.("connection-failed") }, get closed() { return closed }, get readState() { return readState } }
 }
-async function start(core: KeetCore, overrides: Partial<GatewayConfig> = {}): Promise<{ gateway: KeetMcpGateway; root: string; token: string }> {
-  const root = await mkdtemp(join(tmpdir(), "keet-mcp-test-")); const runtime = join(root, "runtime"); const workspace = join(root, "workspace"); const identity = join(root, "identity"); const state = join(root, "state"); const media = join(root, "media")
+async function start(core: KeetCore, overrides: Partial<GatewayConfig> = {}, onFatal?: () => void): Promise<{ gateway: KeetMcpGateway; root: string; token: string }> {
+  const root = await mkdtemp(join(tmpdir(), "keet-mcp-test-")); const runtime = join(root, "runtime"); const workspace = join(root, "workspace"); const identity = join(root, "identity"); const state = join(root, "state")
   await Promise.all([mkdir(runtime), mkdir(workspace)]); await Promise.all([writeFile(join(runtime, "bare"), "fixture"), writeFile(join(runtime, "core-worker.bundle"), "fixture")])
-  const token = "t".repeat(32); const config: GatewayConfig = { runtimeDir: runtime, identityDir: identity, workspaceRoot: workspace, stateDir: state, mediaDir: media, eventRetention: 10_000, listen: `127.0.0.1:${nextPort++}`, token, ...overrides }
-  const gateway = new KeetMcpGateway({ config, createCore: async () => core }); gateways.push(gateway); await gateway.start(); return { gateway, root, token }
+  const token = "t".repeat(32); const config: GatewayConfig = { runtimeDir: runtime, identityDir: identity, workspaceRoot: workspace, stateDir: state, listen: `127.0.0.1:${nextPort++}`, token, ...overrides }
+  const gateway = new KeetMcpGateway({ config, createCore: async () => core, ...(onFatal ? { onFatal } : {}) }); gateways.push(gateway); await gateway.start(); return { gateway, root, token }
 }
 function json(result: unknown): unknown { const value = result as { content?: Array<{ type: string; text?: string }> }; const first = value.content?.find((item) => item.type === "text"); return JSON.parse(first?.text ?? "{}") }
-function cflAddress(gateway: KeetMcpGateway): string { return gateway.address!.replace(/^http/, "ws").replace(/\/mcp$/, "/cfl") }
-async function connectCfl(address: string, token?: string): Promise<WebSocket> {
-  const socket = new WebSocket(address, token ? { headers: { authorization: `Bearer ${token}` } } : undefined)
-  await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
-  return socket
-}
-function cflFrame(raw: RawData): unknown { if (typeof raw === "string") return JSON.parse(raw); if (Array.isArray(raw)) return JSON.parse(Buffer.concat(raw).toString("utf8")); return JSON.parse(raw instanceof ArrayBuffer ? Buffer.from(raw).toString("utf8") : raw.toString("utf8")) }
-function nextCflFrame(socket: WebSocket): Promise<unknown> { return new Promise((resolve, reject) => { socket.once("message", (raw) => { try { resolve(cflFrame(raw)) } catch (error) { reject(error) } }) }) }
-function cflFrameStream(socket: WebSocket): { next(): Promise<unknown> } {
-  const frames: unknown[] = []; const waiting: Array<{ resolve: (frame: unknown) => void; reject: (error: unknown) => void }> = []
-  socket.on("message", (raw) => { try { const frame = cflFrame(raw); const next = waiting.shift(); if (next) next.resolve(frame); else frames.push(frame) } catch (error) { waiting.shift()?.reject(error) } })
-  return { next: async () => frames.shift() ?? await new Promise<unknown>((resolve, reject) => { waiting.push({ resolve, reject }) }) }
-}
-function socketClosed(socket: WebSocket): Promise<number> { return new Promise((resolve) => { socket.once("close", (code) => { resolve(code) }) }) }
-function closeCfl(socket: WebSocket): Promise<void> { return new Promise((resolve) => { if (socket.readyState === WebSocket.CLOSED) { resolve(); return }; socket.once("close", () => { resolve() }); socket.close(1000) }) }
-function clientTextFrame(text: string): Buffer {
-  const payload = Buffer.from(text); if (payload.length > 125) throw new Error("test WebSocket frame is too large")
-  const mask = Buffer.from([1, 2, 3, 4]); const frame = Buffer.allocUnsafe(6 + payload.length); frame[0] = 0x81; frame[1] = 0x80 | payload.length; mask.copy(frame, 2)
-  for (const [index, byte] of payload.entries()) frame[6 + index] = byte ^ mask[index % mask.length]!
-  return frame
-}
-async function connectStalledCfl(address: string, token: string): Promise<Socket> {
-  const endpoint = new URL(address); const socket = createConnection({ host: endpoint.hostname, port: Number(endpoint.port) }); await once(socket, "connect")
-  socket.write(`GET ${endpoint.pathname} HTTP/1.1\r\nHost: ${endpoint.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer ${token}\r\n\r\n`)
-  const [response] = await once(socket, "data") as [Buffer]; if (!response.toString("latin1").startsWith("HTTP/1.1 101 ")) { socket.destroy(); throw new Error("CFL test WebSocket upgrade failed") }
-  socket.pause(); socket.write(clientTextFrame(JSON.stringify({ type: "hello" }))); return socket
-}
-function rawSocketClosed(socket: Socket): Promise<void> { return new Promise((resolve) => { socket.once("close", () => { resolve() }) }) }
 function pause(milliseconds = 25): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)) }
+async function receiver(statuses: number[]) { const received: Array<{ body: any; auth: string | undefined; method: string | undefined }> = []; const server = createServer(async (request, response) => { let raw = ""; for await (const chunk of request) raw += chunk; received.push({ body: raw ? JSON.parse(raw) : undefined, auth: request.headers.authorization, method: request.method }); const status = statuses.shift() ?? 204; response.writeHead(status, status === 302 ? { location: "/redirect-target" } : {}).end() }); await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address()! as import("node:net").AddressInfo; return { url: `http://127.0.0.1:${address.port}/api/keet/events`, received, server } }
 async function startPendingFailure(core: KeetCore, expected = "raw identity"): Promise<{ gateway: KeetMcpGateway; root: string }> {
   const root = await mkdtemp(join(tmpdir(), "keet-mcp-test-")); const runtime = join(root, "runtime"); const workspace = join(root, "workspace")
   await Promise.all([mkdir(runtime), mkdir(workspace)]); await Promise.all([writeFile(join(runtime, "bare"), "fixture"), writeFile(join(runtime, "core-worker.bundle"), "fixture")])
-  const gateway = new KeetMcpGateway({ config: { runtimeDir: runtime, identityDir: join(root, "identity"), workspaceRoot: workspace, stateDir: join(root, "state"), mediaDir: join(root, "media"), eventRetention: 10_000, listen: "127.0.0.1:18767", token: "t".repeat(32) }, createCore: async () => core })
+  const gateway = new KeetMcpGateway({ config: { runtimeDir: runtime, identityDir: join(root, "identity"), workspaceRoot: workspace, stateDir: join(root, "state"), listen: "127.0.0.1:18767", token: "t".repeat(32) }, createCore: async () => core })
   await expect(gateway.start()).rejects.toThrow(expected); return { gateway, root }
 }
 
@@ -94,12 +65,11 @@ describe("Keet MCP gateway", () => {
     const root = await mkdtemp(join(tmpdir(), "keet-mcp-test-")); const runtime = join(root, "runtime"); const workspace = join(root, "workspace")
     try {
       await Promise.all([mkdir(runtime), mkdir(workspace)]); await Promise.all([writeFile(join(runtime, "bare"), "fixture"), writeFile(join(runtime, "core-worker.bundle"), "fixture")])
-      const config: GatewayConfig = { runtimeDir: runtime, identityDir: join(root, "identity"), workspaceRoot: workspace, stateDir: join(root, "state"), mediaDir: join(root, "media"), eventRetention: 10_000, listen: "0.0.0.0:9999", token: "t".repeat(32) }
+      const config: GatewayConfig = { runtimeDir: runtime, identityDir: join(root, "identity"), workspaceRoot: workspace, stateDir: join(root, "state"), listen: "0.0.0.0:9999", token: "t".repeat(32) }
       const invalid = new KeetMcpGateway({ config, createCore: async () => fakeCore().core }); await expect(invalid.start()).rejects.toThrow("loopback"); expect(invalid.address).toBeUndefined()
       const locked = new KeetMcpGateway({ config: { ...config, listen: "127.0.0.1:18766" }, createCore: async () => { throw new Error("identity is already owned") } }); await expect(locked.start()).rejects.toThrow("identity is already owned"); expect(locked.address).toBeUndefined()
       const overlapping = new KeetMcpGateway({ config: { ...config, stateDir: workspace, listen: "127.0.0.1:18770" }, createCore: async () => fakeCore().core }); await expect(overlapping.start()).rejects.toThrow("must not overlap")
       expect(() => configurationFromEnvironment({ KEET_MCP_RUNTIME_DIR: runtime, KEET_MCP_IDENTITY_DIR: join(root, "identity"), KEET_MCP_WORKSPACE_ROOT: workspace, KEET_MCP_LISTEN: "127.0.0.1:8765", KEET_MCP_TOKEN: "t".repeat(32) })).toThrow("KEET_MCP_STATE_DIR")
-      expect(() => configurationFromEnvironment({ KEET_MCP_RUNTIME_DIR: runtime, KEET_MCP_IDENTITY_DIR: join(root, "identity"), KEET_MCP_WORKSPACE_ROOT: workspace, KEET_MCP_STATE_DIR: join(root, "state"), KEET_MCP_LISTEN: "127.0.0.1:8765", KEET_MCP_TOKEN: "t".repeat(32) })).toThrow("KEET_CFL_MEDIA_DIR")
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
@@ -114,263 +84,90 @@ describe("Keet MCP gateway", () => {
       expect(json(await client.callTool({ name: "list_destinations", arguments: {} }))).toEqual({ destinations: [{ destinationName: "Group", kind: "group" }, { destinationName: "Peer DM", kind: "dm" }, { destinationName: "News", kind: "broadcast" }] })
       expect(json(await client.callTool({ name: "list_members", arguments: { destinationName: "Group" } }))).toEqual({ members: [{ displayName: "Alice" }] })
       expect(json(await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Peer DM", last: 1 } }))).toEqual({ messages: [{ senderLabel: "Alice", timestamp: 1, text: "hello" }] })
-      expect(json(await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 50 } }))).toMatchObject({ messages: [{ text: "hello" }] }); expect(fake.readState).toBe(3)
+      expect(json(await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 50 } }))).toMatchObject({ messages: [{ text: "hello" }] }); expect(fake.readState).toBe(2)
       expect((await client.callTool({ name: "read_recent_messages", arguments: { destinationName: "Group", last: 51 } })).isError).toBe(true)
       const unknown = await client.callTool({ name: "list_members", arguments: { destinationName: "Unknown" } }); expect(unknown.isError).toBe(true); expect(JSON.stringify(json(unknown))).toContain("not an allowed")
       expect(gateway.sessionCount).toBe(1); const terminated = await fetch(gateway.address!, { method: "DELETE", headers: { authorization: `Bearer ${token}`, "mcp-session-id": transport.sessionId! } }); expect(terminated.status).toBe(200); await new Promise((resolve) => setTimeout(resolve)); expect(gateway.sessionCount).toBe(0); await client.close()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
-  it("streams durable incoming text to independent authenticated CFL clients", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
+  it("validates webhook configuration and leaves MCP usable without one", async () => { const fake = fakeCore(); const { gateway, root } = await start(fake.core); try { expect(gateway.address).toBeDefined(); expect(() => configurationFromEnvironment({ KEET_MCP_RUNTIME_DIR: "/r", KEET_MCP_IDENTITY_DIR: "/i", KEET_MCP_WORKSPACE_ROOT: "/w", KEET_MCP_STATE_DIR: "/s", KEET_MCP_LISTEN: "127.0.0.1:1", KEET_MCP_TOKEN: "t".repeat(32), KEET_WEBHOOK_BEARER_TOKEN: "x" })).toThrow("requires KEET_WEBHOOK_URL") } finally { await rm(root, { recursive: true, force: true }) } })
+  it("posts text-only group, DM, and broadcast events with trigger facts", async () => { const target = await receiver([204, 204, 204, 204]); const fake = fakeCore(); const { root } = await start(fake.core, { webhookUrl: target.url, webhookBearerToken: "secret" }); try { fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "ordinary" }); fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "Bot", mentions: ["bot"] }); fake.emit("dm", { groupId: "dm", messageId: { deviceId: "d", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 3, text: "DM" }); fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "n", seq: 1 }, senderId: "author", senderLabel: "Author", timestamp: 4, text: "caption", images: [{ file: {}, mediaType: "image/png" }] }); while (target.received.length < 4) await pause(); expect(target.received.map((entry) => entry.body.sequence)).toEqual([1, 2, 3, 4]); expect(target.received[1]!.body.trigger).toBe("mention"); expect(target.received[2]!.body.trigger).toBe("dm"); expect(target.received[3]!.body.images).toBeUndefined(); expect(target.received[0]!.auth).toBe("Bearer secret") } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
+  it("retries in order with an identical event after restart", async () => { const target = await receiver([500, 204, 204]); const first = fakeCore(); const { gateway, root } = await start(first.core, { webhookUrl: target.url }); try { first.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "first" }); first.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "second" }); while (target.received.length < 1) await pause(); await gateway.close(); const second = fakeCore(); const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => second.core }); gateways.push(restarted); await restarted.start(); while (target.received.length < 3) await pause(); expect(target.received.map((entry) => entry.body.text)).toEqual(["first", "first", "second"]); expect(target.received[0]!.body.eventId).toBe(target.received[1]!.body.eventId); await restarted.close() } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
+  it("does not follow redirects or advance past non-2xx responses", async () => {
+    const target = await receiver([302, 401, 503, 204, 204]); const fake = fakeCore(); const { root } = await start(fake.core, { webhookUrl: target.url })
     try {
-      await expect(connectCfl(cflAddress(gateway))).rejects.toThrow()
-      const first = await connectCfl(cflAddress(gateway), token); const second = await connectCfl(cflAddress(gateway), token)
-      const firstReady = nextCflFrame(first); first.send(JSON.stringify({ type: "hello" }))
-      const secondReady = nextCflFrame(second); second.send(JSON.stringify({ type: "hello", afterSequence: 0 }))
-      const destinations = [{ groupName: "Group", kind: "group" }, { groupName: "Peer DM", kind: "dm" }, { groupName: "News", kind: "broadcast" }]
-      await expect(firstReady).resolves.toEqual({ type: "ready", retained: null, destinations })
-      await expect(secondReady).resolves.toEqual({ type: "ready", retained: null, destinations })
-      const firstEvent = nextCflFrame(first); const secondEvent = nextCflFrame(second)
-      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice-device", seq: 5 }, senderId: "alice", senderLabel: "Alice", timestamp: 123, text: "hello", replyTo: { deviceId: "thread", seq: 3 } })
-      const expected = { type: "message", sequence: 1, messageId: { deviceId: "alice-device", seq: 5 }, timestamp: 123, destination: { groupName: "Group", kind: "group" }, senderLabel: "Alice", text: "hello", replyTo: { deviceId: "thread", seq: 3 } }
-      await expect(firstEvent).resolves.toEqual(expected); await expect(secondEvent).resolves.toEqual(expected)
-      const firstDm = nextCflFrame(first); const secondDm = nextCflFrame(second)
-      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer-device", seq: 6 }, senderId: "peer", senderLabel: "Peer", timestamp: 124, text: "direct message" })
-      const dmExpected = { type: "message", sequence: 2, messageId: { deviceId: "peer-device", seq: 6 }, timestamp: 124, destination: { groupName: "Peer DM", kind: "dm" }, senderLabel: "Peer", text: "direct message", trigger: "dm" }
-      await expect(firstDm).resolves.toEqual(dmExpected); await expect(secondDm).resolves.toEqual(dmExpected); expect(fake.readState).toBe(2)
-      const firstCaption = nextCflFrame(first); const secondCaption = nextCflFrame(second)
-      fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "news-device", seq: 7 }, senderId: "author", senderLabel: "Author", timestamp: 125, text: "caption only", images: [{ file: {}, mediaType: "image/png" }] })
-      const captionExpected = { type: "message", sequence: 3, messageId: { deviceId: "news-device", seq: 7 }, timestamp: 125, destination: { groupName: "News", kind: "broadcast" }, senderLabel: "Author", text: "caption only" }
-      await expect(firstCaption).resolves.toEqual(captionExpected); await expect(secondCaption).resolves.toEqual(captionExpected)
-      let unexpected = false; first.once("message", () => { unexpected = true })
-      fake.emit("group", { groupId: "group", messageId: { deviceId: "bot-device", seq: 6 }, senderId: "bot", senderLabel: "Bot", timestamp: 124, text: "self" })
-      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice-device", seq: 7 }, senderId: "alice", senderLabel: "Alice", timestamp: 125, text: "", images: [{ file: {}, mediaType: "image/png" }] })
-      await pause(); expect(unexpected).toBe(false)
-      const malformed = await connectCfl(cflAddress(gateway), token); const malformedClosed = socketClosed(malformed); malformed.send("[]"); await expect(malformedClosed).resolves.toBe(1008)
-      const postHello = await connectCfl(cflAddress(gateway), token); const postHelloReady = nextCflFrame(postHello); postHello.send(JSON.stringify({ type: "hello" })); await postHelloReady; const postHelloClosed = socketClosed(postHello); postHello.send(JSON.stringify({ type: "hello" })); await expect(postHelloClosed).resolves.toBe(1008)
-      await Promise.all([closeCfl(first), closeCfl(second)])
-      expect(fake.watchMessages).toHaveBeenCalledTimes(3)
-    } finally { await rm(root, { recursive: true, force: true }) }
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "first" })
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "second" })
+      while (target.received.length < 5) await pause()
+      expect(target.received.map((entry) => entry.method)).toEqual(["POST", "POST", "POST", "POST", "POST"])
+      expect(target.received.map((entry) => entry.body.text)).toEqual(["first", "first", "first", "first", "second"])
+      expect(new Set(target.received.slice(0, 4).map((entry) => entry.body.eventId)).size).toBe(1)
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
   })
-
-  it("marks only eligible Group and DM triggers without exposing identity state", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
+  it("fails closed and reports a fatal daemon error when persistence fails", async () => { const target = await receiver([204]); const fake = fakeCore(); const fatal = vi.fn(); const { gateway, root } = await start(fake.core, { webhookUrl: target.url }, fatal); try { await mkdir(join(root, "state", "webhook-events.ndjson")); fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "fail" }); while (!fake.closed) await pause(); expect(gateway.address).toBeUndefined(); expect(fatal).toHaveBeenCalledOnce(); expect(target.received).toEqual([]) } finally { target.server.close(); await rm(root, { recursive: true, force: true }) } })
+  it("reports a persistence failure even if shutdown has begun", async () => {
+    const target = await receiver([]); const fake = fakeCore(); const fatal = vi.fn(); const { gateway, root } = await start(fake.core, { webhookUrl: target.url }, fatal)
     try {
-      const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
-      const next = async (message: KeetMessage) => { fake.emit("group", message); return await frames.next() as Record<string, unknown> }
-      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "ordinary" })).resolves.toMatchObject({ text: "ordinary" })
-      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "Bot and @Bot", mentions: ["bot"] })).resolves.toMatchObject({ trigger: "mention" })
-      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 3 }, senderId: "alice", senderLabel: "Alice", timestamp: 3, text: "Bot please answer", replyTo: { deviceId: "bot", seq: 9 } })).resolves.toMatchObject({ trigger: "label" })
-      fake.emit("group", { groupId: "group", messageId: { deviceId: "bot", seq: 9 }, senderId: "bot", senderLabel: "Bot", timestamp: 4, text: "self" })
-      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 4 }, senderId: "alice", senderLabel: "Alice", timestamp: 5, text: "Bot, following up", replyTo: { deviceId: "bot", seq: 9 } })).resolves.toMatchObject({ trigger: "label" })
-      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 5 }, senderId: "alice", senderLabel: "Alice", timestamp: 6, text: "following up", replyTo: { deviceId: "bot", seq: 9 } })).resolves.toMatchObject({ trigger: "reply" })
-      const mcp = new Client({ name: "test", version: "1" }); await mcp.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
-      expect(json(await mcp.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "sent through MCP" } }))).toEqual({ sent: true })
-      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 6 }, senderId: "alice", senderLabel: "Alice", timestamp: 7, text: "MCP reply", replyTo: { deviceId: "bot", seq: 2 } })).resolves.toMatchObject({ trigger: "reply" })
-      fake.core.readRecentMessages = vi.fn(async () => [{ groupId: "group", messageId: { deviceId: "bot", seq: 11 }, senderId: "bot", senderLabel: "Bot", timestamp: 7, text: "recovered anchor" }])
-      await expect(next({ groupId: "group", messageId: { deviceId: "alice", seq: 7 }, senderId: "alice", senderLabel: "Alice", timestamp: 8, text: "recovered reply", replyTo: { deviceId: "bot", seq: 11 } })).resolves.toMatchObject({ trigger: "reply" })
-      const broadcast = nextCflFrame(client); fake.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "news", seq: 1 }, senderId: "author", senderLabel: "Author", timestamp: 7, text: "broadcast" }); await expect(broadcast).resolves.toMatchObject({ destination: { kind: "broadcast" } }); await mcp.close(); await closeCfl(client)
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("primes Group reply anchors on startup and restart", async () => {
-    const first = fakeCore(); const anchor = { groupId: "group", messageId: { deviceId: "bot", seq: 9 }, senderId: "bot", senderLabel: "Bot", timestamp: 1, text: "self" }
-    const firstReadRecentMessages = vi.fn(async () => [anchor]); first.core.readRecentMessages = firstReadRecentMessages
-    const { gateway, root, token } = await start(first.core)
-    try {
-      const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
-      const event = frames.next(); first.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "reply", replyTo: anchor.messageId })
-      await expect(event).resolves.toMatchObject({ trigger: "reply" }); expect(firstReadRecentMessages).toHaveBeenCalledTimes(1)
-      await closeCfl(client); await gateway.close()
-
-      const second = fakeCore(); const secondReadRecentMessages = vi.fn(async () => [anchor]); second.core.readRecentMessages = secondReadRecentMessages
-      const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => second.core }); gateways.push(restarted); await restarted.start()
-      const replay = await connectCfl(cflAddress(restarted), token); const replayFrames = cflFrameStream(replay); replay.send(JSON.stringify({ type: "hello", afterSequence: 1 })); await replayFrames.next()
-      const eventAfterRestart = replayFrames.next(); second.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 3, text: "reply again", replyTo: anchor.messageId })
-      await expect(eventAfterRestart).resolves.toMatchObject({ trigger: "reply" }); expect(secondReadRecentMessages).toHaveBeenCalledTimes(1)
-      await closeCfl(replay); await restarted.close()
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("materializes ordered non-self DM images before publishing and retains them for replay", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core, { eventRetention: 2 })
-    try {
-      const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
-      const image = { file: {}, mediaType: "image/png" as const, name: "photo.png" }
-      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "", images: [image] })
-      const imageOnly = await frames.next() as { images: Array<{ filename: string; mediaType: string; name?: string }>; text: string }
-      expect(imageOnly).toMatchObject({ type: "message", sequence: 1, text: "", images: [{ mediaType: "image/png", name: "photo.png" }] })
-      expect(imageOnly.images[0]!.filename).toMatch(/^[0-9a-f-]+\.png$/)
-      await expect(readFile(join(root, "media", imageOnly.images[0]!.filename))).resolves.toEqual(Buffer.from(PNG_1X1))
-      fake.core.readImage = vi.fn(async (_group, descriptor) => descriptor.name === "two.gif" ? Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]) : PNG_1X1)
-      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 2 }, senderId: "peer", senderLabel: "Peer", timestamp: 2, text: "caption", images: [image, { file: {}, mediaType: "image/gif", name: "two.gif" }] })
-      const captioned = await frames.next() as { images: Array<{ filename: string }>; text: string }
-      expect(captioned).toMatchObject({ sequence: 2, text: "caption", images: [{ mediaType: "image/png" }, { mediaType: "image/gif", name: "two.gif" }] })
-      await closeCfl(client); await gateway.close()
-      const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); gateways.push(restarted); await restarted.start()
-      const replay = await connectCfl(cflAddress(restarted), token); const replayFrames = cflFrameStream(replay); replay.send(JSON.stringify({ type: "hello" })); await replayFrames.next(); const replayed = await replayFrames.next() as { images: Array<{ filename: string }> }
-      await expect(readFile(join(root, "media", replayed.images[0]!.filename))).resolves.toBeDefined()
-      await closeCfl(replay); await restarted.close()
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("fails recovery closed for missing media and mismatched journal image metadata", async () => {
-    const fake = fakeCore(); const { gateway, root } = await start(fake.core)
-    try {
-      const client = await connectCfl(cflAddress(gateway), "t".repeat(32)); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
-      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "", images: [{ file: {}, mediaType: "image/png" }] })
-      const event = await frames.next() as { images: Array<{ filename: string; mediaType: string }> }; const filename = event.images[0]!.filename
-      await closeCfl(client); await gateway.close(); await rm(join(root, "media", filename))
-      const missing = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(missing.start()).rejects.toThrow("unavailable media"); expect(missing.address).toBeUndefined()
-      await writeFile(join(root, "media", filename), PNG_1X1)
-      const journalText = await readFile(join(root, "state", "cfl-events.ndjson"), "utf8"); const journal = JSON.parse(journalText) as { images: Array<{ mediaType: string }> }; journal.images[0]!.mediaType = "image/jpeg"; await writeFile(join(root, "state", "cfl-events.ndjson"), `${JSON.stringify(journal)}\n`)
-      const mismatched = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(mismatched.start()).rejects.toThrow("invalid sequence"); expect(mismatched.address).toBeUndefined()
-      await writeFile(join(root, "state", "cfl-events.ndjson"), journalText); await rm(join(root, "media", filename)); await writeFile(join(root, "outside.png"), PNG_1X1); await symlink(join(root, "outside.png"), join(root, "media", filename))
-      const symlinked = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(symlinked.start()).rejects.toThrow("unavailable media"); expect(symlinked.address).toBeUndefined()
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("fails closed for invalid DM media while preserving group and broadcast text-only events", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
-    try {
-      const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
-      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "group caption", images: [{ file: {}, mediaType: "image/png" }] })
-      const groupEvent = await frames.next() as Record<string, unknown>; expect(groupEvent).toMatchObject({ text: "group caption" }); expect(groupEvent).not.toHaveProperty("images")
-      fake.core.readImage = vi.fn(async () => new Uint8Array())
-      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 2 }, senderId: "peer", senderLabel: "Peer", timestamp: 2, text: "caption", images: [{ file: {}, mediaType: "image/png" }] })
-      await new Promise((resolve) => setTimeout(resolve, 20)); expect(gateway.address).toBeUndefined()
-      await expect(readdir(join(root, "media"))).resolves.toEqual([])
-      await closeCfl(client)
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("retains committed and orphaned media across journal compaction and restart", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core, { eventRetention: 1 })
-    try {
-      const client = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(client); client.send(JSON.stringify({ type: "hello" })); await frames.next()
-      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "", images: [{ file: {}, mediaType: "image/png" }] })
-      await frames.next(); const first = (await readdir(join(root, "media"))).find((name) => name.endsWith(".png"))!; expect(first).toBeTruthy()
-      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 2, text: "later" })
-      await frames.next(); await expect(readFile(join(root, "media", first))).resolves.toEqual(Buffer.from(PNG_1X1))
-      await writeFile(join(root, "media", ".stale.tmp"), "partial"); await writeFile(join(root, "media", "orphan.bin"), "orphan")
-      await closeCfl(client); await gateway.close()
-      const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); gateways.push(restarted); await restarted.start()
-      await expect(readdir(join(root, "media"))).resolves.toEqual([".stale.tmp", first, "orphan.bin"].sort())
-      await restarted.close()
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("aborts an active DM image read during gateway shutdown without publishing it", async () => {
-    const fake = fakeCore(); const { gateway, root } = await start(fake.core)
-    try {
-      let reading!: () => void
-      fake.core.readImage = vi.fn(async (_group, _image, signal) => await new Promise<Uint8Array>((_resolve, reject) => { reading = () => reject(new Error("aborted")); signal?.addEventListener("abort", reading, { once: true }) }))
-      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "", images: [{ file: {}, mediaType: "image/png" }] })
-      while (!reading) await new Promise((resolve) => setTimeout(resolve))
+      await mkdir(join(root, "state", "webhook-events.ndjson"))
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "fail during close" })
       await gateway.close()
-      await expect(readdir(join(root, "media"))).resolves.toEqual([])
-      await expect(readFile(join(root, "state", "cfl-events.ndjson"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
-    } finally { await rm(root, { recursive: true, force: true }) }
+      expect(fatal).toHaveBeenCalledOnce()
+      expect(target.received).toEqual([])
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
   })
-
-  it("replays the retained journal and explicitly rejects an unresolvable checkpoint", async () => {
-    const firstCore = fakeCore(); const { gateway, root, token } = await start(firstCore.core, { eventRetention: 2 })
-    try {
-      const live = await connectCfl(cflAddress(gateway), token); const ready = nextCflFrame(live); live.send(JSON.stringify({ type: "hello" })); await ready
-      for (const sequence of [1, 2, 3]) {
-        const event = nextCflFrame(live)
-        firstCore.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: sequence }, senderId: "alice", senderLabel: "Alice", timestamp: sequence, text: `message ${sequence}` })
-        await event
-      }
-      await closeCfl(live); await gateway.close()
-      const secondCore = fakeCore(); const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => secondCore.core }); gateways.push(restarted); await restarted.start()
-      const replay = await connectCfl(cflAddress(restarted), token); const replayFrames = cflFrameStream(replay); replay.send(JSON.stringify({ type: "hello", afterSequence: 2 }))
-      await expect(replayFrames.next()).resolves.toMatchObject({ type: "ready", retained: { first: 2, last: 3 } })
-      await expect(replayFrames.next()).resolves.toMatchObject({ type: "message", sequence: 3, text: "message 3" })
-      const omitted = await connectCfl(cflAddress(restarted), token); const omittedFrames = cflFrameStream(omitted); omitted.send(JSON.stringify({ type: "hello" }))
-      await expect(omittedFrames.next()).resolves.toMatchObject({ type: "ready", retained: { first: 2, last: 3 } })
-      await expect(omittedFrames.next()).resolves.toMatchObject({ type: "message", sequence: 2, text: "message 2" }); await expect(omittedFrames.next()).resolves.toMatchObject({ type: "message", sequence: 3, text: "message 3" })
-      const duplicate = await connectCfl(cflAddress(restarted), token); const duplicateFrames = cflFrameStream(duplicate); duplicate.send(JSON.stringify({ type: "hello", afterSequence: 2 }))
-      await expect(duplicateFrames.next()).resolves.toMatchObject({ type: "ready", retained: { first: 2, last: 3 } }); await expect(duplicateFrames.next()).resolves.toMatchObject({ type: "message", sequence: 3, text: "message 3" })
-      const racing = await connectCfl(cflAddress(restarted), token); const racingFrames = cflFrameStream(racing); racing.send(JSON.stringify({ type: "hello", afterSequence: 3 })); secondCore.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 4 }, senderId: "alice", senderLabel: "Alice", timestamp: 4, text: "message 4" })
-      await expect(racingFrames.next()).resolves.toMatchObject({ type: "ready" }); await expect(racingFrames.next()).resolves.toMatchObject({ type: "message", sequence: 4, text: "message 4" })
-      const stale = await connectCfl(cflAddress(restarted), token); const staleFrame = nextCflFrame(stale); const staleClosed = socketClosed(stale); stale.send(JSON.stringify({ type: "hello", afterSequence: 0 }))
-      await expect(staleFrame).resolves.toEqual({ type: "resync_required", retained: { first: 3, last: 4 } }); await expect(staleClosed).resolves.toBe(1000)
-      await Promise.all([closeCfl(replay), closeCfl(omitted), closeCfl(duplicate), closeCfl(racing)]); await restarted.close()
-      const reducedCore = fakeCore(); const reduced = new KeetMcpGateway({ config: { ...gateway.options.config, eventRetention: 1 }, createCore: async () => reducedCore.core }); gateways.push(reduced); await reduced.start()
-      expect((await readFile(join(root, "state", "cfl-events.ndjson"), "utf8")).trim()).toBe(JSON.stringify({ type: "message", sequence: 4, messageId: { deviceId: "alice", seq: 4 }, timestamp: 4, destination: { groupName: "Group", kind: "group" }, senderLabel: "Alice", text: "message 4" }))
-      const reducedClient = await connectCfl(cflAddress(reduced), token); const reducedFrames = cflFrameStream(reducedClient); reducedClient.send(JSON.stringify({ type: "hello" })); await expect(reducedFrames.next()).resolves.toMatchObject({ type: "ready", retained: { first: 4, last: 4 } }); await expect(reducedFrames.next()).resolves.toMatchObject({ type: "message", sequence: 4, text: "message 4" }); await closeCfl(reducedClient); await reduced.close()
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("recovers a partial terminal record but fails closed for invalid complete journal records", async () => {
-    const firstCore = fakeCore(); const { gateway, root, token } = await start(firstCore.core)
-    try {
-      const live = await connectCfl(cflAddress(gateway), token); const ready = nextCflFrame(live); live.send(JSON.stringify({ type: "hello" })); await ready
-      const event = nextCflFrame(live); firstCore.emit("broadcast", { groupId: "broadcast", messageId: { deviceId: "news", seq: 1 }, senderId: "author", senderLabel: "Author", timestamp: 1, text: "published" }); await event
-      await closeCfl(live); await gateway.close(); await writeFile(join(root, "state", "cfl-events.ndjson"), "{\"type\":", { flag: "a" }); await writeFile(join(root, "state", "cfl-events.ndjson.replacement"), "uncommitted replacement")
-      const restartedCore = fakeCore(); const restarted = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => restartedCore.core }); gateways.push(restarted); await restarted.start()
-      await expect(readFile(join(root, "state", "cfl-events.ndjson.replacement"))).rejects.toMatchObject({ code: "ENOENT" })
-      const replay = await connectCfl(cflAddress(restarted), token); const frames = cflFrameStream(replay); replay.send(JSON.stringify({ type: "hello" })); await expect(frames.next()).resolves.toMatchObject({ type: "ready", retained: { first: 1, last: 1 } }); await expect(frames.next()).resolves.toMatchObject({ type: "message", text: "published" }); await closeCfl(replay); await restarted.close()
-      await writeFile(join(root, "state", "cfl-events.ndjson"), "{}\n")
-      const corrupt = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(corrupt.start()).rejects.toThrow("invalid sequence")
-      await writeFile(join(root, "state", "cfl-events.ndjson"), `${JSON.stringify({ type: "message", sequence: 1, messageId: { deviceId: "news", seq: 1 }, timestamp: 1, destination: { groupName: "News", kind: "broadcast" }, senderLabel: "Author", text: "published", credentials: "must not load" })}\n`)
-      const privateRecord = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(privateRecord.start()).rejects.toThrow("invalid sequence")
-      await writeFile(join(root, "state", "cfl-events.ndjson"), `${JSON.stringify({ type: "message", sequence: 1, messageId: { deviceId: "news", seq: 1 }, timestamp: 1, destination: { groupName: "", kind: "broadcast" }, senderLabel: "", text: "published" })}\n`)
-      const emptyRecord = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(emptyRecord.start()).rejects.toThrow("invalid sequence")
-      await writeFile(join(root, "state", "cfl-events.ndjson"), `${JSON.stringify({ type: "message", sequence: 1, messageId: { deviceId: "peer", seq: 1 }, timestamp: 1, destination: { groupName: "Peer DM", kind: "dm" }, senderLabel: "Peer", text: "triggerless direct message" })}\n`)
-      const triggerlessDm = new KeetMcpGateway({ config: gateway.options.config, createCore: async () => fakeCore().core }); await expect(triggerlessDm.start()).rejects.toThrow("invalid sequence")
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("fails the gateway closed when a Core message watcher terminates", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
-    try {
-      const endpoint = gateway.address!; fake.terminateWatcher("group"); await pause()
-      expect(fake.closed).toBe(true); expect(gateway.address).toBeUndefined(); await expect(fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).rejects.toThrow()
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("fails the gateway closed when its journal cannot accept an event", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
-    try {
-      const endpoint = cflAddress(gateway); const client = await connectCfl(endpoint, token); const ready = nextCflFrame(client); client.send(JSON.stringify({ type: "hello" })); await ready; let messages = 0; client.on("message", () => { messages += 1 })
-      await mkdir(join(root, "state", "cfl-events.ndjson")); fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 1, text: "journal failure", images: [{ file: {}, mediaType: "image/png" }] })
-      await pause(100); expect(messages).toBe(0); expect(fake.closed).toBe(true); expect(gateway.address).toBeUndefined(); await expect(readdir(join(root, "media"))).resolves.toEqual([expect.stringMatching(/^[0-9a-f-]+\.png$/)]); await expect(fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).rejects.toThrow()
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it("fails the gateway closed instead of growing an unbounded persistence queue", async () => {
-    const fake = fakeCore(); const { gateway, root } = await start(fake.core)
+  it("reports intake overflow as fatal", async () => {
+    const target = await receiver([]); const fake = fakeCore(); const fatal = vi.fn(); const { gateway, root } = await start(fake.core, { webhookUrl: target.url }, fatal)
     try {
       for (let sequence = 1; sequence <= 1025; sequence += 1) fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: sequence }, senderId: "alice", senderLabel: "Alice", timestamp: sequence, text: "queued" })
-      await pause(100); expect(fake.closed).toBe(true); expect(gateway.address).toBeUndefined()
-    } finally { await rm(root, { recursive: true, force: true }) }
+      while (!fake.closed) await pause()
+      expect(gateway.address).toBeUndefined(); expect(fatal).toHaveBeenCalledOnce()
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
   })
-
-  it("terminates a stalled CFL socket without delaying a healthy consumer", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core); const stalled = await connectStalledCfl(cflAddress(gateway), token)
+  it("treats an acknowledgement journal rewrite failure as fatal", async () => {
+    let acknowledge!: () => void
+    let received!: () => void
+    const arrived = new Promise<void>((resolve) => { received = resolve })
+    const server = createServer(async (request, response) => { for await (const _chunk of request) { /* consume body */ }; received(); await new Promise<void>((resolve) => { acknowledge = resolve }); response.writeHead(204).end() })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const address = server.address()! as import("node:net").AddressInfo
+    const fake = fakeCore(); const { gateway, root } = await start(fake.core, { webhookUrl: `http://127.0.0.1:${address.port}/api/keet/events` })
     try {
-      const healthy = await connectCfl(cflAddress(gateway), token); const frames = cflFrameStream(healthy); healthy.send(JSON.stringify({ type: "hello" })); await expect(frames.next()).resolves.toMatchObject({ type: "ready" })
-      const text = "x".repeat(16_000); const started = performance.now()
-      for (let sequence = 1; sequence <= 256; sequence += 1) fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: sequence }, senderId: "alice", senderLabel: "Alice", timestamp: sequence, text })
-      expect(performance.now() - started).toBeLessThan(250)
-      for (let sequence = 1; sequence <= 256; sequence += 1) await expect(frames.next()).resolves.toMatchObject({ type: "message", sequence })
-      const closed = rawSocketClosed(stalled); stalled.resume(); await expect(Promise.race([closed.then(() => "closed"), pause(1_000).then(() => "timed out")])).resolves.toBe("closed")
-      await closeCfl(healthy)
-    } finally { stalled.destroy(); await rm(root, { recursive: true, force: true }) }
-  }, 10_000)
-
-  it("bounds pre-hello CFL connections", async () => {
-    const fake = fakeCore(); const { gateway, root, token } = await start(fake.core)
-    try {
-      const clients = await Promise.all(Array.from({ length: 64 }, async () => await connectCfl(cflAddress(gateway), token)))
-      await expect(connectCfl(cflAddress(gateway), token)).rejects.toThrow()
-      await Promise.all(clients.map(closeCfl))
-    } finally { await rm(root, { recursive: true, force: true }) }
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "a", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 1, text: "persist me" })
+      await arrived
+      await mkdir(join(root, "state", "webhook-events.ndjson.replacement"))
+      acknowledge()
+      await pause(100)
+      expect(fake.closed).toBe(true)
+      expect(gateway.address).toBeUndefined()
+    } finally { server.close(); await rm(root, { recursive: true, force: true }) }
   })
-
+  it("classifies label and own-message replies while excluding self and image-only events", async () => {
+    const target = await receiver([204, 204, 204, 204])
+    const fake = fakeCore()
+    fake.core.readRecentMessages = vi.fn(async () => [{ groupId: "group", messageId: { deviceId: "bot-device", seq: 7 }, senderId: "bot", senderLabel: "Bot", timestamp: 1, text: "old reply anchor" }])
+    const { root } = await start(fake.core, { webhookUrl: target.url })
+    try {
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "bot-device", seq: 8 }, senderId: "bot", senderLabel: "Bot", timestamp: 2, text: "self" })
+      fake.emit("dm", { groupId: "dm", messageId: { deviceId: "peer", seq: 1 }, senderId: "peer", senderLabel: "Peer", timestamp: 3, text: "", images: [{ file: {}, mediaType: "image/png" }] })
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 1 }, senderId: "alice", senderLabel: "Alice", timestamp: 4, text: "hello Bot" })
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 2 }, senderId: "alice", senderLabel: "Alice", timestamp: 5, text: "thread reply", replyTo: { deviceId: "bot-device", seq: 7 } })
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 3 }, senderId: "alice", senderLabel: "Alice", timestamp: 6, text: `${" ".repeat(16_001)}bounded` })
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 4 }, senderId: "private-member-id", senderLabel: "private-member-id", timestamp: 7, text: "unnamed sender" })
+      while (target.received.length < 4) await pause()
+      expect(target.received.map((entry) => entry.body.trigger)).toEqual(["label", "reply", undefined, undefined])
+      expect(target.received.map((entry) => entry.body.sequence)).toEqual([1, 2, 3, 4])
+      expect(target.received[2]!.body.text).toBe("bounded")
+      expect(target.received[3]!.body.senderLabel).toBe("Unknown sender")
+      expect(JSON.stringify(target.received[3]!.body)).not.toContain("private-member-id")
+      expect(target.received[0]!.auth).toBeUndefined()
+    } finally { target.server.close(); await rm(root, { recursive: true, force: true }) }
+  })
+  it("rejects unsafe webhook URLs and accepts HTTPS and loopback HTTP", () => {
+    const base = { KEET_MCP_RUNTIME_DIR: "/r", KEET_MCP_IDENTITY_DIR: "/i", KEET_MCP_WORKSPACE_ROOT: "/w", KEET_MCP_STATE_DIR: "/s", KEET_MCP_LISTEN: "127.0.0.1:1", KEET_MCP_TOKEN: "t".repeat(32) }
+    for (const value of ["http://example.com/events", "http://localhost.evil/events", "https://user:pass@example.com/events", "https://example.com/events#fragment", "https://example.com/events#", "file:///tmp/events"]) expect(() => configurationFromEnvironment({ ...base, KEET_WEBHOOK_URL: value })).toThrow("KEET_WEBHOOK_URL")
+    for (const value of ["https://example.com/events", "http://127.0.0.1:8080/events", "http://[::1]:8080/events", "http://localhost:8080/events"]) expect(configurationFromEnvironment({ ...base, KEET_WEBHOOK_URL: value }).webhookUrl).toBe(value)
+  })
   it("filters pending DMs, fails closed on pending lookup, and keeps an existing start usable", async () => {
     const fake = fakeCore(); fake.core.listPendingDmRequests = vi.fn(async () => [{ memberId: " peer " }])
     const { gateway, root, token } = await start(fake.core)
@@ -430,7 +227,7 @@ describe("Keet MCP gateway", () => {
     const root = await mkdtemp(join(tmpdir(), "keet-mcp-test-")); const runtime = join(root, "runtime"); const workspace = join(root, "workspace"); const fake = fakeCore(); let release!: () => void
     try {
       await Promise.all([mkdir(runtime), mkdir(workspace)]); await Promise.all([writeFile(join(runtime, "bare"), "fixture"), writeFile(join(runtime, "core-worker.bundle"), "fixture")])
-      const gateway = new KeetMcpGateway({ config: { runtimeDir: runtime, identityDir: join(root, "identity"), workspaceRoot: workspace, stateDir: join(root, "state"), mediaDir: join(root, "media"), eventRetention: 10_000, listen: "127.0.0.1:18769", token: "t".repeat(32) }, createCore: async () => await new Promise<KeetCore>((resolve) => { release = () => resolve(fake.core) }) })
+      const gateway = new KeetMcpGateway({ config: { runtimeDir: runtime, identityDir: join(root, "identity"), workspaceRoot: workspace, stateDir: join(root, "state"), listen: "127.0.0.1:18769", token: "t".repeat(32) }, createCore: async () => await new Promise<KeetCore>((resolve) => { release = () => resolve(fake.core) }) })
       const startup = gateway.start(); while (!release) await new Promise((resolve) => setTimeout(resolve)); const shutdown = gateway.close(); release(); await expect(startup).rejects.toThrow("closing"); await shutdown; expect(gateway.address).toBeUndefined(); expect(fake.closed).toBe(true)
     } finally { await rm(root, { recursive: true, force: true }) }
   })
