@@ -18,7 +18,7 @@ const MAX_EVENT_BYTES = 112 * 1024
 const MAX_IMAGE_MESSAGE_BYTES = 32 * 1024 * 1024
 
 export type WebhookDestinationKind = "group" | "broadcast" | "dm"
-type Trigger = "mention" | "label" | "reply" | "dm"
+interface Addressing { readonly mentionsIdentity: boolean; readonly replyToIdentity?: boolean; readonly identityLabel?: string }
 export interface WebhookDestination { readonly groupId: string; readonly groupName: string; readonly kind: WebhookDestinationKind }
 interface Event {
   readonly type: "message"
@@ -30,7 +30,7 @@ interface Event {
   readonly senderLabel: string
   readonly text: string
   readonly replyTo?: KeetMessageId
-  readonly trigger?: Trigger
+  readonly addressing: Addressing
   readonly reactionContext?: readonly ReactionContext[]
   readonly images?: readonly ImageEntry[]
 }
@@ -54,7 +54,7 @@ export class WebhookEventFeed {
   readonly #sequencePath: string
   readonly #destinations: readonly WebhookDestination[]
   readonly #subscriptions: KeetSubscription[] = []
-  readonly #ownMessageIds = new Map<string, Set<string>>()
+  readonly #messageOwners = new Map<string, Map<string, boolean>>()
   #events: Event[] = []
   #nextSequence = 1
   #tail = Promise.resolve()
@@ -82,7 +82,6 @@ export class WebhookEventFeed {
     await rm(this.#replacementPath, { force: true })
     this.#events = await this.#readJournal()
     this.#nextSequence = await this.#readNextSequence()
-    await this.#primeOwnMessageIds()
     this.#started = true
     try {
       for (const destination of this.#destinations) {
@@ -104,8 +103,18 @@ export class WebhookEventFeed {
     void this.#serialized(async () => {
       try {
         if (this.#failure) return
-        const trigger = await this.#trigger(destination, message)
-        const event = eventFromMessage(destination, message, this.#nextSequence, trigger)
+        let history: readonly KeetMessage[] = []
+        if (destination.kind !== "broadcast" || canonicalId(message.replyTo)) {
+          try { history = (await this.options.core.readRecentMessages(destination.groupId, 50)).slice(-50) }
+          catch { /* Ownership remains unknown and reactions unavailable. */ }
+          for (const prior of history) this.#rememberOwner(destination, prior)
+        }
+        const reply = canonicalId(message.replyTo)
+        const replyToIdentity = reply ? this.#messageOwners.get(destination.groupId)?.get(key(reply)) : undefined
+        const identityLabel = bounded(this.options.identityLabel, "")
+        const addressing: Addressing = { mentionsIdentity: message.mentions?.includes(this.options.identityId) ?? false, ...(replyToIdentity === undefined ? {} : { replyToIdentity }), ...(identityLabel ? { identityLabel } : {}) }
+        this.#rememberOwner(destination, message)
+        const event = eventFromMessage(destination, message, this.#nextSequence, addressing)
         if (!event) return
         if (message.images?.length) {
           const images: ImageEntry[] = []
@@ -126,9 +135,8 @@ export class WebhookEventFeed {
           }
           Object.assign(event, { images })
         }
-        if (trigger && destination.kind !== "broadcast") {
+        if (destination.kind !== "broadcast") {
           try {
-            const history = await this.options.core.readRecentMessages(destination.groupId, 50)
             const context = await reactionContext(this.options.core, destination.groupId, history, this.options.identityId)
             while (context.length && Buffer.byteLength(JSON.stringify({ ...event, reactionContext: context }), "utf8") > MAX_EVENT_BYTES) context.pop()
             if (context.length) Object.assign(event, { reactionContext: context })
@@ -146,8 +154,15 @@ export class WebhookEventFeed {
   }
 
   rememberOwnMessage(destination: WebhookDestination, messageId: KeetMessageId | undefined): void {
-    const id = canonicalId(messageId); if (destination.kind !== "group" || !id) return
-    let ids = this.#ownMessageIds.get(destination.groupId); if (!ids) { ids = new Set(); this.#ownMessageIds.set(destination.groupId, ids) }; ids.add(key(id))
+    this.#rememberOwner(destination, { messageId, senderId: this.options.identityId })
+  }
+
+  #rememberOwner(destination: WebhookDestination, message: { readonly messageId?: KeetMessageId | undefined; readonly senderId: string }): void {
+    const id = canonicalId(message.messageId); if (!id || !message.senderId?.trim()) return
+    let owners = this.#messageOwners.get(destination.groupId)
+    if (!owners) { owners = new Map(); this.#messageOwners.set(destination.groupId, owners) }
+    owners.set(key(id), message.senderId === this.options.identityId)
+    if (owners.size > 100) owners.delete(owners.keys().next().value!)
   }
 
   async close(): Promise<void> {
@@ -196,14 +211,11 @@ export class WebhookEventFeed {
   async #readNextSequence(): Promise<number> { const last = this.#events.at(-1)?.sequence ?? 0; try { const value = Number((await readFile(this.#sequencePath, "utf8")).trim()); if (!Number.isSafeInteger(value) || value <= last) throw new Error("Webhook event sequence is invalid."); return value } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; if (last >= Number.MAX_SAFE_INTEGER) throw new Error("Webhook event sequence is exhausted."); await this.#writeNextSequence(last + 1); return last + 1 } }
   async #writeNextSequence(value: number): Promise<void> { const temporary = `${this.#sequencePath}.replacement`; const handle = await open(temporary, "w", 0o600); try { await handle.writeFile(`${value}\n`, "utf8"); await handle.sync() } finally { await handle.close() }; await rename(temporary, this.#sequencePath) }
   async #readJournal(): Promise<Event[]> { let contents: string; try { contents = await readFile(this.#journalPath, "utf8") } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error }; if (!contents) return []; if (!contents.endsWith("\n")) { const complete = contents.slice(0, contents.lastIndexOf("\n") + 1); const handle = await open(this.#journalPath, "r+"); try { await handle.truncate(Buffer.byteLength(complete)); await handle.sync() } finally { await handle.close() }; contents = complete }; const events = contents.slice(0, -1).split("\n").map((line) => parseJournalLine(line)); if (events.some((event) => !event) || events.some((event, index) => index && event!.sequence <= events[index - 1]!.sequence)) throw new Error("Webhook event journal contains invalid data."); return events as Event[] }
-  async #primeOwnMessageIds(): Promise<void> { for (const destination of this.#destinations) if (destination.kind === "group") await this.#refreshOwnMessageIds(destination) }
-  async #trigger(destination: WebhookDestination, message: KeetMessage): Promise<Trigger | undefined> { if (destination.kind === "dm") return "dm"; if (destination.kind !== "group") return undefined; if (message.mentions?.some((id) => id === this.options.identityId)) return "mention"; if (this.options.identityLabel?.trim() && message.text.includes(this.options.identityLabel.trim())) return "label"; const reply = canonicalId(message.replyTo); if (reply && !this.#ownMessageIds.get(destination.groupId)?.has(key(reply))) await this.#refreshOwnMessageIds(destination); return reply && this.#ownMessageIds.get(destination.groupId)?.has(key(reply)) ? "reply" : undefined }
-  async #refreshOwnMessageIds(destination: WebhookDestination): Promise<void> { try { for (const message of await this.options.core.readRecentMessages(destination.groupId, 50)) if (message.senderId === this.options.identityId) this.rememberOwnMessage(destination, message.messageId) } catch { /* Reply history is best effort. */ } }
   async #serialized<T>(operation: () => Promise<T>): Promise<T> { const previous = this.#tail; let release!: () => void; this.#tail = new Promise((resolve) => { release = resolve }); await previous; try { return await operation() } finally { release() } }
   #fail(error: Error): void { if (this.#failure) return; this.#failure = error; this.options.onFatal(error) }
 }
 
-function eventFromMessage(destination: WebhookDestination, message: KeetMessage, sequence: number, trigger?: Trigger): Event | undefined {
+function eventFromMessage(destination: WebhookDestination, message: KeetMessage, sequence: number, addressing: Addressing): Event | undefined {
   const messageId = canonicalId(message.messageId)
   if ((!message.text?.trim() && !message.images?.length) || !messageId || !Number.isSafeInteger(sequence) || sequence < 1) return undefined
   const sourceText = Array.from(message.text).slice(0, MAX_TEXT).join("")
@@ -214,11 +226,11 @@ function eventFromMessage(destination: WebhookDestination, message: KeetMessage,
     timestamp: Number.isSafeInteger(message.timestamp) ? message.timestamp : 0,
     destination: { groupName: bounded(destination.groupName, "Managed Destination"), kind: destination.kind },
     senderLabel: bounded(message.senderLabel === message.senderId ? undefined : message.senderLabel, "Unknown sender"), text,
-    ...(replyTo ? { replyTo } : {}), ...(trigger ? { trigger } : {}),
+    ...(replyTo ? { replyTo } : {}), addressing,
   }
 }
 function eventFromJournal(value: unknown): Event | undefined {
-  if (!record(value) || !onlyKeys(value, ["type", "eventId", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "trigger", "reactionContext", "images"])) return undefined
+  if (!record(value) || !onlyKeys(value, ["type", "eventId", "sequence", "messageId", "timestamp", "destination", "senderLabel", "text", "replyTo", "addressing", "reactionContext", "images"])) return undefined
   const destination = value.destination
   if (value.type !== "message" || typeof value.eventId !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.eventId) || !positive(value.sequence) || !strictId(value.messageId) || !Number.isSafeInteger(value.timestamp)) return undefined
   if (!record(destination) || !onlyKeys(destination, ["groupName", "kind"]) || !boundedExact(destination.groupName) || !kind(destination.kind) || !boundedExact(value.senderLabel)) return undefined
@@ -227,15 +239,14 @@ function eventFromJournal(value: unknown): Event | undefined {
   if (images !== undefined && (!Array.isArray(images) || !images.length || images.length > 16 || !images.every(validImageEntry))) return undefined
   if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_EVENT_BYTES) return undefined
   const replyTo = value.replyTo === undefined ? undefined : strictId(value.replyTo)
-  const trigger = value.trigger === undefined ? undefined : triggerValue(value.trigger)
-  if ((value.replyTo !== undefined && !replyTo) || (value.trigger !== undefined && !trigger)) return undefined
-  if ((destination.kind === "dm" && trigger !== "dm") || (destination.kind !== "dm" && trigger === "dm") || (destination.kind === "broadcast" && trigger)) return undefined
+  const addressing = value.addressing
+  if ((value.replyTo !== undefined && !replyTo) || !validAddressing(addressing) || (addressing.replyToIdentity !== undefined && !replyTo)) return undefined
   const reactionContext = value.reactionContext
-  if (reactionContext !== undefined && (!trigger || destination.kind === "broadcast" || !Array.isArray(reactionContext) || !reactionContext.length || reactionContext.length > MAX_REACTION_CONTEXT || !reactionContext.every(validReactionContext) || Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_EVENT_BYTES)) return undefined
+  if (reactionContext !== undefined && (destination.kind === "broadcast" || !Array.isArray(reactionContext) || !reactionContext.length || reactionContext.length > MAX_REACTION_CONTEXT || !reactionContext.every(validReactionContext) || Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_EVENT_BYTES)) return undefined
   return {
     type: "message", eventId: value.eventId, sequence: value.sequence, messageId: strictId(value.messageId)!, timestamp: value.timestamp,
     destination: { groupName: destination.groupName, kind: destination.kind }, senderLabel: value.senderLabel, text: value.text,
-    ...(replyTo ? { replyTo } : {}), ...(trigger ? { trigger } : {}), ...(reactionContext ? { reactionContext } : {}), ...(images ? { images } : {}),
+    ...(replyTo ? { replyTo } : {}), addressing, ...(reactionContext ? { reactionContext } : {}), ...(images ? { images } : {}),
   }
 }
 async function reactionContext(core: KeetCore, groupId: string, history: readonly KeetMessage[], identityId: string): Promise<ReactionContext[]> {
@@ -275,7 +286,7 @@ function canonicalId(value: unknown): KeetMessageId | undefined { return record(
 function bounded(value: unknown, fallback: string): string { const text = typeof value === "string" ? Array.from(value).slice(0, MAX_NAME).join("").replace(/[\r\n\u2028\u2029]+/g, " ").trim() : ""; return text || fallback }
 function boundedExact(value: unknown): value is string { return typeof value === "string" && value.length > 0 && bounded(value, "") === value }
 function kind(value: unknown): value is WebhookDestinationKind { return value === "group" || value === "broadcast" || value === "dm" }
-function triggerValue(value: unknown): Trigger | undefined { return value === "mention" || value === "label" || value === "reply" || value === "dm" ? value : undefined }
+function validAddressing(value: unknown): value is Addressing { return record(value) && onlyKeys(value, ["mentionsIdentity", "replyToIdentity", "identityLabel"]) && typeof value.mentionsIdentity === "boolean" && (value.replyToIdentity === undefined || typeof value.replyToIdentity === "boolean") && (value.identityLabel === undefined || boundedExact(value.identityLabel)) }
 function positive(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value > 0 }
 function record(value: unknown): value is Record<string, any> { return !!value && typeof value === "object" && !Array.isArray(value) }
 function key(value: KeetMessageId): string { return `${value.deviceId}:${value.seq}` }

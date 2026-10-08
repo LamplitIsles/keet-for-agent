@@ -26,7 +26,7 @@ afterEach(async () => { gate.beforeRename = undefined; gate.beforeSequenceRename
 describe("webhook journal", () => {
   it("rejects invalid persisted reaction context", async () => {
     const root = await mkdtemp(join(tmpdir(), "keet-webhook-journal-"))
-    const event = { type: "message", eventId: "00000000-0000-0000-0000-000000000001", sequence: 1, messageId: { deviceId: "peer", seq: 1 }, timestamp: 1, destination: { groupName: "Group", kind: "group" }, senderLabel: "Peer", text: "hello Bot", trigger: "label", reactionContext: [{ targetMessageId: { deviceId: "bot", seq: 1 }, targetText: "old", emoji: "plain text", externalCount: 1 }] }
+    const event = { type: "message", eventId: "00000000-0000-0000-0000-000000000001", sequence: 1, messageId: { deviceId: "peer", seq: 1 }, timestamp: 1, destination: { groupName: "Group", kind: "group" }, senderLabel: "Peer", text: "hello Bot", addressing: { mentionsIdentity: false, identityLabel: "Bot" }, reactionContext: [{ targetMessageId: { deviceId: "bot", seq: 1 }, targetText: "old", emoji: "plain text", externalCount: 1 }] }
     const core = { readRecentMessages: vi.fn(async () => []), watchMessages: vi.fn() } as unknown as KeetCore
     const feed = new WebhookEventFeed({ stateDir: root, imageStore: new InboundImageStore(root), url: new URL("http://127.0.0.1:1/events"), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
     try {
@@ -37,6 +37,26 @@ describe("webhook journal", () => {
       await writeFile(join(root, "webhook-events.ndjson"), `${JSON.stringify(event)}\n`)
       await expect(feed.start()).rejects.toThrow("invalid data")
     } finally { await feed.close(); await rm(root, { recursive: true, force: true }) }
+  })
+  it.each([
+    undefined, null, {}, { mentionsIdentity: "yes" }, { mentionsIdentity: false, replyToIdentity: "no" },
+    { mentionsIdentity: false, identityLabel: " " }, { mentionsIdentity: false, identityLabel: "x".repeat(513) },
+    { mentionsIdentity: false, memberId: "private" }, { mentionsIdentity: false, replyToIdentity: false },
+  ])("rejects malformed persisted addressing %j", async (addressing) => {
+    const root = await mkdtemp(join(tmpdir(), "keet-webhook-journal-"))
+    const event = { type: "message", eventId: "00000000-0000-0000-0000-000000000001", sequence: 1, messageId: { deviceId: "peer", seq: 1 }, timestamp: 1, destination: { groupName: "Group", kind: "group" }, senderLabel: "Peer", text: "hello", addressing }
+    const core = { readRecentMessages: vi.fn(async () => []), watchMessages: vi.fn() } as unknown as KeetCore
+    const feed = new WebhookEventFeed({ stateDir: root, imageStore: new InboundImageStore(root), url: new URL("http://127.0.0.1:1/events"), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
+    try { await writeFile(join(root, "webhook-events.ndjson"), `${JSON.stringify(event)}\n`); await expect(feed.start()).rejects.toThrow("invalid data") }
+    finally { await feed.close(); await rm(root, { recursive: true, force: true }) }
+  })
+  it("rejects the removed trigger field in a freshly owned journal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "keet-webhook-journal-"))
+    const event = { type: "message", eventId: "00000000-0000-0000-0000-000000000001", sequence: 1, messageId: { deviceId: "peer", seq: 1 }, timestamp: 1, destination: { groupName: "Group", kind: "group" }, senderLabel: "Peer", text: "hello", addressing: { mentionsIdentity: false }, trigger: "label" }
+    const core = { readRecentMessages: vi.fn(async () => []), watchMessages: vi.fn() } as unknown as KeetCore
+    const feed = new WebhookEventFeed({ stateDir: root, imageStore: new InboundImageStore(root), url: new URL("http://127.0.0.1:1/events"), core, identityId: "bot", destinations: [destination], onFatal: (error) => { throw error } })
+    try { await writeFile(join(root, "webhook-events.ndjson"), `${JSON.stringify(event)}\n`); await expect(feed.start()).rejects.toThrow("invalid data") }
+    finally { await feed.close(); await rm(root, { recursive: true, force: true }) }
   })
   it("keeps a concurrent append when acknowledging an earlier event", async () => {
     const root = await mkdtemp(join(tmpdir(), "keet-webhook-journal-"))

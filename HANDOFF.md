@@ -27,7 +27,7 @@ field.
 reaction to a canonical target in the same Managed Group or DM. The text is
 sent first; reaction success or failure is reported separately from confirmed
 text delivery. Broadcast and standalone reaction sends are unsupported.
-Qualifying Group and DM webhook message events may include a bounded snapshot of
+All Group and DM webhook text/image events may include a bounded snapshot of
 external aggregate reactions to recent identity-authored messages. Reaction
 changes alone do not create events. Core's complete reaction read verifies
 ownership for each candidate; a failed read omits that target and preserves
@@ -46,7 +46,10 @@ messages, including pure images, persists validated originals and then their
 reference events, and retries in order until a 2xx acknowledgement. Failed
 image reads or validation are marked unavailable without dropping the message.
 Originals remain under `KEET_MCP_STATE_DIR/images/` until manually removed;
-`GET /images/{ref}` uses the MCP bearer and returns 404 after removal. It never
+`GET /images/{ref}` uses the MCP bearer and returns 404 after removal. Every
+event carries factual addressing: native identity mention membership,
+optional verified reply ownership, and the bounded current identity label.
+Unknown reply owners stay omitted; receivers classify triggers. It never
 injects model context or sends replies. The `/cfl` route is removed.
 
 ## Compatibility and safety

@@ -11,6 +11,7 @@ removed; agent integrations use MCP.
   workspace-contained file delivery, and an optional durable incoming-message
   webhook for text and image messages, with retained originals available through
   bearer-protected HTTP references and bounded aggregate reaction context.
+  Events report addressing facts; each receiver owns agent trigger policy.
 - `@lamplitisles/keet-integration-core` is the private typed sidecar boundary.
 - [`@lamplitisles/impri-keet`](packages/impri-keet) is the separate private
   approval-channel adapter and owns a different Keet identity.

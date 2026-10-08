@@ -42,16 +42,22 @@ the missing image explicitly.
 
 ## Triggering Message
 
-An incoming message that gives an agent a reason to respond: an accepted DM, a
-Group mention of the Integration Identity, a Group message containing its
-current display label, or a Group reply to one of its messages. Other Group
-messages and Broadcast messages remain observable without triggering an agent.
+An incoming message that a receiver decides calls for agent action. Receivers
+own the policy for DMs, Group mentions, labels, replies and aliases; KFA reports
+all admitted incoming messages, including ordinary Group messages and Broadcasts.
+
+## Addressing Facts
+
+Whether a message natively mentions the Integration Identity, whether its reply
+target is verified as belonging to that identity, and the identity's current
+label when available. Unknown reply ownership is absent rather than false.
+These facts inform receiver policy without deciding whether to respond.
 
 ## Keet Reaction
 
 An emoji signal attached to one exact Keet message, visible as an aggregate
-without attribution to individual reactors. Its context may inform a later
-triggering message; a reaction change alone is not a message.
+without attribution to individual reactors. Its bounded context accompanies
+incoming Group and DM messages and may inform a later receiver turn; a reaction change alone is not a message.
 
 ## Reaction Response
 

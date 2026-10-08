@@ -18,5 +18,8 @@ optional, requires the URL, and is sent only as `Authorization: Bearer …`.
 Every `POST` has `Content-Type: application/json` and a body with `type`, UUID
 `eventId`, positive `sequence`, canonical `messageId`, safe-integer
 `timestamp`, `{ groupName, kind }` destination, `senderLabel`, text, and
-optional `replyTo` and trigger. Only a 2xx response acknowledges a delivery;
+required addressing facts (native identity mention, optional verified reply
+ownership and current identity label), and optional `replyTo`. KFA does not
+classify triggers; each receiver owns that decision. Only a 2xx response
+acknowledges a delivery;
 timeouts, network errors, redirects, and all other status codes retry in order.

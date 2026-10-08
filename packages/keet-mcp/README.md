@@ -111,9 +111,16 @@ captioned image keeps both its text and images; pure image messages have empty
 `text` and a nonempty `images` array.
 Each JSON body has `type: "message"`, UUID `eventId`, positive `sequence`,
 canonical `messageId`, safe-integer `timestamp`, `destination`, `senderLabel`,
-bounded text, and optional `replyTo` and `trigger` (`mention`, `label`,
-`reply`, or `dm`). It includes only canonical message IDs for the event,
-optional reply, and reaction targets; it excludes group and sender IDs, native
+bounded text, required `addressing`, and optional `replyTo`.
+`addressing` contains `mentionsIdentity: boolean` from native mention membership,
+optional `replyToIdentity: boolean` for a verified reply owner, and optional
+`identityLabel` from the current identity readiness label (trimmed and bounded
+to 512 Unicode code points). Verified non-own replies report false; unknown
+targets or failed history reads omit reply ownership. KFA uses at most the
+latest 50 messages plus a bounded cache of observed/sent message ownership.
+KFA does no label matching or turn classification; receivers own trigger policy.
+It includes only canonical message IDs for the event, optional reply, and reaction
+targets; it excludes group and sender IDs, native
 records, image data, paths, and credentials. The ordered `images` array has one
 entry per admitted native image: `mediaType`, optional safe `name`, and
 `status: "available"` with an opaque `ref`, or `status: "unavailable"` without
@@ -127,7 +134,7 @@ bytes and their image media type. Missing or malformed references, including
 images removed by an operator, return 404; missing credentials return 401.
 The route accepts only GET and never accepts a filesystem path.
 
-A qualifying Group or DM message trigger can also carry `reactionContext`: up to
+Any Group or DM text or image message can also carry `reactionContext`: up to
 16 `{ targetMessageId, targetText, emoji, externalCount }` entries from the
 latest 50 messages in that destination. KFA makes at most 16 strict complete
 reaction reads for identity-authored candidate messages with apparent
@@ -137,10 +144,9 @@ of at most 48 Unicode code points. `externalCount` subtracts this identity's own
 reaction, and entries with zero external reactions are omitted. Inbound emoji
 may be Unicode or a bounded Keet shortcode. The complete event, including
 images and context, is capped at 112 KiB; reaction entries are dropped to fit.
-A history-read failure leaves the message event intact, and a later qualifying
-trigger can collect a new snapshot. Reaction changes alone create no webhook
-event. Ordinary Group messages and all Broadcast messages carry no reaction
-context. The receiver handles its own
+A history-read failure leaves the message event intact, and a later incoming
+message can collect a new snapshot. Reaction changes alone create no webhook
+event. Broadcast messages carry no reaction context. The receiver handles its own
 deduplication and delivery receipts; KFA does not identify reactors.
 
 KFA appends and syncs an event before its first request. It sends one event at
