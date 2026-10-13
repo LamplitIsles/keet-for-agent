@@ -42,6 +42,16 @@ rpc.register(6, { request: any, response: any, onrequest: async () => {
   }
   return { memberId: selfId, displayName: "Fixture Bot" }
 } })
+let deviceRequest = { deviceName: "Fixture Phone", deviceId: "a".repeat(52), identityDeviceId: "b".repeat(52) }
+rpc.register(17, { request: any, response: any, onrequest: ([target, accepted]) => {
+  if (target.deviceId !== deviceRequest?.deviceId || typeof accepted !== "boolean") throw new Error("invalid pairing decision")
+  deviceRequest = null
+} })
+rpc.register(18, { request: any, response: any, onstream: (stream) => {
+  stream.on("data", () => { if (deviceRequest) stream.write(deviceRequest) })
+} })
+rpc.register(60, { request: any, response: any, onrequest: () => "a".repeat(64) })
+rpc.register(22, { request: any, response: any, onrequest: ([token]) => ({ isIdentityInvitation: token === "a".repeat(64) }) })
 rpc.register(39, { request: any, response: any, onrequest: ([room]) => room === groupId ? ({ roomId: groupId, title: "Test group", description: "fixture", roomType: "Default" }) : null })
 rpc.register(43, { request: any, response: any, onrequest: () => ({ rooms: groups }) })
 rpc.register(66, { request: any, response: any, onrequest: () => members })

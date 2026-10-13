@@ -18,14 +18,19 @@ async function main(): Promise<void> {
     if (!filename) throw new Error("npm pack did not create the gateway artifact")
     const artifact = join(temp, filename)
     const files = (await run("tar", ["-tzf", artifact])).stdout.split("\n").filter(Boolean)
-    for (const required of ["package/dist/index.js", "package/dist/cli.js", "package/dist/setup.js", "package/package.json", "package/README.md", "package/LICENSE", "package/THIRD_PARTY_NOTICES.md"]) if (!files.includes(required)) throw new Error(`gateway artifact missing ${required}`)
+    for (const required of ["package/dist/index.js", "package/dist/cli.js", "package/dist/setup.js", "package/dist/admin.js", "package/package.json", "package/README.md", "package/LICENSE", "package/THIRD_PARTY_NOTICES.md"]) if (!files.includes(required)) throw new Error(`gateway artifact missing ${required}`)
     if (files.some((file) => file.includes(".scratch") || /(?:runtime|identity|invitation|message-data|\.(?:png|jpe?g|webp|gif|key|pem))$/i.test(file))) throw new Error("gateway artifact contains private material")
-    const metadata = JSON.parse((await run("tar", ["-xOf", artifact, "package/package.json"])).stdout) as { dependencies?: Record<string, string> }
+    if (files.some((file) => !/^package\/(?:package\.json|README\.md|LICENSE|THIRD_PARTY_NOTICES\.md|dist\/[^/]+\.(?:js|d\.ts))$/.test(file))) throw new Error("gateway artifact contains files outside the distribution contract")
+    const metadata = JSON.parse((await run("tar", ["-xOf", artifact, "package/package.json"])).stdout) as { dependencies?: Record<string, string>; bin?: Record<string, string> }
+    if (metadata.bin?.["keet-mcp-admin"] !== "./dist/admin.js" || !metadata.dependencies?.zod) throw new Error("admin executable or dependency contract is missing")
+    if (metadata.dependencies?.["@lamplitisles/keet-integration-core"]) throw new Error("private Core must be bundled")
     if (metadata.dependencies?.ws) throw new Error("gateway artifact must not declare the removed WebSocket dependency")
     const installed = join(temp, "installed")
     await run("npm", ["install", "--ignore-scripts", "--prefix", installed, artifact])
     const { stdout: help } = await run(process.execPath, [join(installed, "node_modules", ".bin", "keet-mcpd"), "--help"])
     if (!help.includes("KEET_MCP_TOKEN")) throw new Error("gateway executable help is unavailable")
+    const { stdout: adminHelp } = await run(process.execPath, [join(installed, "node_modules", ".bin", "keet-mcp-admin"), "--help"], { env: { ...process.env, KEET_MCP_ADMIN_URL: "", KEET_MCP_ADMIN_TOKEN: "" } })
+    if (!adminHelp.includes("KEET_MCP_ADMIN_TOKEN") || !adminHelp.includes("approve REQUEST_ID --yes") || !adminHelp.includes("pending")) throw new Error("admin executable help is unavailable")
     const { stdout: setupHelp } = await run(process.execPath, [join(installed, "node_modules", ".bin", "keet-mcp-setup"), "--help"])
     if (!setupHelp.includes("join") || !setupHelp.includes("KEET_MCP_IDENTITY_DIR")) throw new Error("setup executable help is unavailable")
   } finally { await rm(temp, { recursive: true, force: true }) }

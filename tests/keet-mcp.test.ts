@@ -7,8 +7,10 @@ import { join } from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import sharp from "sharp"
+import { runAdmin } from "../packages/keet-mcp/src/admin.js"
+import { DeviceLinkError } from "../packages/keet-core/src/device-link.js"
 import { configurationFromEnvironment, KeetMcpGateway, type GatewayConfig } from "../packages/keet-mcp/src/index.js"
-import type { KeetCore, KeetMessage, KeetSubscription } from "@lamplitisles/keet-integration-core"
+import type { DeviceLinkRequest, KeetCore, KeetMessage, KeetSubscription } from "@lamplitisles/keet-integration-core"
 
 const PNG_1X1 = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"))
 const gateways: KeetMcpGateway[] = []
@@ -48,7 +50,7 @@ async function start(core: KeetCore, overrides: Partial<GatewayConfig> = {}, onF
   const root = await mkdtemp(join(tmpdir(), "keet-mcp-test-")); const runtime = join(root, "runtime"); const workspace = join(root, "workspace"); const identity = join(root, "identity"); const state = join(root, "state")
   await Promise.all([mkdir(runtime), mkdir(workspace)]); await Promise.all([writeFile(join(runtime, "bare"), "fixture"), writeFile(join(runtime, "core-worker.bundle"), "fixture")])
   const token = "t".repeat(32); const config: GatewayConfig = { runtimeDir: runtime, identityDir: identity, workspaceRoot: workspace, stateDir: state, listen: `127.0.0.1:${nextPort++}`, token, ...overrides }
-  const gateway = new KeetMcpGateway({ config, createCore: async () => core, ...(onFatal ? { onFatal } : {}) }); gateways.push(gateway); await gateway.start(); return { gateway, root, token }
+  const gateway = new KeetMcpGateway({ config, createCore: vi.fn(async () => core), ...(onFatal ? { onFatal } : {}) }); gateways.push(gateway); await gateway.start(); return { gateway, root, token }
 }
 function json(result: unknown): unknown { const value = result as { content?: Array<{ type: string; text?: string }> }; const first = value.content?.find((item) => item.type === "text"); return JSON.parse(first?.text ?? "{}") }
 function pause(milliseconds = 25): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)) }
@@ -385,6 +387,126 @@ describe("Keet MCP gateway", () => {
       const firstAbort = new AbortController(); const queuedAbort = new AbortController(); const firstCall = firstClient.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "first" } }, undefined, { signal: firstAbort.signal }); void firstCall.catch(() => undefined); while (!firstSend.mock.calls.length) await new Promise((resolve) => setTimeout(resolve)); expect(firstSend.mock.calls.map((call) => call[1])).toEqual(["first"])
       const queuedCall = queuedClient.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "queued" } }, undefined, { signal: queuedAbort.signal }); void queuedCall.catch(() => undefined); await new Promise((resolve) => setTimeout(resolve)); expect(firstSend.mock.calls.map((call) => call[1])).toEqual(["first"])
       const endpoint = gateway.address!; await gateway.close(); expect(cancelled).toContain("first"); expect(gateway.address).toBeUndefined(); await expect(fetch(endpoint, { headers: { authorization: `Bearer ${token}` } })).rejects.toThrow(); (gateway.options as unknown as { createCore?: (_options: unknown) => Promise<KeetCore> }).createCore = async () => second.core; await gateway.start(); firstAbort.abort(); queuedAbort.abort(); await Promise.allSettled([firstCall, queuedCall]); expect(second.events).not.toContain("text:first"); expect(second.events).not.toContain("text:queued"); expect(secondSend).not.toHaveBeenCalled(); const restarted = new Client({ name: "restarted", version: "1" }); await restarted.connect(transport() as never); expect(json(await restarted.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "after restart" } }))).toEqual({ sent: true }); expect(second.events).toEqual(["text:after restart"]); await restarted.close(); await firstClient.close().catch(() => undefined); await queuedClient.close().catch(() => undefined)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+})
+
+describe("human-only online device linking", () => {
+  const adminToken = "a".repeat(32)
+  const requestId = "b".repeat(64)
+  function linkingCore() {
+    const fake = fakeCore()
+    let current = { requestId, deviceName: "Fixture Phone" }
+    const invite = vi.fn(async () => ({ invitationUrl: `keet://link/${"a".repeat(64)}`, expiresAt: Date.now() + 7_200_000 }))
+    const request = vi.fn(async () => current)
+    const decide = vi.fn(async (id: string) => { if (current.requestId !== id) throw new DeviceLinkError("conflict"); current = { requestId: "c".repeat(64), deviceName: "Fixture Phone" } })
+    fake.core.createDeviceLinkInvitation = invite; fake.core.getDeviceLinkRequest = request; fake.core.decideDeviceLink = decide
+    const close = vi.spyOn(fake.core, "close")
+    return { ...fake, invite, request, decide, close }
+  }
+  async function command(gateway: KeetMcpGateway, argv: string[], token = adminToken) {
+    let stdout = ""; let stderr = ""
+    const code = await runAdmin(argv, { env: { KEET_MCP_ADMIN_URL: new URL(gateway.address!).origin, KEET_MCP_ADMIN_TOKEN: token }, stdout: { write: (chunk) => { stdout += String(chunk); return true } }, stderr: { write: (chunk) => { stderr += String(chunk); return true } } })
+    return { code, stdout, stderr }
+  }
+  it("runs CLI → HTTP → the existing Core while the same MCP session and webhook keep working", async () => {
+    const target = await receiver([204]); const fake = linkingCore(); const { gateway, root, token } = await start(fake.core, { adminToken, webhookUrl: target.url })
+    const client = new Client({ name: "admin-parallel", version: "1" })
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(gateway.address!), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as never)
+      const invite = await command(gateway, ["devices", "invite"])
+      expect(invite.code).toBe(0); expect(JSON.parse(invite.stdout).invitationUrl).toBe(`keet://link/${"a".repeat(64)}`)
+      let release!: () => void
+      fake.core.getDeviceLinkRequest = vi.fn(async () => new Promise<DeviceLinkRequest>((resolve) => { release = () => resolve({ requestId, deviceName: "Fixture Phone" }) }))
+      const pending = command(gateway, ["devices", "pending"])
+      while (!release) await pause()
+      expect(json(await client.callTool({ name: "send_message", arguments: { destinationName: "Group", text: "while pending" } }))).toBeDefined()
+      fake.emit("group", { groupId: "group", messageId: { deviceId: "alice", seq: 99 }, senderId: "alice", senderLabel: "Alice", timestamp: 99, text: "while pending" })
+      while (target.received.length < 1) await pause()
+      expect(target.received[0].body.text).toBe("while pending")
+      release(); const seen = await pending
+      expect(seen.code).toBe(0); expect(JSON.parse(seen.stdout)).toEqual({ request: { requestId, deviceName: "Fixture Phone" } })
+      fake.core.getDeviceLinkRequest = vi.fn(async () => ({ requestId, deviceName: "Fixture Phone" }))
+      const approved = await command(gateway, ["devices", "approve", requestId, "--yes"])
+      expect(approved).toEqual({ code: 0, stdout: '{"decisionSubmitted":"approve"}\n', stderr: "" })
+      expect((await command(gateway, ["devices", "reject", requestId, "--yes"])).code).toBe(1)
+      expect((await command(gateway, ["devices", "reject", "c".repeat(64), "--yes"])).code).toBe(0)
+      expect((await client.listTools()).tools).toHaveLength(5)
+      expect(gateway.sessionCount).toBe(1); expect(fake.events).toContain("text:while pending")
+      expect(gateway.options.createCore).toHaveBeenCalledTimes(1); expect(fake.close).not.toHaveBeenCalled()
+    } finally { await client.close(); await gateway.close(); target.server.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("separates bearer authorities, authenticates before body/Core, and disables admin by default", async () => {
+    const fake = linkingCore(); const { gateway, root, token } = await start(fake.core, { adminToken })
+    const origin = new URL(gateway.address!).origin
+    try {
+      for (const presented of [undefined, token, "é".repeat(32)]) {
+        const response = await fetch(`${origin}/admin/device-link/decision`, { method: "POST", headers: presented ? { authorization: `Bearer ${presented}` } : {}, body: "INVALID_JSON" })
+        expect(response.status).toBe(401)
+      }
+      expect(fake.decide).not.toHaveBeenCalled(); expect(fake.request).not.toHaveBeenCalled()
+      for (const path of ["/mcp", "/images/fixture"]) expect((await fetch(`${origin}${path}`, { headers: { authorization: `Bearer ${adminToken}` } })).status).toBe(401)
+      await gateway.close()
+      const disabled = await start(fake.core)
+      try { expect((await fetch(`${new URL(disabled.gateway.address!).origin}/admin/device-link/request`, { headers: { authorization: `Bearer ${adminToken}` } })).status).toBe(404) }
+      finally { await disabled.gateway.close(); await rm(disabled.root, { recursive: true, force: true }) }
+    } finally { await gateway.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("rejects methods, queries, unknown/oversized bodies and reports only safe error categories", async () => {
+    const fake = linkingCore(); const { gateway, root } = await start(fake.core, { adminToken }); const origin = new URL(gateway.address!).origin
+    const headers = { authorization: `Bearer ${adminToken}`, "content-type": "application/json" }
+    try {
+      for (const [path, method, body, status] of [
+        ["request", "POST", "{}", 405], ["invitation", "GET", undefined, 405], ["unknown", "POST", "{}", 404], ["request?x=1", "GET", undefined, 404],
+        ["invitation", "POST", '{"extra":1}', 400], ["invitation", "POST", "{", 400], ["invitation", "POST", '"a"', 400], ["invitation", "POST", " ".repeat(4097), 413],
+        ["decision", "POST", JSON.stringify({ requestId, decision: "approve", extra: true }), 400], ["decision", "POST", JSON.stringify({ requestId: "name", decision: "approve" }), 400],
+      ] as const) {
+        const response = await fetch(`${origin}/admin/device-link/${path}`, { method, headers, ...(body !== undefined ? { body } : {}) })
+        expect(response.status).toBe(status); expect(response.headers.get("cache-control")).toBe("private, no-store"); expect(response.headers.get("content-type")).toBe("application/json")
+      }
+      expect(fake.invite).not.toHaveBeenCalled(); expect(fake.decide).not.toHaveBeenCalled()
+      fake.core.createDeviceLinkInvitation = vi.fn(async () => { throw new Error(`RAW_RPC ${adminToken} keet://link/secret`) })
+      const failed = await command(gateway, ["devices", "invite"])
+      expect(failed.code).toBe(1); expect(failed.stdout).toBe(""); expect(failed.stderr).toBe('{"error":"http_failure"}\n')
+      const response = await fetch(`${origin}/admin/device-link/invitation`, { method: "POST", headers, body: "{}" })
+      expect(await response.json()).toEqual({ error: "operation_failed" })
+      fake.core.getDeviceLinkRequest = vi.fn(async () => { throw new DeviceLinkError("timeout") })
+      const unavailable = await command(gateway, ["devices", "pending"])
+      expect(unavailable.code).toBe(1); expect(JSON.parse(unavailable.stderr).error).toBe("pairing_state_unavailable"); expect(unavailable.stdout).toBe("")
+      expect((await fetch(`${origin}/admin/device-link/request`, { headers })).status).toBe(504)
+    } finally { await gateway.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("cancels management reads on HTTP disconnect and gateway shutdown without a second identity", async () => {
+    const fake = linkingCore(); const { gateway, root } = await start(fake.core, { adminToken })
+    let observed!: AbortSignal
+    fake.core.getDeviceLinkRequest = vi.fn(async (signal?: AbortSignal): Promise<DeviceLinkRequest> => {
+      observed = signal!
+      return new Promise((_, reject) => { signal!.addEventListener("abort", () => reject(new DeviceLinkError("cancelled")), { once: true }) })
+    })
+    try {
+      const controller = new AbortController()
+      const http = fetch(`${new URL(gateway.address!).origin}/admin/device-link/request`, { headers: { authorization: `Bearer ${adminToken}` }, signal: controller.signal }).catch(() => undefined)
+      while (!observed) await pause(); const first = observed; controller.abort(); await http
+      while (!first.aborted) await pause()
+      observed = undefined as unknown as AbortSignal
+      const pending = command(gateway, ["devices", "pending"])
+      while (!observed) await pause(); await gateway.close()
+      expect(observed.aborted).toBe(true); expect((await pending).code).toBe(1)
+      expect(fake.close).toHaveBeenCalledTimes(1); expect(gateway.options.createCore).toHaveBeenCalledTimes(1)
+    } finally { await gateway.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.each(["short", "t".repeat(32)])("rejects invalid management token configuration %s before opening Core", async (adminToken) => {
+    const { gateway, root } = await start(fakeCore().core)
+    try {
+      await gateway.close()
+      const createCore = vi.fn(async () => fakeCore().core)
+      const invalid = new KeetMcpGateway({ config: { ...gateway.options.config, adminToken }, createCore })
+      await expect(invalid.start()).rejects.toThrow("KEET_MCP_ADMIN_TOKEN")
+      expect(createCore).not.toHaveBeenCalled()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 })

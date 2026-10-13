@@ -15,8 +15,9 @@ removed; agent integrations use MCP.
 - [`@lamplitisles/impri-keet`](packages/impri-keet) is the separate private
   approval-channel adapter and owns a different Keet identity.
 
-See the [MCP gateway guide](packages/keet-mcp/README.md) for configuration and
-human identity setup with `keet-mcp-setup`, and the [runtime guide](docs/runtime-extraction.md)
+See the [MCP gateway guide](packages/keet-mcp/README.md) for configuration,
+online device linking with the human-only HTTP client `keet-mcp-admin`,
+offline identity setup with `keet-mcp-setup`, and the [runtime guide](docs/runtime-extraction.md)
 for the operator-supplied pinned Keet runtime.
 
 ## Development

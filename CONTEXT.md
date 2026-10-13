@@ -58,3 +58,18 @@ triggering message; a reaction change alone is not a message.
 An agent-requested text message paired with an optional Keet Reaction on an
 explicitly identified message in the same Managed Group or DM. Text is
 delivered first; the reaction is best effort and never a standalone send.
+
+## Device Linking
+
+Adding another device to an existing Integration Identity with approval from
+an existing device. It does not recover or replace the identity.
+
+## Identity Invitation
+
+A time-limited invitation that lets a new device request Device Linking.
+Possessing the invitation does not replace approval of the requesting device.
+
+## Device Linking Request
+
+A pending request from one specific new device to join an Integration Identity.
+The operator approves or rejects that request, rather than a device name alone.

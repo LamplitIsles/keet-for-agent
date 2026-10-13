@@ -10,5 +10,5 @@ export default defineConfig({
       "@lamplitisles/keet-integration-core": path.join(root, "packages/keet-core/src/index.ts")
     }
   },
-  test: { environment: "node" }
+  test: { environment: "node", include: ["tests/**/*.test.ts"] }
 });

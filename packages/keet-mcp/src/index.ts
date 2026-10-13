@@ -11,9 +11,11 @@ import * as z from "zod/v4"
 import { WebhookEventFeed, type WebhookDestination } from "./webhook-event-feed.js"
 import { InboundImageStore } from "./inbound-image-store.js"
 
+import { adminJson, deviceLinkHttp } from "./device-link-http.js"
+
 export type DestinationKind = "group" | "broadcast" | "dm"
 export interface Destination { readonly groupId: string; readonly groupName: string; readonly kind: DestinationKind }
-export interface GatewayConfig { readonly runtimeDir: string; readonly identityDir: string; readonly workspaceRoot: string; readonly stateDir: string; readonly listen: string; readonly token: string; readonly webhookUrl?: string; readonly webhookBearerToken?: string }
+export interface GatewayConfig { readonly runtimeDir: string; readonly identityDir: string; readonly workspaceRoot: string; readonly stateDir: string; readonly listen: string; readonly token: string; readonly adminToken?: string; readonly webhookUrl?: string; readonly webhookBearerToken?: string }
 export interface GatewayOptions { readonly config: GatewayConfig; readonly createCore?: (options: KeetCoreOptions) => Promise<KeetCore>; readonly onFatal?: () => void }
 
 const MAX_TEXT = 16_000
@@ -25,12 +27,13 @@ const imageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"
 const MAX_SESSIONS = 64
 
 export function configurationFromEnvironment(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
+  const adminToken = optional(env, "KEET_MCP_ADMIN_TOKEN")
   const webhookUrl = optional(env, "KEET_WEBHOOK_URL"); const webhookBearerToken = optional(env, "KEET_WEBHOOK_BEARER_TOKEN")
   if (webhookBearerToken && !webhookUrl) throw new Error("KEET_WEBHOOK_BEARER_TOKEN requires KEET_WEBHOOK_URL.")
   if (webhookUrl) validateWebhookUrl(webhookUrl)
   return {
     runtimeDir: required(env, "KEET_MCP_RUNTIME_DIR"), identityDir: required(env, "KEET_MCP_IDENTITY_DIR"),
-    workspaceRoot: required(env, "KEET_MCP_WORKSPACE_ROOT"), stateDir: required(env, "KEET_MCP_STATE_DIR"), listen: required(env, "KEET_MCP_LISTEN"), token: required(env, "KEET_MCP_TOKEN"), ...(webhookUrl ? { webhookUrl } : {}), ...(webhookBearerToken ? { webhookBearerToken } : {}),
+    workspaceRoot: required(env, "KEET_MCP_WORKSPACE_ROOT"), stateDir: required(env, "KEET_MCP_STATE_DIR"), listen: required(env, "KEET_MCP_LISTEN"), token: required(env, "KEET_MCP_TOKEN"), ...(adminToken ? { adminToken } : {}), ...(webhookUrl ? { webhookUrl } : {}), ...(webhookBearerToken ? { webhookBearerToken } : {}),
   }
 }
 function required(env: NodeJS.ProcessEnv, name: string): string { const value = env[name]?.trim(); if (!value) throw new Error(`Missing ${name}.`); return value }
@@ -109,6 +112,13 @@ export class KeetMcpGateway {
   private async closeImpl(): Promise<void> { this.#closing = true; this.#operationAbort.abort(); try { await this.#startPromise?.catch(() => undefined); const server = this.#server; const serverClosed = server && new Promise<void>((resolve) => server.close(() => resolve())); server?.closeAllConnections(); for (const { transport, server } of this.#sessions.values()) { await transport.close().catch(() => undefined); await server.close().catch(() => undefined) }; this.#sessions.clear(); this.#sendTails.clear(); this.#server = undefined; const feed = this.#eventFeed; this.#eventFeed = undefined; await feed?.close().catch(() => undefined); this.#imageStore = undefined; await serverClosed; const core = this.#core; this.#core = undefined; this.#workspaceRoot = undefined; if (core) await core.close() } finally { this.#closing = false } }
   private async handle(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://localhost")
+    if (url.pathname.startsWith("/admin/device-link/")) {
+      const token = this.options.config.adminToken
+      if (!token) { adminJson(response, 404, { error: "not_found" }); return }
+      if (!authorized(request, token)) { adminJson(response, 401, { error: "unauthorized" }); return }
+      await deviceLinkHttp(request, response, this.core(), this.#operationAbort.signal)
+      return
+    }
     if (url.pathname.startsWith("/images/")) {
       if (!authorized(request, this.options.config.token)) { response.writeHead(401, { "www-authenticate": "Bearer" }).end(); return }
       if (request.method !== "GET") { response.writeHead(405, { allow: "GET" }).end(); return }
@@ -197,6 +207,7 @@ interface CheckedConfig extends GatewayConfig { readonly host: "127.0.0.1" | "::
 async function validateConfig(config: GatewayConfig): Promise<CheckedConfig> {
   for (const [name, value] of Object.entries({ runtimeDir: config.runtimeDir, identityDir: config.identityDir, workspaceRoot: config.workspaceRoot, stateDir: config.stateDir })) if (!path.isAbsolute(value)) throw new Error(`${name} must be an absolute path.`)
   if (config.token.length < 32) throw new Error("KEET_MCP_TOKEN must be at least 32 characters.")
+  if (config.adminToken !== undefined && (config.adminToken.length < 32 || config.adminToken === config.token)) throw new Error("KEET_MCP_ADMIN_TOKEN must be distinct from KEET_MCP_TOKEN and at least 32 characters.")
   if (config.webhookBearerToken && !config.webhookUrl) throw new Error("KEET_WEBHOOK_BEARER_TOKEN requires KEET_WEBHOOK_URL.")
   if (config.webhookUrl) validateWebhookUrl(config.webhookUrl)
   const match = /^(127\.0\.0\.1|::1):(\d{1,5})$/.exec(config.listen); if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535) throw new Error("KEET_MCP_LISTEN must be a loopback host and port.")
@@ -205,7 +216,7 @@ async function validateConfig(config: GatewayConfig): Promise<CheckedConfig> {
   return { ...config, runtimeDir: runtime, identityDir: identity, workspaceRoot: workspace, stateDir: state, host: match[1] as "127.0.0.1" | "::1", port: Number(match[2]) }
 }
 function validateWebhookUrl(value: string): void { let url: URL; try { url = new URL(value) } catch { throw new Error("KEET_WEBHOOK_URL must be an HTTPS URL or loopback HTTP URL.") }; if (url.username || url.password || value.includes("#") || (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)))) throw new Error("KEET_WEBHOOK_URL must be an HTTPS URL or loopback HTTP URL.") }
-function authorized(request: import("node:http").IncomingMessage, token: string): boolean { const presented = request.headers.authorization; const expected = `Bearer ${token}`; return !!presented && presented.length === expected.length && timingSafeEqual(Buffer.from(presented), Buffer.from(expected)) }
+function authorized(request: import("node:http").IncomingMessage, token: string): boolean { const presented = request.headers.authorization; const expected = `Bearer ${token}`; return !!presented && Buffer.byteLength(presented) === Buffer.byteLength(expected) && timingSafeEqual(Buffer.from(presented), Buffer.from(expected)) }
 async function existingOrAbsolute(input: string): Promise<string> { try { return await realpath(input) } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return path.resolve(input); throw error } }
 function assertSeparate(locations: readonly string[]): void { for (const [index, left] of locations.entries()) for (const right of locations.slice(index + 1)) if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) throw new Error("runtime, identity, workspace, and state locations must not overlap.") }
 async function prepareFile(root: string, input: string, signal: AbortSignal): Promise<PreparedKeetFile> {

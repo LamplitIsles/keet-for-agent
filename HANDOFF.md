@@ -5,11 +5,15 @@
 - `packages/keet-core/src/` owns official-sidecar lifecycle, admission of the
   pinned runtime tuple, identity locking, normalized destinations/messages,
   native reads, reactions, onboarding primitives, profile operations, and
-  native text/file delivery.
+  native text/file delivery. Device Linking uses pinned RPCs 60 (invitation),
+  22 (token identity validation), 18 (first observed request object), and 17
+  (explicit decision); no separate getIdentityPairingRequest opcode exists.
 - `packages/keet-mcp/src/` owns the bearer-protected MCP gateway, its immutable
   Managed Destination snapshot, workspace-contained file preparation, the
   optional durable incoming-message webhook and retained original images, plus
-  the human-only local setup CLI over the same Core identity.
+  the human-only local setup CLI over the same Core identity. Optional
+  `KEET_MCP_ADMIN_TOKEN` enables `/admin/device-link/*` on the existing listener;
+  the distributed `keet-mcp-admin` HTTP client reuses that running Core.
 - `packages/impri-keet/src/` owns the independent Impri approval channel.
 - `tests/` uses fake workers, fixtures, and test-owned temporary paths.
 
@@ -50,6 +54,25 @@ Originals remain under `KEET_MCP_STATE_DIR/images/` until manually removed;
 injects model context or sends replies. The `/cfl` route is removed.
 
 ## Compatibility and safety
+
+Device Linking requires a distinct management token of at least 32 characters;
+the MCP and management credentials cannot access each other's routes. Absent
+management configuration leaves the routes disabled (404) and MCP unchanged.
+Install/configuration changes require normal restart; subsequent online linking
+does not open a second identity or interrupt MCP/webhook. Offline setup still
+requires stopping the identity owner. Linking does not refresh the immutable
+Managed Destination snapshot; later rooms need a gateway restart.
+
+Native identity invitations require confirmation, expire after 2h, and use
+`keet://link/TOKEN`; returned `expiresAt` is a conservative request-start + 2h
+display value, not a native timestamp. Repeated invite does not revoke prior
+invitations. Pending observes only one current object within 5s; native filters
+null, so silence/EOF returns 504 `pairing_state_unavailable`, never certain
+empty. Decisions re-read the current deviceId + identityDeviceId binding and
+serialize native management mutations. Success means decision submitted, not
+phone synchronization. CLI failures do not retry mutations. Streams, timers and
+abort listeners are cleaned on completion, failure, disconnect and shutdown.
+Phone interoperability remains unverified; all feature tests use fakes.
 
 Only Keet 4.22.0, `@holepunchto/keet-core` 4.22.20, ABI 35, and Linux x86-64
 are admitted. Runtime files are operator-supplied and excluded from packages.

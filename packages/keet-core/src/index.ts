@@ -2,6 +2,8 @@ export { KeetIntegrationCore, validateAdmission, validateKeetReaction, validateK
 export { KeetSidecar } from "./sidecar.js"
 export { KEET_COMPATIBILITY, KEET_NATIVE_ADDON_COUNT, validateKeetCompatibility } from "./types.js"
 export type {
+  DeviceLinkInvitation,
+  DeviceLinkRequest,
   InvitationInfo,
   Invitation,
   CreateGroupOptions,
@@ -29,3 +31,4 @@ export type {
 } from "./types.js"
 export type { KeetCore } from "./types.js"
 export type { KeetSidecarLog, KeetSidecarOptions, KeetSidecarStatus, KeetSidecarTerminalReason, KeetSidecarTerminalListener } from "./sidecar.js"
+export { DeviceLinkError } from "./device-link.js"

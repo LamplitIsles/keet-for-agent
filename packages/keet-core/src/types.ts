@@ -181,7 +181,13 @@ export interface KeetSubscription {
   onTerminate?(handler: (reason: "closed" | "connection-failed") => void): () => void
 }
 
+export interface DeviceLinkInvitation { readonly invitationUrl: string; readonly expiresAt: number }
+export interface DeviceLinkRequest { readonly requestId: string; readonly deviceName: string }
+
 export interface KeetCore {
+  createDeviceLinkInvitation(signal?: AbortSignal): Promise<DeviceLinkInvitation>
+  getDeviceLinkRequest(signal?: AbortSignal): Promise<DeviceLinkRequest>
+  decideDeviceLink(requestId: string, decision: "approve" | "reject", signal?: AbortSignal): Promise<void>
   /** Core-owned image admission deadline; not a user-facing setting. */
   readonly imageAdmissionTimeoutMs?: number
   status(): Promise<KeetReadiness>

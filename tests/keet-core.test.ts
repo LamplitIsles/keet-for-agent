@@ -972,3 +972,20 @@ describe("group departure", () => {
     await expect(core.leaveGroup("group-test")).rejects.toThrow("Keet operation failed")
   })
 })
+
+
+it("device linking uses pinned fd-3 opcodes on a fake worker and keeps the owner usable", async () => {
+  const data = await dataPath("keet-device-link-")
+  const core = await KeetIntegrationCore.start(processOptions(data))
+  try {
+    expect((await core.createDeviceLinkInvitation()).invitationUrl).toBe(`keet://link/${"a".repeat(64)}`)
+    const current = await core.getDeviceLinkRequest()
+    expect(current.deviceName).toBe("Fixture Phone")
+    await core.decideDeviceLink(current.requestId, "approve")
+    expect((await core.status()).state).toBe("ready")
+    const abort = new AbortController()
+    const silent = core.getDeviceLinkRequest(abort.signal)
+    const result = expect(silent).rejects.toMatchObject({ code: "cancelled" })
+    abort.abort(); await result
+  } finally { await core.close() }
+})

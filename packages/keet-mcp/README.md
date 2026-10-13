@@ -39,6 +39,7 @@ The Keet runtime is deliberately not part of the package. Prepare the operator-s
 | `KEET_WEBHOOK_BEARER_TOKEN` | Optional separate bearer token; requires `KEET_WEBHOOK_URL` and never belongs in its URL. |
 | `KEET_MCP_LISTEN` | Loopback-only `127.0.0.1:port` or `::1:port`. |
 | `KEET_MCP_TOKEN` | Bearer token at least 32 characters long. Never put it in a URL. |
+| `KEET_MCP_ADMIN_TOKEN` | Optional human management bearer, at least 32 characters and distinct from the MCP token. Absent means management routes return 404. |
 
 The runtime, identity, workspace, and state paths must not overlap. Configuration errors and Core ownership failures happen before a usable HTTP listener is exposed. A daemon has one immutable startup snapshot of eligible Default rooms, Broadcasts, and complete accepted DMs; restart it to discover later room changes.
 
@@ -46,7 +47,91 @@ Each request to `/mcp`, including MCP `DELETE` session termination, requires the
 
 Core holds an exclusive kernel lock on the identity directory for its lifetime. Stop the Impri adapter, another gateway, or any other process using that same identity before starting this daemon. Do not delete `.keet-sidecar.lock`: the open kernel lock, not file presence, denotes ownership.
 
-## Human identity setup
+## Online device linking
+
+`keet-mcp-admin` is a normal TypeScript CLI distributed in this package. It
+sends HTTP requests to the existing gateway and never opens a runtime or
+identity directory. Configure a separate `KEET_MCP_ADMIN_TOKEN` on the daemon.
+Installing the updated package and enabling this configuration requires a
+normal gateway restart; later linking operations keep MCP sessions, messaging,
+and webhook delivery running. The management token only authorizes the three
+device-link routes; it cannot access `/mcp` or `/images/*`, and the MCP token
+cannot access management routes. These capabilities are not MCP tools.
+
+Select the running identity by its gateway origin. Only literal loopback HTTP
+origins with explicit ports are accepted, including `http://[::1]:8765`;
+credentials, paths beyond `/`, queries, and fragments are rejected. Tokens go
+in environment variables and authorization headers, never URL/CLI arguments.
+The following credentials are placeholders, not usable production secrets:
+
+```bash
+export KEET_MCP_ADMIN_URL=http://127.0.0.1:8765
+export KEET_MCP_ADMIN_TOKEN='replace-with-distinct-human-secret-at-least-32-characters'
+keet-mcp-admin devices invite
+keet-mcp-admin devices pending
+keet-mcp-admin devices approve REQUEST_ID --yes
+keet-mcp-admin devices reject REQUEST_ID --yes
+```
+
+Invite writes `{invitationUrl, expiresAt}` JSON to your private terminal. Keep
+that link out of shared logs and agent context. On the phone, follow the
+[official linking flow](https://support.keet.io/installation-and-setup/link-devices/):
+choose **I'm a current user → Link device → Start device link → Use account
+link**, then paste the link. This adds a device to the same identity and is
+separate from recovering a profile with a mnemonic. Query `pending` after the
+phone requests linking; it returns `{request:{requestId,deviceName}}`. Check
+the requesting phone, and explicitly approve or reject its `requestId`.
+Device names are untrusted hints; identical names do not identify a request.
+Request IDs are stable for the same two native device bindings during this
+gateway lifetime. After restarting the gateway, query pending for a fresh ID.
+
+The native invitation requires approval and has a fixed 2h lifetime. The
+returned `expiresAt` is Unix milliseconds computed from the request-start
+time + 2h, a conservative display estimate because native token inspection
+does not expose its expiry. Creating another invitation does not cancel old
+ones; they expire natively. There is no cancellation or QR feature here.
+
+Only one current request is observed, not a list. The pinned Core suppresses
+null subscription results; if no object arrives within 5s, or the stream ends,
+HTTP returns 504 `pairing_state_unavailable` and the CLI exits nonzero. This
+may mean no request or that reading could not complete; it is not proof of
+an empty queue. Start the request on the phone and check again. Malformed
+snapshots also fail closed. Each decision re-reads the current request and
+compares both native device bindings; a replaced request returns 409
+`request_conflict`, and an unobservable state cannot be confirmed. Management
+mutations are serialized, without blocking ordinary messaging.
+
+Decision success is `{decisionSubmitted:"approve"}` (or `"reject"`): the
+native confirmation completed/submitted, not a claim that the phone has
+finished syncing. A disappearing request may be a native no-op. Non-2xx,
+conflicts and timeouts exit nonzero with safe JSON on stderr; the CLI neither
+follows redirects nor retries mutations. If delivery fails after submission,
+the outcome may be unknown: check the phone and pending before a new decision.
+`--help` works without environment configuration.
+
+The same strict JSON contract is available to shell scripts:
+
+```bash
+curl --fail-with-body -X POST "$KEET_MCP_ADMIN_URL/admin/device-link/invitation" \
+  -H "Authorization: Bearer $KEET_MCP_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' --data '{}'
+curl --fail-with-body "$KEET_MCP_ADMIN_URL/admin/device-link/request" \
+  -H "Authorization: Bearer $KEET_MCP_ADMIN_TOKEN"
+curl --fail-with-body -X POST "$KEET_MCP_ADMIN_URL/admin/device-link/decision" \
+  -H "Authorization: Bearer $KEET_MCP_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"requestId":"REPLACE_WITH_PENDING_REQUEST_ID","decision":"approve"}'
+```
+
+Management authentication precedes body parsing and Core work. Unknown
+fields, incorrect methods, queries, and bodies over 4 KiB are rejected;
+responses are private, no-store JSON with fixed safe error categories.
+Linking leaves the Managed Destination startup snapshot unchanged; rooms
+joined later from the phone require a gateway restart to become destinations.
+Fake tests verify API/CLI behavior; official phone interoperability remains
+unverified, and deployment/live pairing require separate operator action.
+
+## Offline human identity setup
 
 `keet-mcp-setup` uses the same pinned runtime and identity as `keet-mcpd`, but
 does not need the gateway token or expose these mutations as Agent tools. Set
@@ -190,7 +275,8 @@ pnpm pack-smoke
 
 `pnpm pack-smoke` packs the gateway, checks its machine-consumed contents,
 removed WebSocket dependency, notices, and `--help` executable surface. It does
-not contact Keet. Official-runtime interoperability is not
+not contact Keet. This includes the distributed `keet-mcp-admin --help` without
+management configuration. Official-runtime interoperability is not
 established by these checks.
 
 ## License

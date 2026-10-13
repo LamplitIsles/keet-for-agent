@@ -1,3 +1,4 @@
+import { DeviceLinking } from "./device-link.js"
 import { KeetSidecar } from "./sidecar.js"
 import type { Duplex } from "node:stream"
 import {
@@ -69,6 +70,7 @@ type RawRecord = Record<string, unknown>
  */
 export class KeetIntegrationCore implements KeetCore {
   readonly sidecar: KeetSidecar
+  readonly #deviceLinking: DeviceLinking
   readonly #pairingTimeoutMs: number
   /** Bounded Core-owned deadline used by the MCP gateway for one inbound image batch. */
   readonly imageAdmissionTimeoutMs: number
@@ -79,6 +81,7 @@ export class KeetIntegrationCore implements KeetCore {
 
   constructor(options: KeetCoreOptions | KeetSidecar, timing: { readonly imageAdmissionTimeoutMs?: number } = {}) {
     this.sidecar = options instanceof KeetSidecar ? options : new KeetSidecar(options)
+    this.#deviceLinking = new DeviceLinking(this.sidecar)
     this.#pairingTimeoutMs = options instanceof KeetSidecar ? DEFAULT_PAIRING_TIMEOUT_MS : Math.max(1, Math.min(options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS, DEFAULT_PAIRING_TIMEOUT_MS))
     const configuredImageTimeout = options instanceof KeetSidecar ? timing.imageAdmissionTimeoutMs : options.imageAdmissionTimeoutMs ?? timing.imageAdmissionTimeoutMs
     this.imageAdmissionTimeoutMs = boundedTimeout(configuredImageTimeout, DEFAULT_IMAGE_ADMISSION_TIMEOUT_MS)
@@ -699,7 +702,12 @@ export class KeetIntegrationCore implements KeetCore {
     return { status: "pending", submitted }
   }
 
+  createDeviceLinkInvitation(signal?: AbortSignal) { return this.#deviceLinking.invitation(signal) }
+  getDeviceLinkRequest(signal?: AbortSignal) { return this.#deviceLinking.request(signal) }
+  decideDeviceLink(requestId: string, decision: "approve" | "reject", signal?: AbortSignal) { return this.#deviceLinking.decide(requestId, decision, signal) }
+
   async close(): Promise<void> {
+    this.#deviceLinking.close()
     this.#closed = true
     // Sidecar owns the shared close promise. Every caller waits for the actual
     // worker exit and identity unlock, including concurrent abort/finally paths.

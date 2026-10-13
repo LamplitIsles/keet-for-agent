@@ -2,6 +2,9 @@ export const RPC_METHODS = {
   swarmReady: 0,
   getVersion: 1,
   getIdentity: 6,
+  confirmPairingRequest: 17,
+  subscribeIdentityPairingRequests: 18,
+  createIdentityInvitation: 60,
   getRoomInfo: 39,
   getLinkInfo: 22,
   createRoom: 25,
@@ -36,4 +39,4 @@ export const RPC_METHODS = {
 } as const
 
 export type RpcMethodName = keyof typeof RPC_METHODS
-export type RpcStreamMethodName = 'subscribeChatMessages' | 'readFileStream'
+export type RpcStreamMethodName = 'subscribeChatMessages' | 'readFileStream' | 'subscribeIdentityPairingRequests'
