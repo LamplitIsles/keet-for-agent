@@ -39,7 +39,11 @@ export function adminOrigin(value: string): string {
 }
 
 class AdminFailure extends Error {
-  constructor(readonly category: string) { super(category) }
+  readonly httpStatus?: number
+  constructor(readonly category: string, httpStatus?: number) {
+    super(category)
+    if (typeof httpStatus === "number" && Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) this.httpStatus = httpStatus
+  }
 }
 
 export async function runAdmin(argv: readonly string[], dependencies: AdminDependencies = {}): Promise<number> {
@@ -65,8 +69,8 @@ export async function runAdmin(argv: readonly string[], dependencies: AdminDepen
       ...(command !== "pending" ? { body: JSON.stringify(deciding ? { requestId, decision: command } : {}) } : {}),
     })
     if (!response.ok) {
-      await response.body?.cancel()
-      throw new AdminFailure(response.status === 409 ? "request_conflict" : response.status === 504 ? "pairing_state_unavailable" : response.status === 401 ? "unauthorized" : "http_failure")
+      await response.body?.cancel().catch(() => undefined)
+      throw new AdminFailure(response.status === 409 ? "request_conflict" : response.status === 504 ? "pairing_state_unavailable" : response.status === 401 ? "unauthorized" : response.status === 502 ? "operation_failed" : "http_failure", response.status)
     }
     if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") { await response.body?.cancel(); throw new AdminFailure("invalid_response") }
     const reader = response.body?.getReader()
@@ -89,7 +93,7 @@ export async function runAdmin(argv: readonly string[], dependencies: AdminDepen
     return 0
   } catch (error) {
     const category = error instanceof AdminFailure ? error.category : "transport_failure"
-    stderr.write(`${JSON.stringify({ error: category, ...(category === "pairing_state_unavailable" ? { guidance: "Start the request on the phone, then check pending again; state could not be confirmed." } : {}) })}\n`)
+    stderr.write(`${JSON.stringify({ error: category, ...(error instanceof AdminFailure && error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}), ...(category === "pairing_state_unavailable" ? { guidance: "Start the request on the phone, then check pending again; state could not be confirmed." } : {}) })}\n`)
     return 1
   } finally { if (timer) clearTimeout(timer) }
 }

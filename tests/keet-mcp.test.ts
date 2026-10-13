@@ -467,9 +467,11 @@ describe("human-only online device linking", () => {
         expect(response.status).toBe(status); expect(response.headers.get("cache-control")).toBe("private, no-store"); expect(response.headers.get("content-type")).toBe("application/json")
       }
       expect(fake.invite).not.toHaveBeenCalled(); expect(fake.decide).not.toHaveBeenCalled()
-      fake.core.createDeviceLinkInvitation = vi.fn(async () => { throw new Error(`RAW_RPC ${adminToken} keet://link/secret`) })
+      const createDeviceLinkInvitation = vi.fn(async () => { throw new Error(`RAW_RPC ${adminToken} keet://link/secret`) })
+      fake.core.createDeviceLinkInvitation = createDeviceLinkInvitation
       const failed = await command(gateway, ["devices", "invite"])
-      expect(failed.code).toBe(1); expect(failed.stdout).toBe(""); expect(failed.stderr).toBe('{"error":"http_failure"}\n')
+      expect(failed.code).toBe(1); expect(failed.stdout).toBe(""); expect(failed.stderr).toBe('{"error":"operation_failed","httpStatus":502}\n')
+      expect(createDeviceLinkInvitation).toHaveBeenCalledTimes(1)
       const response = await fetch(`${origin}/admin/device-link/invitation`, { method: "POST", headers, body: "{}" })
       expect(await response.json()).toEqual({ error: "operation_failed" })
       fake.core.getDeviceLinkRequest = vi.fn(async () => { throw new DeviceLinkError("timeout") })

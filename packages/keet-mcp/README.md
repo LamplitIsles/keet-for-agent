@@ -91,6 +91,18 @@ time + 2h, a conservative display estimate because native token inspection
 does not expose its expiry. Creating another invitation does not cancel old
 ones; they expire natively. There is no cancellation or QR feature here.
 
+HTTP failures exit nonzero with safe stderr JSON containing `error` and the
+response's integer `httpStatus` (100–599). HTTP 502 reports
+`{"error":"operation_failed","httpStatus":502}`; 401, 409 and 504 retain
+`unauthorized`, `request_conflict` and `pairing_state_unavailable`, respectively.
+Other HTTP failures use `http_failure`. Transport, configuration and argument
+errors have no `httpStatus`. Error response bodies are discarded without
+parsing, and the CLI never retries or follows redirects.
+
+These fields improve CLI diagnostics. They do not identify a native cause or
+prove whether a failed invitation request created an invitation. A failure
+can leave mutation results unknown; do not automatically repeat the request.
+
 Only one current request is observed, not a list. The pinned Core suppresses
 null subscription results; if no object arrives within 5s, or the stream ends,
 HTTP returns 504 `pairing_state_unavailable` and the CLI exits nonzero. This
